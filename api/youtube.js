@@ -2,7 +2,8 @@
 
 import { createClient } from 'redis';
 
-const CACHE_KEY = 'vspo-youtube-data';
+// *** 我們更改了這個鍵值的名稱來強制清除舊的快取 ***
+const CACHE_KEY = 'vspo-youtube-data-v4'; // Changed from vspo-youtube-data
 const CACHE_TTL_SECONDS = 1800; // 30 minutes
 
 export default async function handler(request, response) {
