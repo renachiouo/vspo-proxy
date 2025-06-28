@@ -1,10 +1,13 @@
-// /api/youtube.js (Super Logging Diagnostic Version)
+// /api/youtube.js (Final Version - Using 'redis' package)
 
 import { createClient } from 'redis';
 
-const CACHE_KEY = 'vspo-youtube-data';
-const CACHE_TTL_SECONDS = 1800; // 30 minutes
+// 定義快取的鍵值和過期時間 (30 分鐘)
+// *** 我們更改了這個鍵值的名稱來強制清除舊的快取 ***
+const CACHE_KEY = 'vspo-youtube-data-v2';
+const CACHE_TTL_SECONDS = 1800; // 30 minutes * 60 seconds
 
+// 代理函式主體
 export default async function handler(request, response) {
   
   const redisConnectionString = process.env.REDIS_URL;
@@ -51,16 +54,10 @@ export default async function handler(request, response) {
   let quotaErrorCount = 0;
   for (const apiKey of apiKeys) {
     const youtubeApiUrl = `https://www.googleapis.com/youtube/v3/${endpoint}?${searchParams.toString()}&key=${apiKey}`;
-    
-    // *** 新增的日誌紀錄 ***
-    console.log(`[DIAGNOSTIC] Preparing to fetch from YouTube. URL: ${youtubeApiUrl}`);
 
     try {
       const youtubeResponse = await fetch(youtubeApiUrl);
       const data = await youtubeResponse.json();
-
-      // *** 新增的日誌紀錄 ***
-      console.log(`[DIAGNOSTIC] Received from YouTube: ${JSON.stringify(data, null, 2)}`);
 
       if (data.error && (data.error.message.toLowerCase().includes('quota') || data.error.reason === 'quotaExceeded')) {
         console.warn(`Key starting with ${apiKey.substring(0, 8)}... has exceeded its quota. Trying next key.`);
