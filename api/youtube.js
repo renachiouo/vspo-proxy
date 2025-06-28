@@ -2,18 +2,24 @@
 
 import { createClient } from '@vercel/kv';
 
-// 從環境變數中讀取 Vercel KV 的連線資訊
-const kv = createClient({
-  url: process.env.KV_URL,
-  token: process.env.KV_REST_API_TOKEN,
-});
-
 // 定義快取的鍵值和過期時間 (30 分鐘)
 const CACHE_KEY = 'vspo-youtube-data';
 const CACHE_TTL_SECONDS = 1800; // 30 minutes * 60 seconds
 
 // 代理函式主體
 export default async function handler(request, response) {
+  // 檢查 Vercel KV 的環境變數是否存在
+  if (!process.env.KV_URL || !process.env.KV_REST_API_TOKEN) {
+    console.error('Vercel KV environment variables not found.');
+    return response.status(500).json({ error: 'KV store is not configured correctly on the server. Please redeploy the Vercel project.' });
+  }
+
+  // 如果環境變數存在，才建立 KV Client
+  const kv = createClient({
+    url: process.env.KV_URL,
+    token: process.env.KV_REST_API_TOKEN,
+  });
+
   // 1. 嘗試從 Vercel KV 讀取快取
   try {
     const cachedData = await kv.get(CACHE_KEY);
