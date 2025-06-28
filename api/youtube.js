@@ -9,16 +9,16 @@ const CACHE_TTL_SECONDS = 1800; // 30 minutes * 60 seconds
 // 代理函式主體
 export default async function handler(request, response) {
   // 檢查 Redis 的環境變數是否存在
-  // 注意：變數名稱已根據您的回報更新
-  if (!process.env.REDIS_URL || !process.env.REDIS_TOKEN) {
-    console.error('Redis environment variables not found.');
+  // 注意：已根據您的回報，移除對 REDIS_TOKEN 的檢查
+  if (!process.env.REDIS_URL) {
+    console.error('Redis URL environment variable not found.');
     return response.status(500).json({ error: 'KV/Redis store is not configured correctly on the server. Please check environment variables and redeploy the Vercel project.' });
   }
 
   // 如果環境變數存在，才建立 KV Client
+  // @vercel/kv 套件通常可以從單一的 URL 中解析出所有連線資訊
   const kv = createClient({
     url: process.env.REDIS_URL,
-    token: process.env.REDIS_TOKEN,
   });
 
   // 1. 嘗試從 Vercel KV 讀取快取
