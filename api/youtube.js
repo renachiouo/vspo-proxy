@@ -3,8 +3,8 @@
 import { createClient } from 'redis';
 
 // 定義快取的鍵值和過期時間 (30 分鐘)
-// *** 我們更改了這個鍵值的名稱來強制清除舊的快取 ***
-const CACHE_KEY = 'vspo-youtube-data-v2';
+// *** 我們再次更改了這個鍵值的名稱來強制清除被測試資料污染的快取 ***
+const CACHE_KEY = 'vspo-youtube-data-v3';
 const CACHE_TTL_SECONDS = 1800; // 30 minutes * 60 seconds
 
 // 代理函式主體
