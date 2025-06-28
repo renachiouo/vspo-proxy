@@ -8,16 +8,17 @@ const CACHE_TTL_SECONDS = 1800; // 30 minutes * 60 seconds
 
 // 代理函式主體
 export default async function handler(request, response) {
-  // 檢查 Vercel KV 的環境變數是否存在
-  if (!process.env.KV_URL || !process.env.KV_REST_API_TOKEN) {
-    console.error('Vercel KV environment variables not found.');
-    return response.status(500).json({ error: 'KV store is not configured correctly on the server. Please redeploy the Vercel project.' });
+  // 檢查 Redis 的環境變數是否存在
+  // 注意：變數名稱已根據您的回報更新
+  if (!process.env.REDIS_URL || !process.env.REDIS_TOKEN) {
+    console.error('Redis environment variables not found.');
+    return response.status(500).json({ error: 'KV/Redis store is not configured correctly on the server. Please check environment variables and redeploy the Vercel project.' });
   }
 
   // 如果環境變數存在，才建立 KV Client
   const kv = createClient({
-    url: process.env.KV_URL,
-    token: process.env.KV_REST_API_TOKEN,
+    url: process.env.REDIS_URL,
+    token: process.env.REDIS_TOKEN,
   });
 
   // 1. 嘗試從 Vercel KV 讀取快取
