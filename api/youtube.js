@@ -3,7 +3,7 @@
 import { createClient } from 'redis';
 
 const CACHE_KEY = 'vspo-app-final-data'; // 使用一個固定的快取鑰匙
-const CACHE_TTL_SECONDS = 600; // 10分鐘快取
+const CACHE_TTL_SECONDS = 1800; // 30分鐘快取
 
 const SEARCH_KEYWORDS = ["VSPO中文", "VSPO中文精華", "VSPO精華", "VSPO中文剪輯", "VSPO剪輯"];
 const OFFICIAL_CHANNEL_BLACKLIST = [
