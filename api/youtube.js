@@ -1,4 +1,4 @@
-// /api/youtube.js (Final Robust Version)
+// /api/youtube.js (Final Version - Manual URL Parsing)
 
 import { createClient } from '@vercel/kv';
 
@@ -8,37 +8,38 @@ const CACHE_TTL_SECONDS = 1800; // 30 minutes * 60 seconds
 
 // 代理函式主體
 export default async function handler(request, response) {
-  // 檢查 REDIS_URL 是否存在
-  if (!process.env.REDIS_URL) {
-    console.error('REDIS_URL environment variable not found.');
-    return response.status(500).json({ error: 'KV/Redis store is not configured correctly on the server. Please check environment variables and redeploy.' });
-  }
-
-  // 手動從 REDIS_URL 解析出 token 和 https url
+  
   let kv;
   try {
-    const redisUrl = process.env.REDIS_URL;
-    const url = new URL(redisUrl);
-
-    // 從 URL 中提取 token 和 address
-    const token = url.password;
-    const httpsUrl = `https://` + url.hostname;
-
-    if (!token) {
-        throw new Error("Token not found in REDIS_URL");
+    // 檢查唯一的 REDIS_URL 環境變數是否存在
+    const redisConnectionString = process.env.REDIS_URL;
+    if (!redisConnectionString) {
+      throw new Error('REDIS_URL environment variable not found.');
     }
+
+    // 手動從 redis://default:TOKEN@ADDRESS:PORT 格式中解析出 token 和 address
+    // 這是解決問題的核心
+    const match = redisConnectionString.match(/redis:\/\/default:(.+)@(.+)/);
+    if (!match || match.length < 3) {
+      throw new Error('Could not parse token and address from REDIS_URL.');
+    }
+    
+    const token = match[1];
+    const address = match[2]; // address in format: hostname:port
+    
+    // 組合出 Upstash REST API 需要的 https 網址
+    const restApiUrl = `https://${address.split(':')[0]}`;
 
     // 使用解析出的資訊建立 KV Client
     kv = createClient({
-      url: httpsUrl,
+      url: restApiUrl,
       token: token,
     });
 
   } catch (e) {
-      console.error("Failed to parse REDIS_URL and create KV client:", e);
-      return response.status(500).json({ error: 'Failed to initialize KV client from REDIS_URL.' });
+      console.error("Failed to initialize KV client:", e);
+      return response.status(500).json({ error: `Failed to initialize KV client: ${e.message}` });
   }
-
 
   // 1. 嘗試從 Vercel KV 讀取快取
   try {
