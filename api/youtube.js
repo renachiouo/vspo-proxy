@@ -1,45 +1,36 @@
-// /api/youtube.js (Final Version - Using 'redis' package)
+// /api/youtube.js (Super Logging Diagnostic Version)
 
 import { createClient } from 'redis';
 
-// 定義快取的鍵值和過期時間 (30 分鐘)
 const CACHE_KEY = 'vspo-youtube-data';
-const CACHE_TTL_SECONDS = 1800; // 30 minutes * 60 seconds
+const CACHE_TTL_SECONDS = 1800; // 30 minutes
 
-// 代理函式主體
 export default async function handler(request, response) {
   
-  // 檢查唯一的 REDIS_URL 環境變數是否存在
   const redisConnectionString = process.env.REDIS_URL;
   if (!redisConnectionString) {
-    console.error('REDIS_URL environment variable not found.');
-    // 即使沒有快取，我們也要設定 CORS 標頭，這樣前端才能收到錯誤訊息
     response.setHeader('Access-Control-Allow-Origin', '*');
-    return response.status(500).json({ error: 'Redis store is not configured correctly on the server. Please check environment variables and redeploy.' });
+    return response.status(500).json({ error: 'Redis store is not configured correctly.' });
   }
 
   let redisClient;
   try {
-    // 建立 Redis Client 並連線
     redisClient = createClient({ url: redisConnectionString });
     await redisClient.connect();
 
-    // 1. 嘗試從 Redis 快取讀取資料
     const cachedResult = await redisClient.get(CACHE_KEY);
     if (cachedResult) {
       console.log('Cache hit! Serving from Redis.');
       response.setHeader('Access-Control-Allow-Origin', '*');
       response.setHeader('X-Cache-Status', 'HIT');
-      await redisClient.quit(); // 完成後關閉連線
+      await redisClient.quit();
       return response.status(200).json(JSON.parse(cachedResult));
     }
   } catch (error) {
     console.error('Error with Redis connection or cache read:', error);
     if (redisClient?.isOpen) await redisClient.quit();
-    // 即使讀取快取失敗，我們依然可以繼續從 YouTube 抓取
   }
 
-  // 2. 如果沒有快取，則從 YouTube API 抓取新資料
   console.log('Cache miss. Fetching from YouTube API...');
   
   const apiKeys = [
@@ -57,21 +48,27 @@ export default async function handler(request, response) {
   const endpoint = searchParams.get('endpoint');
   searchParams.delete('endpoint');
   
-  // 嘗試使用每一組金鑰，直到成功為止
+  let quotaErrorCount = 0;
   for (const apiKey of apiKeys) {
     const youtubeApiUrl = `https://www.googleapis.com/youtube/v3/${endpoint}?${searchParams.toString()}&key=${apiKey}`;
+    
+    // *** 新增的日誌紀錄 ***
+    console.log(`[DIAGNOSTIC] Preparing to fetch from YouTube. URL: ${youtubeApiUrl}`);
 
     try {
       const youtubeResponse = await fetch(youtubeApiUrl);
       const data = await youtubeResponse.json();
 
-      if (data.error && data.error.message.toLowerCase().includes('quota')) {
+      // *** 新增的日誌紀錄 ***
+      console.log(`[DIAGNOSTIC] Received from YouTube: ${JSON.stringify(data, null, 2)}`);
+
+      if (data.error && (data.error.message.toLowerCase().includes('quota') || data.error.reason === 'quotaExceeded')) {
         console.warn(`Key starting with ${apiKey.substring(0, 8)}... has exceeded its quota. Trying next key.`);
+        quotaErrorCount++;
         continue;
       }
       if (data.error) { throw new Error(data.error.message); }
       
-      // 成功！將資料寫入快取並回傳
       try {
         if (!redisClient?.isOpen) {
              redisClient = createClient({ url: redisConnectionString });
@@ -95,5 +92,10 @@ export default async function handler(request, response) {
   
   if (redisClient?.isOpen) await redisClient.quit();
   response.setHeader('Access-Control-Allow-Origin', '*');
-  return response.status(503).json({ error: 'All API keys have exceeded their quotas or failed.' });
+
+  if (quotaErrorCount === apiKeys.length) {
+    return response.status(429).json({ error: 'All API keys have exceeded their daily quota.' });
+  }
+
+  return response.status(503).json({ error: 'All API keys failed for reasons other than quota.' });
 }
