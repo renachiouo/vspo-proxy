@@ -13,6 +13,8 @@ export default async function handler(request, response) {
   const redisConnectionString = process.env.REDIS_URL;
   if (!redisConnectionString) {
     console.error('REDIS_URL environment variable not found.');
+    // 即使沒有快取，我們也要設定 CORS 標頭，這樣前端才能收到錯誤訊息
+    response.setHeader('Access-Control-Allow-Origin', '*');
     return response.status(500).json({ error: 'Redis store is not configured correctly on the server. Please check environment variables and redeploy.' });
   }
 
@@ -47,6 +49,7 @@ export default async function handler(request, response) {
   ].filter(key => key);
 
   if (apiKeys.length === 0) {
+    response.setHeader('Access-Control-Allow-Origin', '*');
     return response.status(500).json({ error: 'API keys not configured on server.' });
   }
   
@@ -91,5 +94,6 @@ export default async function handler(request, response) {
   }
   
   if (redisClient?.isOpen) await redisClient.quit();
+  response.setHeader('Access-Control-Allow-Origin', '*');
   return response.status(503).json({ error: 'All API keys have exceeded their quotas or failed.' });
 }
