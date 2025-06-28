@@ -1,6 +1,6 @@
-// /api/youtube.js (Final Version - Manual URL Parsing)
+// /api/youtube.js (Final Version - Using 'redis' package)
 
-import { createClient } from '@vercel/kv';
+import { createClient } from 'redis';
 
 // 定義快取的鍵值和過期時間 (30 分鐘)
 const CACHE_KEY = 'vspo-youtube-data';
@@ -9,49 +9,32 @@ const CACHE_TTL_SECONDS = 1800; // 30 minutes * 60 seconds
 // 代理函式主體
 export default async function handler(request, response) {
   
-  let kv;
-  try {
-    // 檢查唯一的 REDIS_URL 環境變數是否存在
-    const redisConnectionString = process.env.REDIS_URL;
-    if (!redisConnectionString) {
-      throw new Error('REDIS_URL environment variable not found.');
-    }
-
-    // 手動從 redis://default:TOKEN@ADDRESS:PORT 格式中解析出 token 和 address
-    // 這是解決問題的核心
-    const match = redisConnectionString.match(/redis:\/\/default:(.+)@(.+)/);
-    if (!match || match.length < 3) {
-      throw new Error('Could not parse token and address from REDIS_URL.');
-    }
-    
-    const token = match[1];
-    const address = match[2]; // address in format: hostname:port
-    
-    // 組合出 Upstash REST API 需要的 https 網址
-    const restApiUrl = `https://${address.split(':')[0]}`;
-
-    // 使用解析出的資訊建立 KV Client
-    kv = createClient({
-      url: restApiUrl,
-      token: token,
-    });
-
-  } catch (e) {
-      console.error("Failed to initialize KV client:", e);
-      return response.status(500).json({ error: `Failed to initialize KV client: ${e.message}` });
+  // 檢查唯一的 REDIS_URL 環境變數是否存在
+  const redisConnectionString = process.env.REDIS_URL;
+  if (!redisConnectionString) {
+    console.error('REDIS_URL environment variable not found.');
+    return response.status(500).json({ error: 'Redis store is not configured correctly on the server. Please check environment variables and redeploy.' });
   }
 
-  // 1. 嘗試從 Vercel KV 讀取快取
+  let redisClient;
   try {
-    const cachedData = await kv.get(CACHE_KEY);
-    if (cachedData) {
-      console.log('Cache hit! Serving from Vercel KV.');
+    // 建立 Redis Client 並連線
+    redisClient = createClient({ url: redisConnectionString });
+    await redisClient.connect();
+
+    // 1. 嘗試從 Redis 快取讀取資料
+    const cachedResult = await redisClient.get(CACHE_KEY);
+    if (cachedResult) {
+      console.log('Cache hit! Serving from Redis.');
       response.setHeader('Access-Control-Allow-Origin', '*');
       response.setHeader('X-Cache-Status', 'HIT');
-      return response.status(200).json(cachedData);
+      await redisClient.quit(); // 完成後關閉連線
+      return response.status(200).json(JSON.parse(cachedResult));
     }
   } catch (error) {
-    console.error('Error reading from Vercel KV:', error);
+    console.error('Error with Redis connection or cache read:', error);
+    if (redisClient?.isOpen) await redisClient.quit();
+    // 即使讀取快取失敗，我們依然可以繼續從 YouTube 抓取
   }
 
   // 2. 如果沒有快取，則從 YouTube API 抓取新資料
@@ -85,21 +68,28 @@ export default async function handler(request, response) {
       }
       if (data.error) { throw new Error(data.error.message); }
       
+      // 成功！將資料寫入快取並回傳
       try {
-        await kv.set(CACHE_KEY, data, { ex: CACHE_TTL_SECONDS });
-        console.log('Data saved to Vercel KV cache.');
+        if (!redisClient?.isOpen) {
+             redisClient = createClient({ url: redisConnectionString });
+             await redisClient.connect();
+        }
+        await redisClient.set(CACHE_KEY, JSON.stringify(data), { EX: CACHE_TTL_SECONDS });
+        console.log('Data saved to Redis cache.');
       } catch (error) {
-        console.error('Error writing to Vercel KV:', error);
+        console.error('Error writing to Redis cache:', error);
       }
       
       response.setHeader('Access-Control-Allow-Origin', '*');
       response.setHeader('X-Cache-Status', 'MISS');
+      if (redisClient?.isOpen) await redisClient.quit();
       return response.status(200).json(data);
 
     } catch (error) {
       console.error(`Error with key starting with ${apiKey.substring(0, 8)}...`, error);
     }
   }
-
+  
+  if (redisClient?.isOpen) await redisClient.quit();
   return response.status(503).json({ error: 'All API keys have exceeded their quotas or failed.' });
 }
