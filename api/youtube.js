@@ -1,9 +1,9 @@
-// /api/youtube.js (Final Architecture with Timestamp)
+// /api/youtube.js (Final Architecture with Server-Side Visitor Counter)
 
 import { createClient } from 'redis';
 
-const CACHE_KEY = 'vspo-app-final-data-with-timestamp'; // 使用新的快取鑰匙
-const CACHE_TTL_SECONDS = 1800; // 30 分鐘快取
+const CACHE_KEY = 'vspo-app-final-data-with-timestamp';
+const CACHE_TTL_SECONDS = 1800; // 30 分鐘
 
 const SEARCH_KEYWORDS = ["VSPO中文", "VSPO中文精華", "VSPO精華", "VSPO中文剪輯", "VSPO剪輯"];
 const OFFICIAL_CHANNEL_BLACKLIST = [
@@ -17,6 +17,30 @@ const apiKeys = [
 
 const batchArray = (arr, size) => Array.from({ length: Math.ceil(arr.length / size) }, (v, i) => arr.slice(i * size, i * size + size));
 
+// --- 新增的伺服器端計數器函式 ---
+async function updateAndGetVisitorCount(redisClient) {
+    try {
+        const todayStr = new Date().toLocaleDateString('en-CA');
+        const todayKey = `visits:today:${todayStr}`;
+
+        // 使用 INCR 指令來原子性地增加計數，並獲取最新值
+        const [totalVisits, todayVisits] = await Promise.all([
+            redisClient.incr('visits:total'),
+            redisClient.incr(todayKey)
+        ]);
+
+        // 為今日計數設定一個 25 小時的過期時間，確保舊的每日計數會被自動清除
+        await redisClient.expire(todayKey, 90000); // 25 hours in seconds
+
+        return { totalVisits, todayVisits };
+    } catch (error) {
+        console.error("Failed to update visitor count:", error);
+        // 即使計數失敗，也回傳 0，不影響主要功能
+        return { totalVisits: 0, todayVisits: 0 };
+    }
+}
+
+
 export default async function handler(request, response) {
   const redisConnectionString = process.env.REDIS_URL;
   if (!redisConnectionString) {
@@ -25,17 +49,27 @@ export default async function handler(request, response) {
   }
 
   let redisClient;
+  let visitorCount = { totalVisits: 0, todayVisits: 0 };
+
   try {
     redisClient = createClient({ url: redisConnectionString });
     await redisClient.connect();
 
+    // --- 在所有操作之前，先更新訪問人次 ---
+    visitorCount = await updateAndGetVisitorCount(redisClient);
+
     const cachedResult = await redisClient.get(CACHE_KEY);
     if (cachedResult) {
       console.log('Cache hit! Serving final data from Redis.');
+      const cachedData = JSON.parse(cachedResult);
+      // 將最新的訪問人次加入到回傳的資料中
+      cachedData.totalVisits = visitorCount.totalVisits;
+      cachedData.todayVisits = visitorCount.todayVisits;
+
       response.setHeader('Access-Control-Allow-Origin', '*');
       response.setHeader('X-Cache-Status', 'HIT');
       await redisClient.quit();
-      return response.status(200).json(JSON.parse(cachedResult));
+      return response.status(200).json(cachedData);
     }
   } catch (error) {
     console.error('Error with Redis connection or cache read:', error);
@@ -48,18 +82,14 @@ export default async function handler(request, response) {
     const fetchYouTube = async (endpoint, params) => {
         for (const apiKey of apiKeys) {
             const url = `https://www.googleapis.com/youtube/v3/${endpoint}?${new URLSearchParams(params)}&key=${apiKey}`;
-            try {
-                const res = await fetch(url);
-                const data = await res.json();
-                if (data.error && (data.error.message.toLowerCase().includes('quota') || data.error.reason === 'quotaExceeded')) {
-                    console.warn(`Key starting with ${apiKey.substring(0,8)}... has quota error. Trying next.`);
-                    continue;
-                }
-                if(data.error) throw new Error(data.error.message);
-                return data;
-            } catch(e) {
-                 console.error(`Error with key starting with ${apiKey.substring(0,8)}...`, e);
+            const res = await fetch(url);
+            const data = await res.json();
+            if (data.error && (data.error.message.toLowerCase().includes('quota') || data.error.reason === 'quotaExceeded')) {
+                console.warn(`Key starting with ${apiKey.substring(0,8)}... has quota error. Trying next.`);
+                continue;
             }
+            if(data.error) throw new Error(data.error.message);
+            return data;
         }
         throw new Error('All API keys have failed.');
     };
@@ -72,17 +102,14 @@ export default async function handler(request, response) {
     const searchResults = await Promise.all(searchPromises);
 
     const videoSnippets = new Map();
-    for (const result of searchResults) {
-      result.items?.forEach(item => {
+    searchResults.forEach(result => result.items?.forEach(item => {
         if (item.id.videoId && !videoSnippets.has(item.id.videoId) && !OFFICIAL_CHANNEL_BLACKLIST.includes(item.snippet.channelId)) {
           videoSnippets.set(item.id.videoId, item.snippet);
         }
-      });
-    }
-
-    const videoIds = Array.from(videoSnippets.keys());
+    }));
     
     let finalVideos = [];
+    const videoIds = Array.from(videoSnippets.keys());
     if (videoIds.length > 0) {
         const videoDetailBatches = batchArray(videoIds, 50);
         const videoDetailPromises = videoDetailBatches.map(id => fetchYouTube('videos', { part: 'statistics,snippet', id: id.join(',') }));
@@ -104,11 +131,9 @@ export default async function handler(request, response) {
           if (!detail) return null;
           const channelStats = channelStatsMap.get(detail.snippet.channelId);
           return {
-            id,
-            title: detail.snippet.title,
+            id, title: detail.snippet.title,
             thumbnail: detail.snippet.thumbnails.high?.url || detail.snippet.thumbnails.default?.url,
-            channelId: detail.snippet.channelId,
-            channelTitle: detail.snippet.channelTitle,
+            channelId: detail.snippet.channelId, channelTitle: detail.snippet.channelTitle,
             publishedAt: detail.snippet.publishedAt,
             viewCount: detail.statistics ? parseInt(detail.statistics.viewCount, 10) : 0,
             subscriberCount: channelStats ? parseInt(channelStats.subscriberCount, 10) : 0,
@@ -116,7 +141,6 @@ export default async function handler(request, response) {
         }).filter(Boolean);
     }
     
-    // *** 這是關鍵的修正：建立一個包含資料和時間戳的包裹 ***
     const dataToCache = {
         videos: finalVideos,
         timestamp: new Date().toISOString(),
@@ -133,6 +157,10 @@ export default async function handler(request, response) {
       console.error('Error writing final data to Redis cache:', error);
     }
     
+    // 將最新的訪問人次加入到回傳的資料中
+    dataToCache.totalVisits = visitorCount.totalVisits;
+    dataToCache.todayVisits = visitorCount.todayVisits;
+
     response.setHeader('Access-Control-Allow-Origin', '*');
     response.setHeader('X-Cache-Status', 'MISS');
     if (redisClient?.isOpen) await redisClient.quit();
