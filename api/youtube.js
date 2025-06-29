@@ -1,4 +1,4 @@
-// /api/youtube.js (Final Architecture with Server-Side Visitor Counter & CST Reset)
+// /api/youtube.js (Final Architecture with Channel Avatars)
 
 import { createClient } from 'redis';
 
@@ -17,35 +17,22 @@ const apiKeys = [
 
 const batchArray = (arr, size) => Array.from({ length: Math.ceil(arr.length / size) }, (v, i) => arr.slice(i * size, i * size + size));
 
-// --- 伺服器端計數器函式 (以台灣時間為準) ---
+// 伺服器端計數器函式 (以台灣時間為準)
 async function updateAndGetVisitorCount(redisClient) {
     try {
-        // 使用 Intl.DateTimeFormat 來確保我們得到的是台灣時區的日期字串
-        const todayStr = new Intl.DateTimeFormat('en-CA', {
-            timeZone: 'Asia/Taipei',
-            year: 'numeric',
-            month: '2-digit',
-            day: '2-digit'
-        }).format(new Date());
-
+        const todayStr = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Taipei' }).format(new Date());
         const todayKey = `visits:today:${todayStr}`;
-
-        // 使用 INCR 指令來原子性地增加計數
         const [totalVisits, todayVisits] = await Promise.all([
             redisClient.incr('visits:total'),
             redisClient.incr(todayKey)
         ]);
-
-        // 為今日計數設定一個 25 小時的過期時間，確保舊的每日計數會被自動清除
-        await redisClient.expire(todayKey, 90000); // 25 hours in seconds
-
+        await redisClient.expire(todayKey, 90000);
         return { totalVisits, todayVisits };
     } catch (error) {
         console.error("Failed to update visitor count:", error);
         return { totalVisits: 0, todayVisits: 0 };
     }
 }
-
 
 export default async function handler(request, response) {
   const redisConnectionString = process.env.REDIS_URL;
@@ -60,15 +47,12 @@ export default async function handler(request, response) {
   try {
     redisClient = createClient({ url: redisConnectionString });
     await redisClient.connect();
-
-    // 在所有操作之前，先更新訪問人次
     visitorCount = await updateAndGetVisitorCount(redisClient);
 
     const cachedResult = await redisClient.get(CACHE_KEY);
     if (cachedResult) {
       console.log('Cache hit! Serving final data from Redis.');
       const cachedData = JSON.parse(cachedResult);
-      // 將最新的訪問人次加入到回傳的資料中
       cachedData.totalVisits = visitorCount.totalVisits;
       cachedData.todayVisits = visitorCount.todayVisits;
 
@@ -126,23 +110,27 @@ export default async function handler(request, response) {
 
         const channelIds = [...new Set(Array.from(videoSnippets.values()).map(s => s.channelId))];
         const channelDetailBatches = batchArray(channelIds, 50);
-        const channelDetailPromises = channelDetailBatches.map(id => fetchYouTube('channels', { part: 'statistics', id: id.join(',') }));
+        // *** 這是關鍵的修正：同時請求 snippet (包含頭像) 和 statistics ***
+        const channelDetailPromises = channelDetailBatches.map(id => fetchYouTube('channels', { part: 'statistics,snippet', id: id.join(',') }));
         const channelDetailResults = await Promise.all(channelDetailPromises);
         
-        const channelStatsMap = new Map();
-        channelDetailResults.forEach(result => result.items?.forEach(item => channelStatsMap.set(item.id, item.statistics)));
+        const channelDetailsMap = new Map();
+        channelDetailResults.forEach(result => result.items?.forEach(item => channelDetailsMap.set(item.id, item)));
 
         finalVideos = videoIds.map(id => {
           const detail = videoDetailsMap.get(id);
           if (!detail) return null;
-          const channelStats = channelStatsMap.get(detail.snippet.channelId);
+          const channelDetails = channelDetailsMap.get(detail.snippet.channelId);
           return {
             id, title: detail.snippet.title,
             thumbnail: detail.snippet.thumbnails.high?.url || detail.snippet.thumbnails.default?.url,
-            channelId: detail.snippet.channelId, channelTitle: detail.snippet.channelTitle,
+            channelId: detail.snippet.channelId, 
+            channelTitle: detail.snippet.channelTitle,
+            // *** 這是關鍵的新增資料 ***
+            channelAvatarUrl: channelDetails?.snippet?.thumbnails?.default?.url || '',
             publishedAt: detail.snippet.publishedAt,
             viewCount: detail.statistics ? parseInt(detail.statistics.viewCount, 10) : 0,
-            subscriberCount: channelStats ? parseInt(channelStats.subscriberCount, 10) : 0,
+            subscriberCount: channelDetails?.statistics ? parseInt(channelDetails.statistics.subscriberCount, 10) : 0,
           };
         }).filter(Boolean);
     }
@@ -163,7 +151,6 @@ export default async function handler(request, response) {
       console.error('Error writing final data to Redis cache:', error);
     }
     
-    // 將最新的訪問人次加入到回傳的資料中
     dataToCache.totalVisits = visitorCount.totalVisits;
     dataToCache.todayVisits = visitorCount.todayVisits;
 
