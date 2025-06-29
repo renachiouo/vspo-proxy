@@ -1,4 +1,4 @@
-// /api/youtube.js (Final Architecture with Server-Side Visitor Counter)
+// /api/youtube.js (Final Architecture with Server-Side Visitor Counter & CST Reset)
 
 import { createClient } from 'redis';
 
@@ -17,22 +17,20 @@ const apiKeys = [
 
 const batchArray = (arr, size) => Array.from({ length: Math.ceil(arr.length / size) }, (v, i) => arr.slice(i * size, i * size + size));
 
-// --- 新增的伺服器端計數器函式 ---
+// --- 伺服器端計數器函式 (以台灣時間為準) ---
 async function updateAndGetVisitorCount(redisClient) {
     try {
-        // --- 這是關鍵的修正：計算台灣時區 (UTC+8) 的日期 ---
-        const now = new Date();
         // 使用 Intl.DateTimeFormat 來確保我們得到的是台灣時區的日期字串
         const todayStr = new Intl.DateTimeFormat('en-CA', {
             timeZone: 'Asia/Taipei',
             year: 'numeric',
             month: '2-digit',
             day: '2-digit'
-        }).format(now);
+        }).format(new Date());
 
         const todayKey = `visits:today:${todayStr}`;
 
-        // 使用 INCR 指令來原子性地增加計數，並獲取最新值
+        // 使用 INCR 指令來原子性地增加計數
         const [totalVisits, todayVisits] = await Promise.all([
             redisClient.incr('visits:total'),
             redisClient.incr(todayKey)
@@ -44,7 +42,6 @@ async function updateAndGetVisitorCount(redisClient) {
         return { totalVisits, todayVisits };
     } catch (error) {
         console.error("Failed to update visitor count:", error);
-        // 即使計數失敗，也回傳 0，不影響主要功能
         return { totalVisits: 0, todayVisits: 0 };
     }
 }
@@ -64,7 +61,7 @@ export default async function handler(request, response) {
     redisClient = createClient({ url: redisConnectionString });
     await redisClient.connect();
 
-    // --- 在所有操作之前，先更新訪問人次 ---
+    // 在所有操作之前，先更新訪問人次
     visitorCount = await updateAndGetVisitorCount(redisClient);
 
     const cachedResult = await redisClient.get(CACHE_KEY);
