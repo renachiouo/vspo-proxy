@@ -20,7 +20,16 @@ const batchArray = (arr, size) => Array.from({ length: Math.ceil(arr.length / si
 // --- 新增的伺服器端計數器函式 ---
 async function updateAndGetVisitorCount(redisClient) {
     try {
-        const todayStr = new Date().toLocaleDateString('en-CA');
+        // --- 這是關鍵的修正：計算台灣時區 (UTC+8) 的日期 ---
+        const now = new Date();
+        // 使用 Intl.DateTimeFormat 來確保我們得到的是台灣時區的日期字串
+        const todayStr = new Intl.DateTimeFormat('en-CA', {
+            timeZone: 'Asia/Taipei',
+            year: 'numeric',
+            month: '2-digit',
+            day: '2-digit'
+        }).format(now);
+
         const todayKey = `visits:today:${todayStr}`;
 
         // 使用 INCR 指令來原子性地增加計數，並獲取最新值
