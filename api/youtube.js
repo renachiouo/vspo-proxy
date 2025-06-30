@@ -1,4 +1,4 @@
-// /api/youtube.js (Final Architecture with Channel Avatars)
+// /api/youtube.js (Final Architecture with Expanded Blacklist)
 
 import { createClient } from 'redis';
 
@@ -6,9 +6,15 @@ const CACHE_KEY = 'vspo-app-final-data-with-timestamp';
 const CACHE_TTL_SECONDS = 1800; // 30 分鐘
 
 const SEARCH_KEYWORDS = ["VSPO中文", "VSPO中文精華", "VSPO精華", "VSPO中文剪輯", "VSPO剪輯"];
-const OFFICIAL_CHANNEL_BLACKLIST = [
-  'UCuI5_lA2o-arAIKukGvIEcQ', 'UCGCb_d_H-A7A2y52M4S3W-w', 'UCyLGc23ry_p-zEAS_p_2qlg',
+
+// 頻道黑名單
+const CHANNEL_BLACKLIST = [
+  'UCuI5_lA2o-arAIKukGvIEcQ', 
+  'UCWnhOhucHHQubSAkOi8xpew', 
+  'UCOnlV05C1t4d-x2NP-kgyzw', 
+  'UCjOaP5dTW_0s1Ui11jm4Rzg', 
 ];
+
 const apiKeys = [
     process.env.YOUTUBE_API_KEY_1,
     process.env.YOUTUBE_API_KEY_2,
@@ -33,6 +39,7 @@ async function updateAndGetVisitorCount(redisClient) {
         return { totalVisits: 0, todayVisits: 0 };
     }
 }
+
 
 export default async function handler(request, response) {
   const redisConnectionString = process.env.REDIS_URL;
@@ -92,11 +99,14 @@ export default async function handler(request, response) {
     const searchResults = await Promise.all(searchPromises);
 
     const videoSnippets = new Map();
-    searchResults.forEach(result => result.items?.forEach(item => {
-        if (item.id.videoId && !videoSnippets.has(item.id.videoId) && !OFFICIAL_CHANNEL_BLACKLIST.includes(item.snippet.channelId)) {
+    for (const result of searchResults) {
+      result.items?.forEach(item => {
+        // *** 使用擴充後的黑名單進行過濾 ***
+        if (item.id.videoId && !videoSnippets.has(item.id.videoId) && !CHANNEL_BLACKLIST.includes(item.snippet.channelId)) {
           videoSnippets.set(item.id.videoId, item.snippet);
         }
-    }));
+      });
+    }
     
     let finalVideos = [];
     const videoIds = Array.from(videoSnippets.keys());
@@ -110,23 +120,20 @@ export default async function handler(request, response) {
 
         const channelIds = [...new Set(Array.from(videoSnippets.values()).map(s => s.channelId))];
         const channelDetailBatches = batchArray(channelIds, 50);
-        // *** 這是關鍵的修正：同時請求 snippet (包含頭像) 和 statistics ***
         const channelDetailPromises = channelDetailBatches.map(id => fetchYouTube('channels', { part: 'statistics,snippet', id: id.join(',') }));
         const channelDetailResults = await Promise.all(channelDetailPromises);
         
-        const channelDetailsMap = new Map();
-        channelDetailResults.forEach(result => result.items?.forEach(item => channelDetailsMap.set(item.id, item)));
+        const channelStatsMap = new Map();
+        channelDetailResults.forEach(result => result.items?.forEach(item => channelStatsMap.set(item.id, item)));
 
         finalVideos = videoIds.map(id => {
           const detail = videoDetailsMap.get(id);
           if (!detail) return null;
-          const channelDetails = channelDetailsMap.get(detail.snippet.channelId);
+          const channelDetails = channelStatsMap.get(detail.snippet.channelId);
           return {
             id, title: detail.snippet.title,
             thumbnail: detail.snippet.thumbnails.high?.url || detail.snippet.thumbnails.default?.url,
-            channelId: detail.snippet.channelId, 
-            channelTitle: detail.snippet.channelTitle,
-            // *** 這是關鍵的新增資料 ***
+            channelId: detail.snippet.channelId, channelTitle: detail.snippet.channelTitle,
             channelAvatarUrl: channelDetails?.snippet?.thumbnails?.default?.url || '',
             publishedAt: detail.snippet.publishedAt,
             viewCount: detail.statistics ? parseInt(detail.statistics.viewCount, 10) : 0,
