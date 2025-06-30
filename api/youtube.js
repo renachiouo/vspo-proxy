@@ -9,6 +9,7 @@ const SEARCH_KEYWORDS = ["VSPO中文", "VSPO中文精華", "VSPO精華", "VSPO�
 const CHANNEL_BLACKLIST = [
   'UCuI5_lA2o-arAIKukGvIEcQ', 'UCWnhOhucHHQubSAkOi8xpew', 
   'UCOnlV05C1t4d-x2NP-kgyzw', 'UCjOaP5dTW_0s1Ui11jm4Rzg', 
+  'UCnERutXxnHTLqckbGCUwtAg', 
 ];
 const apiKeys = [
     process.env.YOUTUBE_API_KEY_1,
@@ -121,6 +122,7 @@ export default async function handler(request, response) {
     await redisClient.connect();
     visitorCount = await updateAndGetVisitorCount(redisClient);
 
+    // *** 這是關鍵的修正：檢查是否為強制更新請求 ***
     if (!forceRefresh) {
         const cachedResult = await redisClient.get(CACHE_KEY);
         if (cachedResult) {
@@ -135,6 +137,7 @@ export default async function handler(request, response) {
           return response.status(200).json(cachedData);
         }
     } else {
+        // 如果是強制更新，先驗證密碼
         if (!adminPassword || providedPassword !== adminPassword) {
             await redisClient.quit();
             response.setHeader('Access-Control-Allow-Origin', '*');
