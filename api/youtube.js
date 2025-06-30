@@ -1,4 +1,4 @@
-// /api/youtube.js (Final Architecture with Expanded Blacklist)
+// /api/youtube.js (Admin Force Refresh)
 
 import { createClient } from 'redis';
 
@@ -6,15 +6,10 @@ const CACHE_KEY = 'vspo-app-final-data-with-timestamp';
 const CACHE_TTL_SECONDS = 1800; // 30 分鐘
 
 const SEARCH_KEYWORDS = ["VSPO中文", "VSPO中文精華", "VSPO精華", "VSPO中文剪輯", "VSPO剪輯"];
-
-// 頻道黑名單
 const CHANNEL_BLACKLIST = [
-  'UCuI5_lA2o-arAIKukGvIEcQ', 
-  'UCWnhOhucHHQubSAkOi8xpew', 
-  'UCOnlV05C1t4d-x2NP-kgyzw', 
-  'UCjOaP5dTW_0s1Ui11jm4Rzg', 
+  'UCuI5_lA2o-arAIKukGvIEcQ', 'UCWnhOhucHHQubSAkOi8xpew', 
+  'UCOnlV05C1t4d-x2NP-kgyzw', 'UCjOaP5dTW_0s1Ui11jm4Rzg', 
 ];
-
 const apiKeys = [
     process.env.YOUTUBE_API_KEY_1,
     process.env.YOUTUBE_API_KEY_2,
@@ -23,7 +18,6 @@ const apiKeys = [
 
 const batchArray = (arr, size) => Array.from({ length: Math.ceil(arr.length / size) }, (v, i) => arr.slice(i * size, i * size + size));
 
-// 伺服器端計數器函式 (以台灣時間為準)
 async function updateAndGetVisitorCount(redisClient) {
     try {
         const todayStr = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Taipei' }).format(new Date());
@@ -40,42 +34,7 @@ async function updateAndGetVisitorCount(redisClient) {
     }
 }
 
-
-export default async function handler(request, response) {
-  const redisConnectionString = process.env.REDIS_URL;
-  if (!redisConnectionString) {
-    response.setHeader('Access-Control-Allow-Origin', '*');
-    return response.status(500).json({ error: 'Redis store is not configured.' });
-  }
-
-  let redisClient;
-  let visitorCount = { totalVisits: 0, todayVisits: 0 };
-
-  try {
-    redisClient = createClient({ url: redisConnectionString });
-    await redisClient.connect();
-    visitorCount = await updateAndGetVisitorCount(redisClient);
-
-    const cachedResult = await redisClient.get(CACHE_KEY);
-    if (cachedResult) {
-      console.log('Cache hit! Serving final data from Redis.');
-      const cachedData = JSON.parse(cachedResult);
-      cachedData.totalVisits = visitorCount.totalVisits;
-      cachedData.todayVisits = visitorCount.todayVisits;
-
-      response.setHeader('Access-Control-Allow-Origin', '*');
-      response.setHeader('X-Cache-Status', 'HIT');
-      await redisClient.quit();
-      return response.status(200).json(cachedData);
-    }
-  } catch (error) {
-    console.error('Error with Redis connection or cache read:', error);
-    if (redisClient?.isOpen) await redisClient.quit();
-  }
-
-  console.log('Cache miss. Performing full data fetch from YouTube API...');
-  
-  try {
+async function getFullYouTubeData() {
     const fetchYouTube = async (endpoint, params) => {
         for (const apiKey of apiKeys) {
             const url = `https://www.googleapis.com/youtube/v3/${endpoint}?${new URLSearchParams(params)}&key=${apiKey}`;
@@ -99,14 +58,11 @@ export default async function handler(request, response) {
     const searchResults = await Promise.all(searchPromises);
 
     const videoSnippets = new Map();
-    for (const result of searchResults) {
-      result.items?.forEach(item => {
-        // *** 使用擴充後的黑名單進行過濾 ***
+    searchResults.forEach(result => result.items?.forEach(item => {
         if (item.id.videoId && !videoSnippets.has(item.id.videoId) && !CHANNEL_BLACKLIST.includes(item.snippet.channelId)) {
           videoSnippets.set(item.id.videoId, item.snippet);
         }
-      });
-    }
+    }));
     
     let finalVideos = [];
     const videoIds = Array.from(videoSnippets.keys());
@@ -141,6 +97,61 @@ export default async function handler(request, response) {
           };
         }).filter(Boolean);
     }
+    return finalVideos;
+}
+
+
+export default async function handler(request, response) {
+  const redisConnectionString = process.env.REDIS_URL;
+  if (!redisConnectionString) {
+    response.setHeader('Access-Control-Allow-Origin', '*');
+    return response.status(500).json({ error: 'Redis store is not configured.' });
+  }
+
+  const { searchParams } = new URL(request.url, `http://${request.headers.host}`);
+  const forceRefresh = searchParams.get('force_refresh') === 'true';
+  const providedPassword = searchParams.get('password');
+  const adminPassword = process.env.ADMIN_PASSWORD;
+
+  let redisClient;
+  let visitorCount = { totalVisits: 0, todayVisits: 0 };
+
+  try {
+    redisClient = createClient({ url: redisConnectionString });
+    await redisClient.connect();
+    visitorCount = await updateAndGetVisitorCount(redisClient);
+
+    if (!forceRefresh) {
+        const cachedResult = await redisClient.get(CACHE_KEY);
+        if (cachedResult) {
+          console.log('Cache hit! Serving final data from Redis.');
+          const cachedData = JSON.parse(cachedResult);
+          cachedData.totalVisits = visitorCount.totalVisits;
+          cachedData.todayVisits = visitorCount.todayVisits;
+
+          response.setHeader('Access-Control-Allow-Origin', '*');
+          response.setHeader('X-Cache-Status', 'HIT');
+          await redisClient.quit();
+          return response.status(200).json(cachedData);
+        }
+    } else {
+        if (!adminPassword || providedPassword !== adminPassword) {
+            await redisClient.quit();
+            response.setHeader('Access-Control-Allow-Origin', '*');
+            return response.status(401).json({ error: 'Invalid password for force refresh.' });
+        }
+        console.log("Admin password verified. Forcing cache refresh.");
+    }
+
+  } catch (error) {
+    console.error('Error with Redis connection or cache read:', error);
+    if (redisClient?.isOpen) await redisClient.quit();
+  }
+
+  console.log('Cache miss or force refresh. Performing full data fetch from YouTube API...');
+  
+  try {
+    const finalVideos = await getFullYouTubeData();
     
     const dataToCache = {
         videos: finalVideos,
