@@ -7,7 +7,7 @@ const CACHE_TTL_SECONDS = 1800; // 30 分鐘
 
 // --- 白名單與關鍵字設定 ---
 const CHANNEL_WHITELIST = [
-  'UCho67roS3D13GlRwrSkdF_w', // Irin_translate
+  'UCWq4bX9UMV1ir3liKRIvCHg', // Irin_translate
 ];
 const SEARCH_KEYWORDS = ["VSPO中文", "VSPO中文精華", "VSPO精華", "VSPO中文剪輯", "VSPO剪輯"];
 const CHANNEL_BLACKLIST = [
