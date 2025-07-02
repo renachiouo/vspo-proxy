@@ -1,16 +1,20 @@
-// /api/youtube.js (Admin Force Refresh)
+// /api/youtube.js (Hybrid Mode: Whitelist + Keyword Search)
 
 import { createClient } from 'redis';
 
-const CACHE_KEY = 'vspo-app-final-data-with-timestamp';
+const CACHE_KEY = 'vspo-app-hybrid-data'; // 使用新的快取鑰匙以清除舊資料
 const CACHE_TTL_SECONDS = 1800; // 30 分鐘
 
+// --- 白名單與關鍵字設定 ---
+const CHANNEL_WHITELIST = [
+  'UCho67roS3D13GlRwrSkdF_w', // Irin_translate
+];
 const SEARCH_KEYWORDS = ["VSPO中文", "VSPO中文精華", "VSPO精華", "VSPO中文剪輯", "VSPO剪輯"];
 const CHANNEL_BLACKLIST = [
   'UCuI5_lA2o-arAIKukGvIEcQ', 'UCWnhOhucHHQubSAkOi8xpew', 
   'UCOnlV05C1t4d-x2NP-kgyzw', 'UCjOaP5dTW_0s1Ui11jm4Rzg', 
-  'UCnERutXxnHTLqckbGCUwtAg', 'UCGZK4lLrDYcOKxmWJIERmjQ', 
 ];
+
 const apiKeys = [
     process.env.YOUTUBE_API_KEY_1,
     process.env.YOUTUBE_API_KEY_2,
@@ -39,14 +43,18 @@ async function getFullYouTubeData() {
     const fetchYouTube = async (endpoint, params) => {
         for (const apiKey of apiKeys) {
             const url = `https://www.googleapis.com/youtube/v3/${endpoint}?${new URLSearchParams(params)}&key=${apiKey}`;
-            const res = await fetch(url);
-            const data = await res.json();
-            if (data.error && (data.error.message.toLowerCase().includes('quota') || data.error.reason === 'quotaExceeded')) {
-                console.warn(`Key starting with ${apiKey.substring(0,8)}... has quota error. Trying next.`);
-                continue;
+            try {
+                const res = await fetch(url);
+                const data = await res.json();
+                if (data.error && (data.error.message.toLowerCase().includes('quota') || data.error.reason === 'quotaExceeded')) {
+                    console.warn(`Key starting with ${apiKey.substring(0,8)}... has quota error. Trying next.`);
+                    continue;
+                }
+                if(data.error) throw new Error(data.error.message);
+                return data;
+            } catch(e) {
+                 console.error(`Error with key starting with ${apiKey.substring(0,8)}...`, e);
             }
-            if(data.error) throw new Error(data.error.message);
-            return data;
         }
         throw new Error('All API keys have failed.');
     };
@@ -55,19 +63,43 @@ async function getFullYouTubeData() {
     oneMonthAgo.setMonth(oneMonthAgo.getMonth() - 1);
     const publishedAfter = oneMonthAgo.toISOString();
     
+    // --- 混合模式資料抓取邏輯 ---
+    const videoSnippets = new Map();
+
+    // 任務 A: 白名單模式
+    console.log("Fetching from whitelist channels...");
+    if (CHANNEL_WHITELIST.length > 0) {
+        const channelsResponse = await fetchYouTube('channels', { part: 'contentDetails', id: CHANNEL_WHITELIST.join(',') });
+        const uploadPlaylistIds = channelsResponse.items?.map(item => item.contentDetails.relatedPlaylists.uploads).filter(Boolean) || [];
+        const playlistItemsPromises = uploadPlaylistIds.map(playlistId => fetchYouTube('playlistItems', { part: 'snippet', playlistId, maxResults: 50 }));
+        const playlistItemsResults = await Promise.all(playlistItemsPromises);
+        for (const result of playlistItemsResults) {
+            result.items?.forEach(item => {
+                if (new Date(item.snippet.publishedAt) > oneMonthAgo) {
+                    videoSnippets.set(item.snippet.resourceId.videoId, item.snippet);
+                }
+            });
+        }
+    }
+
+    // 任務 B: 關鍵字搜尋模式
+    console.log("Fetching from keyword search...");
     const searchPromises = SEARCH_KEYWORDS.map(q => fetchYouTube('search', { part: 'snippet', type: 'video', maxResults: 50, q, publishedAfter }));
     const searchResults = await Promise.all(searchPromises);
 
-    const videoSnippets = new Map();
-    searchResults.forEach(result => result.items?.forEach(item => {
+    for (const result of searchResults) {
+      result.items?.forEach(item => {
+        // 如果影片尚未被白名單加入，且頻道不在黑名單中，則加入
         if (item.id.videoId && !videoSnippets.has(item.id.videoId) && !CHANNEL_BLACKLIST.includes(item.snippet.channelId)) {
           videoSnippets.set(item.id.videoId, item.snippet);
         }
-    }));
+      });
+    }
     
     let finalVideos = [];
     const videoIds = Array.from(videoSnippets.keys());
     if (videoIds.length > 0) {
+        // --- 獲取詳細資訊 (邏輯不變) ---
         const videoDetailBatches = batchArray(videoIds, 50);
         const videoDetailPromises = videoDetailBatches.map(id => fetchYouTube('videos', { part: 'statistics,snippet', id: id.join(',') }));
         const videoDetailResults = await Promise.all(videoDetailPromises);
@@ -75,8 +107,8 @@ async function getFullYouTubeData() {
         const videoDetailsMap = new Map();
         videoDetailResults.forEach(result => result.items?.forEach(item => videoDetailsMap.set(item.id, item)));
 
-        const channelIds = [...new Set(Array.from(videoSnippets.values()).map(s => s.channelId))];
-        const channelDetailBatches = batchArray(channelIds, 50);
+        const allChannelIds = [...new Set(Array.from(videoSnippets.values()).map(s => s.channelId))];
+        const channelDetailBatches = batchArray(allChannelIds, 50);
         const channelDetailPromises = channelDetailBatches.map(id => fetchYouTube('channels', { part: 'statistics,snippet', id: id.join(',') }));
         const channelDetailResults = await Promise.all(channelDetailPromises);
         
@@ -90,7 +122,8 @@ async function getFullYouTubeData() {
           return {
             id, title: detail.snippet.title,
             thumbnail: detail.snippet.thumbnails.high?.url || detail.snippet.thumbnails.default?.url,
-            channelId: detail.snippet.channelId, channelTitle: detail.snippet.channelTitle,
+            channelId: detail.snippet.channelId, 
+            channelTitle: detail.snippet.channelTitle,
             channelAvatarUrl: channelDetails?.snippet?.thumbnails?.default?.url || '',
             publishedAt: detail.snippet.publishedAt,
             viewCount: detail.statistics ? parseInt(detail.statistics.viewCount, 10) : 0,
@@ -122,7 +155,6 @@ export default async function handler(request, response) {
     await redisClient.connect();
     visitorCount = await updateAndGetVisitorCount(redisClient);
 
-    // *** 這是關鍵的修正：檢查是否為強制更新請求 ***
     if (!forceRefresh) {
         const cachedResult = await redisClient.get(CACHE_KEY);
         if (cachedResult) {
@@ -137,7 +169,6 @@ export default async function handler(request, response) {
           return response.status(200).json(cachedData);
         }
     } else {
-        // 如果是強制更新，先驗證密碼
         if (!adminPassword || providedPassword !== adminPassword) {
             await redisClient.quit();
             response.setHeader('Access-Control-Allow-Origin', '*');
