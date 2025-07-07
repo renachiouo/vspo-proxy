@@ -1,4 +1,4 @@
-// /api/youtube.js (Hybrid Mode: Whitelist + Keyword Search)
+// /api/youtube.js (Hybrid Mode: Whitelist + Keyword Search with Re-validation)
 
 import { createClient } from 'redis';
 
@@ -7,7 +7,6 @@ const CACHE_TTL_SECONDS = 1800; // 30 分鐘
 
 // --- 白名單與關鍵字設定 ---
 const CHANNEL_WHITELIST = [
-  'UCFZ7BPHTgEo5FXuvC9GVY7Q', 
   'UCWq4bX9UMV1ir3liKRIvCHg', // Irin_translate
 ];
 const SEARCH_KEYWORDS = ["VSPO中文", "VSPO中文精華", "VSPO精華", "VSPO中文剪輯", "VSPO剪輯"];
@@ -24,6 +23,24 @@ const apiKeys = [
 ].filter(key => key);
 
 const batchArray = (arr, size) => Array.from({ length: Math.ceil(arr.length / size) }, (v, i) => arr.slice(i * size, i * size + size));
+
+/**
+ * 新增的驗證函式：檢查影片的最新詳細資料是否符合關鍵字
+ * @param {object} videoDetail - 從 videos.list API 獲取的單一影片詳細物件
+ * @param {string[]} keywords - 要檢查的關鍵字陣列
+ * @returns {boolean} - 如果符合條件則返回 true，否則返回 false
+ */
+const isVideoValid = (videoDetail, keywords) => {
+    if (!videoDetail || !videoDetail.snippet) {
+        return false;
+    }
+    const { title, description, tags } = videoDetail.snippet;
+    // 將標題、描述、標籤組合成一個大的字串進行搜尋
+    const searchText = `${title} ${description} ${tags ? tags.join(' ') : ''}`.toLowerCase();
+    // 只要有一個關鍵字被包含在內，就視為有效
+    return keywords.some(keyword => searchText.includes(keyword.toLowerCase()));
+};
+
 
 async function updateAndGetVisitorCount(redisClient) {
     try {
@@ -91,7 +108,6 @@ async function getFullYouTubeData() {
 
     for (const result of searchResults) {
       result.items?.forEach(item => {
-        // 如果影片尚未被白名單加入，且頻道不在黑名單中，則加入
         if (item.id.videoId && !videoSnippets.has(item.id.videoId) && !CHANNEL_BLACKLIST.includes(item.snippet.channelId)) {
           videoSnippets.set(item.id.videoId, item.snippet);
         }
@@ -100,8 +116,9 @@ async function getFullYouTubeData() {
     
     let finalVideos = [];
     const videoIds = Array.from(videoSnippets.keys());
+
     if (videoIds.length > 0) {
-        // --- 獲取詳細資訊 (邏輯不變) ---
+        // --- 獲取詳細資訊 ---
         const videoDetailBatches = batchArray(videoIds, 50);
         const videoDetailPromises = videoDetailBatches.map(id => fetchYouTube('videos', { part: 'statistics,snippet', id: id.join(',') }));
         const videoDetailResults = await Promise.all(videoDetailPromises);
@@ -109,6 +126,7 @@ async function getFullYouTubeData() {
         const videoDetailsMap = new Map();
         videoDetailResults.forEach(result => result.items?.forEach(item => videoDetailsMap.set(item.id, item)));
 
+        // --- 獲取頻道資訊 (邏輯不變) ---
         const allChannelIds = [...new Set(Array.from(videoSnippets.values()).map(s => s.channelId))];
         const channelDetailBatches = batchArray(allChannelIds, 50);
         const channelDetailPromises = channelDetailBatches.map(id => fetchYouTube('channels', { part: 'statistics,snippet', id: id.join(',') }));
@@ -117,21 +135,37 @@ async function getFullYouTubeData() {
         const channelStatsMap = new Map();
         channelDetailResults.forEach(result => result.items?.forEach(item => channelStatsMap.set(item.id, item)));
 
-        finalVideos = videoIds.map(id => {
-          const detail = videoDetailsMap.get(id);
-          if (!detail) return null;
-          const channelDetails = channelStatsMap.get(detail.snippet.channelId);
-          return {
-            id, title: detail.snippet.title,
-            thumbnail: detail.snippet.thumbnails.high?.url || detail.snippet.thumbnails.default?.url,
-            channelId: detail.snippet.channelId, 
-            channelTitle: detail.snippet.channelTitle,
-            channelAvatarUrl: channelDetails?.snippet?.thumbnails?.default?.url || '',
-            publishedAt: detail.snippet.publishedAt,
-            viewCount: detail.statistics ? parseInt(detail.statistics.viewCount, 10) : 0,
-            subscriberCount: channelDetails?.statistics ? parseInt(channelDetails.statistics.subscriberCount, 10) : 0,
-          };
-        }).filter(Boolean);
+        // --- **二次驗證與最終資料組合** ---
+        for (const [videoId, detail] of videoDetailsMap.entries()) {
+            if (!detail) continue;
+
+            // 驗證 1: 頻道不在黑名單中
+            const isChannelBlacklisted = CHANNEL_BLACKLIST.includes(detail.snippet.channelId);
+            if (isChannelBlacklisted) {
+                continue; // 如果頻道在黑名單中，則跳過此影片
+            }
+            
+            // 驗證 2: 影片的最新資料符合關鍵字 (此為核心修改)
+            const isContentValid = isVideoValid(detail, SEARCH_KEYWORDS);
+            
+            // 如果影片來自白名單頻道，則無條件通過內容驗證
+            const isFromWhitelist = CHANNEL_WHITELIST.includes(detail.snippet.channelId);
+
+            if (isContentValid || isFromWhitelist) {
+                const channelDetails = channelStatsMap.get(detail.snippet.channelId);
+                finalVideos.push({
+                    id: videoId,
+                    title: detail.snippet.title,
+                    thumbnail: detail.snippet.thumbnails.high?.url || detail.snippet.thumbnails.default?.url,
+                    channelId: detail.snippet.channelId, 
+                    channelTitle: detail.snippet.channelTitle,
+                    channelAvatarUrl: channelDetails?.snippet?.thumbnails?.default?.url || '',
+                    publishedAt: detail.snippet.publishedAt,
+                    viewCount: detail.statistics ? parseInt(detail.statistics.viewCount, 10) : 0,
+                    subscriberCount: channelDetails?.statistics ? parseInt(channelDetails.statistics.subscriberCount, 10) : 0,
+                });
+            }
+        }
     }
     return finalVideos;
 }
