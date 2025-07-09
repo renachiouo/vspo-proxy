@@ -9,6 +9,7 @@ const CACHE_TTL_SECONDS = 1800; // 30 分鐘
 const CHANNEL_WHITELIST = [
   'UCFZ7BPHTgEo5FXuvC9GVY7Q', 
   'UCWq4bX9UMV1ir3liKRIvCHg', // Irin_translate
+  'UCbsHmeSh_NGyO8ymoYG02sw',
 ];
 const SEARCH_KEYWORDS = ["VSPO中文", "VSPO中文精華", "VSPO精華", "VSPO中文剪輯", "VSPO剪輯"];
 const CHANNEL_BLACKLIST = [
