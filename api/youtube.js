@@ -10,6 +10,7 @@ const CHANNEL_WHITELIST = [
   'UCFZ7BPHTgEo5FXuvC9GVY7Q', 
   'UCWq4bX9UMV1ir3liKRIvCHg', // Irin_translate
   'UCbsHmeSh_NGyO8ymoYG02sw',
+  'UCd3YtBLO0sGhQ2eTWs80bcg',
 ];
 const SEARCH_KEYWORDS = ["VSPO中文", "VSPO中文精華", "VSPO精華", "VSPO中文剪輯", "VSPO剪輯"];
 const CHANNEL_BLACKLIST = [
