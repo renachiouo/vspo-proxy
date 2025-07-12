@@ -189,7 +189,8 @@ async function updateAndStoreYouTubeData(redisClient) {
                 channelAvatarUrl: channelDetails?.snippet?.thumbnails?.default?.url || '',
                 publishedAt: detail.snippet.publishedAt,
                 viewCount: detail.statistics ? (detail.statistics.viewCount || 0) : 0,
-                subscriberCount: channelDetails?.statistics ? (detail.statistics.subscriberCount || 0) : 0,
+                // **修正**: 從 channelDetails 獲取訂閱者數量
+                subscriberCount: channelDetails?.statistics ? (channelDetails.statistics.subscriberCount || 0) : 0,
             };
             pipeline.hSet(`${VIDEO_HASH_PREFIX}${videoId}`, videoData);
         }
