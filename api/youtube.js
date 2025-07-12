@@ -76,39 +76,134 @@ async function getVideosFromDB(redisClient) {
     return videos;
 }
 
+const fetchYouTube = async (endpoint, params) => {
+    for (const apiKey of apiKeys) {
+        const url = `https://www.googleapis.com/youtube/v3/${endpoint}?${new URLSearchParams(params)}&key=${apiKey}`;
+        try {
+            const res = await fetch(url);
+            const data = await res.json();
+            if (data.error && (data.error.message.toLowerCase().includes('quota') || data.error.reason === 'quotaExceeded')) {
+                console.warn(`金鑰 ${apiKey.substring(0,8)}... 配額錯誤，嘗試下一個。`);
+                continue;
+            }
+            if(data.error) throw new Error(data.error.message);
+            return data;
+        } catch(e) {
+             console.error(`金鑰 ${apiKey.substring(0,8)}... 發生錯誤`, e);
+        }
+    }
+    throw new Error('所有 API 金鑰都已失效。');
+};
+
+async function processAndStoreVideos(videoIds, redisClient) {
+    if (videoIds.length === 0) {
+        console.log('沒有需要處理的影片。');
+        return 0;
+    }
+    console.log(`準備處理總共 ${videoIds.length} 部影片的資訊...`);
+
+    const videoDetailBatches = batchArray(videoIds, 50);
+    const videoDetailPromises = videoDetailBatches.map(id => fetchYouTube('videos', { part: 'statistics,snippet', id: id.join(',') }));
+    const videoDetailResults = await Promise.all(videoDetailPromises);
+    
+    const videoDetailsMap = new Map();
+    videoDetailResults.forEach(result => result.items?.forEach(item => videoDetailsMap.set(item.id, item)));
+
+    const allChannelIds = [...new Set(Array.from(videoDetailsMap.values()).map(d => d.snippet.channelId))];
+    const channelDetailBatches = batchArray(allChannelIds, 50);
+    const channelDetailPromises = channelDetailBatches.map(id => fetchYouTube('channels', { part: 'statistics,snippet', id: id.join(',') }));
+    const channelDetailResults = await Promise.all(channelDetailPromises);
+    
+    const channelStatsMap = new Map();
+    channelDetailResults.forEach(result => result.items?.forEach(item => channelStatsMap.set(item.id, item)));
+    
+    const validVideoIds = new Set();
+    const oneMonthAgo = new Date();
+    oneMonthAgo.setMonth(oneMonthAgo.getMonth() - 1);
+    
+    for (const videoId of videoIds) {
+        const detail = videoDetailsMap.get(videoId);
+        if (!detail) continue;
+
+        const isChannelBlacklisted = CHANNEL_BLACKLIST.includes(detail.snippet.channelId);
+        const isExpired = new Date(detail.snippet.publishedAt) < oneMonthAgo;
+        const isContentValid = isVideoValid(detail, SEARCH_KEYWORDS);
+        const isFromWhitelist = CHANNEL_WHITELIST.includes(detail.snippet.channelId);
+
+        if (!isChannelBlacklisted && !isExpired && (isContentValid || isFromWhitelist)) {
+            validVideoIds.add(videoId);
+            const channelDetails = channelStatsMap.get(detail.snippet.channelId);
+            const videoData = {
+                id: videoId,
+                title: detail.snippet.title,
+                thumbnail: detail.snippet.thumbnails.high?.url || detail.snippet.thumbnails.default?.url,
+                channelId: detail.snippet.channelId, 
+                channelTitle: detail.snippet.channelTitle,
+                channelAvatarUrl: channelDetails?.snippet?.thumbnails?.default?.url || '',
+                publishedAt: detail.snippet.publishedAt,
+                viewCount: detail.statistics ? (detail.statistics.viewCount || 0) : 0,
+                subscriberCount: channelDetails?.statistics ? (channelDetails.statistics.subscriberCount || 0) : 0,
+            };
+            await redisClient.hSet(`${VIDEO_HASH_PREFIX}${videoId}`, videoData);
+        }
+    }
+    return validVideoIds;
+}
+
 /**
- * 主要的資料更新與儲存程序。
- * 每次都會刷新所有庫存影片的資訊。
- * @param {object} redisClient - 已連線的 Redis 客戶端。
+ * 新增：深度回填函式
+ */
+async function deepSearchAndStoreData(redisClient) {
+    console.log('開始執行深度回填程序...');
+    const allFoundIds = new Set();
+    const today = new Date();
+    
+    for (let i = 0; i < 30; i++) {
+        const targetDate = new Date(today);
+        targetDate.setDate(today.getDate() - i);
+
+        const publishedAfter = new Date(targetDate.setHours(0, 0, 0, 0)).toISOString();
+        const publishedBefore = new Date(targetDate.setHours(23, 59, 59, 999)).toISOString();
+        
+        console.log(`正在深度搜尋 ${targetDate.toLocaleDateString()} 的影片...`);
+
+        const searchPromises = SEARCH_KEYWORDS.map(q => fetchYouTube('search', { part: 'snippet', type: 'video', maxResults: 50, q, publishedAfter, publishedBefore }));
+        const searchResults = await Promise.all(searchPromises);
+        
+        let dailyFoundCount = 0;
+        for (const result of searchResults) {
+            result.items?.forEach(item => {
+                if (item.id.videoId && !CHANNEL_BLACKLIST.includes(item.snippet.channelId)) {
+                    allFoundIds.add(item.id.videoId);
+                    dailyFoundCount++;
+                }
+            });
+        }
+        console.log(` -> 當日找到 ${dailyFoundCount} 個候選影片。`);
+    }
+
+    console.log(`深度回填共找到 ${allFoundIds.size} 個不重複的影片ID，開始處理...`);
+    const validVideoIds = await processAndStoreVideos([...allFoundIds], redisClient);
+    
+    // 將深度回填的結果直接設為新的影片總名單
+    if (validVideoIds.size > 0) {
+        await redisClient.del(VIDEOS_SET_KEY);
+        await redisClient.sAdd(VIDEOS_SET_KEY, [...validVideoIds]);
+    }
+    console.log(`深度回填完成，資料庫現有 ${validVideoIds.size} 部有效影片。`);
+}
+
+
+/**
+ * 標準更新函式
  */
 async function updateAndStoreYouTubeData(redisClient) {
-    console.log('開始執行 YouTube 資料庫完整更新程序...');
+    console.log('開始執行標準更新程序...');
     
-    // --- 階段一：獲取所有需要處理的影片 ID (新發現的 + 資料庫中已有的) ---
-    const fetchYouTube = async (endpoint, params) => {
-        for (const apiKey of apiKeys) {
-            const url = `https://www.googleapis.com/youtube/v3/${endpoint}?${new URLSearchParams(params)}&key=${apiKey}`;
-            try {
-                const res = await fetch(url);
-                const data = await res.json();
-                if (data.error && (data.error.message.toLowerCase().includes('quota') || data.error.reason === 'quotaExceeded')) {
-                    console.warn(`金鑰 ${apiKey.substring(0,8)}... 配額錯誤，嘗試下一個。`);
-                    continue;
-                }
-                if(data.error) throw new Error(data.error.message);
-                return data;
-            } catch(e) {
-                 console.error(`金鑰 ${apiKey.substring(0,8)}... 發生錯誤`, e);
-            }
-        }
-        throw new Error('所有 API 金鑰都已失效。');
-    };
-
     const oneMonthAgo = new Date();
     oneMonthAgo.setMonth(oneMonthAgo.getMonth() - 1);
     const publishedAfter = oneMonthAgo.toISOString();
     
-    // 抓取新的候選影片
     const newVideoCandidates = new Set();
     if (CHANNEL_WHITELIST.length > 0) {
         const channelsResponse = await fetchYouTube('channels', { part: 'contentDetails', id: CHANNEL_WHITELIST.join(',') });
@@ -134,91 +229,25 @@ async function updateAndStoreYouTubeData(redisClient) {
       });
     }
 
-    // 獲取資料庫中已有的影片
     const existingVideoIds = await redisClient.sMembers(VIDEOS_SET_KEY);
-    
-    // 合併成一個不重複的「主更新列表」
     const masterVideoIdList = [...new Set([...newVideoCandidates, ...existingVideoIds])];
     
-    if (masterVideoIdList.length === 0) {
-        console.log('資料庫與新搜尋結果中均無影片，更新程序結束。');
-        return;
-    }
-    console.log(`準備更新總共 ${masterVideoIdList.length} 部影片的資訊...`);
-
-    // --- 階段二：獲取「主更新列表」中所有影片的最新詳細資訊 ---
-    const videoDetailBatches = batchArray(masterVideoIdList, 50);
-    const videoDetailPromises = videoDetailBatches.map(id => fetchYouTube('videos', { part: 'statistics,snippet', id: id.join(',') }));
-    const videoDetailResults = await Promise.all(videoDetailPromises);
+    const validVideoIds = await processAndStoreVideos(masterVideoIdList, redisClient);
     
-    const videoDetailsMap = new Map();
-    videoDetailResults.forEach(result => result.items?.forEach(item => videoDetailsMap.set(item.id, item)));
-
-    const allChannelIds = [...new Set(Array.from(videoDetailsMap.values()).map(d => d.snippet.channelId))];
-    const channelDetailBatches = batchArray(allChannelIds, 50);
-    const channelDetailPromises = channelDetailBatches.map(id => fetchYouTube('channels', { part: 'statistics,snippet', id: id.join(',') }));
-    const channelDetailResults = await Promise.all(channelDetailPromises);
-    
-    const channelStatsMap = new Map();
-    channelDetailResults.forEach(result => result.items?.forEach(item => channelStatsMap.set(item.id, item)));
-
-    // --- 階段三：根據最新資訊，驗證並更新/刪除 Redis 資料庫 ---
-    const pipeline = redisClient.multi();
-    const validVideoIdsAfterCheck = new Set();
-
-    for (const videoId of masterVideoIdList) {
-        const detail = videoDetailsMap.get(videoId);
-        if (!detail) continue; // 如果影片已刪除或變為私享，API 會找不到，直接跳過
-
-        const isChannelBlacklisted = CHANNEL_BLACKLIST.includes(detail.snippet.channelId);
-        const isExpired = new Date(detail.snippet.publishedAt) < oneMonthAgo;
-        const isContentValid = isVideoValid(detail, SEARCH_KEYWORDS);
-        const isFromWhitelist = CHANNEL_WHITELIST.includes(detail.snippet.channelId);
-
-        // 核心驗證邏輯
-        if (!isChannelBlacklisted && !isExpired && (isContentValid || isFromWhitelist)) {
-            // 如果影片有效，則加入待辦清單並準備更新其資料
-            validVideoIdsAfterCheck.add(videoId);
-            const channelDetails = channelStatsMap.get(detail.snippet.channelId);
-            const videoData = {
-                id: videoId,
-                title: detail.snippet.title,
-                thumbnail: detail.snippet.thumbnails.high?.url || detail.snippet.thumbnails.default?.url,
-                channelId: detail.snippet.channelId, 
-                channelTitle: detail.snippet.channelTitle,
-                channelAvatarUrl: channelDetails?.snippet?.thumbnails?.default?.url || '',
-                publishedAt: detail.snippet.publishedAt,
-                viewCount: detail.statistics ? (detail.statistics.viewCount || 0) : 0,
-                // **修正**: 從 channelDetails 獲取訂閱者數量
-                subscriberCount: channelDetails?.statistics ? (channelDetails.statistics.subscriberCount || 0) : 0,
-            };
-            pipeline.hSet(`${VIDEO_HASH_PREFIX}${videoId}`, videoData);
-        }
-    }
-    
-    // 計算需要刪除的影片 (存在於舊資料庫，但在此次驗證後失效的影片)
-    const idsToDelete = existingVideoIds.filter(id => !validVideoIdsAfterCheck.has(id));
+    const idsToDelete = existingVideoIds.filter(id => !validVideoIds.has(id));
     if (idsToDelete.length > 0) {
         console.log(`準備刪除 ${idsToDelete.length} 部失效/過期影片...`);
+        const pipeline = redisClient.multi();
         pipeline.sRem(VIDEOS_SET_KEY, idsToDelete);
         idsToDelete.forEach(id => pipeline.del(`${VIDEO_HASH_PREFIX}${id}`));
-    }
-
-    // 將所有驗證通過的影片 ID 覆蓋回總名單 Set 中
-    if (validVideoIdsAfterCheck.size > 0) {
-        pipeline.del(VIDEOS_SET_KEY); // 先刪除舊的 Set
-        pipeline.sAdd(VIDEOS_SET_KEY, [...validVideoIdsAfterCheck]); // 再加入所有有效的 ID
-    } else {
-        // 如果沒有任何有效影片，確保總名單是空的
-        pipeline.del(VIDEOS_SET_KEY);
+        await pipeline.exec();
     }
     
-    await pipeline.exec();
-    console.log(`資料庫更新完成。有效影片總數: ${validVideoIdsAfterCheck.size}。`);
+    console.log(`標準更新完成，資料庫現有 ${validVideoIds.size} 部有效影片。`);
 }
 
 
-// --- 主要的 Handler 函式 (維持不變) ---
+// --- 主要的 Handler 函式 ---
 export default async function handler(request, response) {
   const redisConnectionString = process.env.REDIS_URL;
   if (!redisConnectionString) {
@@ -228,6 +257,7 @@ export default async function handler(request, response) {
 
   const { searchParams } = new URL(request.url, `http://${request.headers.host}`);
   const forceRefresh = searchParams.get('force_refresh') === 'true';
+  const mode = searchParams.get('mode'); // 'deep' or null
   const providedPassword = searchParams.get('password');
   const adminPassword = process.env.ADMIN_PASSWORD;
 
@@ -247,13 +277,20 @@ export default async function handler(request, response) {
             response.setHeader('Access-Control-Allow-Origin', '*');
             return response.status(401).json({ error: '無效的管理員密碼。' });
         }
-        console.log("管理員密碼驗證成功，強制更新資料。");
-        await updateAndStoreYouTubeData(redisClient);
+        
+        if (mode === 'deep') {
+            console.log("管理員密碼驗證成功，強制執行深度回填。");
+            await deepSearchAndStoreData(redisClient);
+        } else {
+            console.log("管理員密碼驗證成功，強制執行標準更新。");
+            await updateAndStoreYouTubeData(redisClient);
+        }
         await redisClient.set(META_LAST_UPDATED_KEY, Date.now());
+
     } else if (needsUpdate) {
-        const lockAcquired = await redisClient.set(UPDATE_LOCK_KEY, 'locked', { NX: true, EX: 120 }); // 鎖延長至 120 秒
+        const lockAcquired = await redisClient.set(UPDATE_LOCK_KEY, 'locked', { NX: true, EX: 300 }); // 鎖延長至 300 秒以應對深度搜尋
         if (lockAcquired) {
-            console.log('需要更新且已獲取鎖，開始更新資料。');
+            console.log('需要更新且已獲取鎖，開始標準更新資料。');
             try {
                 await updateAndStoreYouTubeData(redisClient);
                 await redisClient.set(META_LAST_UPDATED_KEY, Date.now());
