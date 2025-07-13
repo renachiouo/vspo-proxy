@@ -101,7 +101,7 @@ const fetchYouTube = async (endpoint, params) => {
 async function processAndStoreVideos(videoIds, redisClient) {
     if (videoIds.length === 0) {
         console.log('沒有需要處理的影片。');
-        return new Set();
+        return { validVideoIds: new Set(), idsToDelete: [] };
     }
     console.log(`準備處理總共 ${videoIds.length} 部影片的資訊...`);
 
@@ -124,6 +124,8 @@ async function processAndStoreVideos(videoIds, redisClient) {
     const oneMonthAgo = new Date();
     oneMonthAgo.setMonth(oneMonthAgo.getMonth() - 1);
     
+    const pipeline = redisClient.multi();
+
     for (const videoId of videoIds) {
         const detail = videoDetailsMap.get(videoId);
         if (!detail) continue;
@@ -147,25 +149,28 @@ async function processAndStoreVideos(videoIds, redisClient) {
                 viewCount: detail.statistics ? (detail.statistics.viewCount || 0) : 0,
                 subscriberCount: channelDetails?.statistics ? (channelDetails.subscriberCount || 0) : 0,
             };
-            await redisClient.hSet(`${VIDEO_HASH_PREFIX}${videoId}`, videoData);
+            pipeline.hSet(`${VIDEO_HASH_PREFIX}${videoId}`, videoData);
         }
     }
-    return validVideoIds;
+    await pipeline.exec();
+    
+    const allIdsInDB = await redisClient.sMembers(VIDEOS_SET_KEY);
+    const idsToDelete = allIdsInDB.filter(id => !validVideoIds.has(id));
+
+    return { validVideoIds, idsToDelete };
 }
 
 /**
- * 新增：指定日期搜尋函式 (已加入 GMT+8 時區校正)
+ * 新增：指定日期搜尋函式
  */
 async function searchSingleDayAndStoreData(dateString, redisClient) {
     console.log(`開始執行指定日期搜尋程序：${dateString} (GMT+8)`);
     
-    // 解析日期字串 YYYYMMDD
     const year = dateString.substring(0, 4);
     const month = dateString.substring(4, 6);
     const day = dateString.substring(6, 8);
     const dateStr = `${year}-${month}-${day}`;
 
-    // 建立代表 GMT+8 時區的起始與結束時間
     const startOfDayGMT8 = new Date(`${dateStr}T00:00:00+08:00`);
     const endOfDayGMT8 = new Date(`${dateStr}T23:59:59+08:00`);
 
@@ -173,7 +178,6 @@ async function searchSingleDayAndStoreData(dateString, redisClient) {
         throw new Error(`無效的日期格式: ${dateString}`);
     }
 
-    // 轉換為 YouTube API 需要的 UTC ISO 格式
     const publishedAfter = startOfDayGMT8.toISOString();
     const publishedBefore = endOfDayGMT8.toISOString();
 
@@ -195,9 +199,8 @@ async function searchSingleDayAndStoreData(dateString, redisClient) {
     }
 
     console.log(`在 ${dateString} (GMT+8) 找到 ${foundIds.size} 個候選影片，開始處理...`);
-    const validVideoIds = await processAndStoreVideos([...foundIds], redisClient);
+    const { validVideoIds } = await processAndStoreVideos([...foundIds], redisClient);
     
-    // 將新找到的有效影片加入總名單中
     if (validVideoIds.size > 0) {
         await redisClient.sAdd(VIDEOS_SET_KEY, [...validVideoIds]);
     }
@@ -246,9 +249,8 @@ async function deepSearchAndStoreData(redisClient) {
     }
 
     console.log(`深度回填共找到 ${allFoundIds.size} 個不重複的影片ID，開始處理...`);
-    const validVideoIds = await processAndStoreVideos([...allFoundIds], redisClient);
+    const { validVideoIds } = await processAndStoreVideos([...allFoundIds], redisClient);
     
-    // 將深度回填的結果直接設為新的影片總名單
     if (validVideoIds.size > 0) {
         await redisClient.del(VIDEOS_SET_KEY);
         await redisClient.sAdd(VIDEOS_SET_KEY, [...validVideoIds]);
@@ -295,18 +297,25 @@ async function updateAndStoreYouTubeData(redisClient) {
     const existingVideoIds = await redisClient.sMembers(VIDEOS_SET_KEY);
     const masterVideoIdList = [...new Set([...newVideoCandidates, ...existingVideoIds])];
     
-    const validVideoIds = await processAndStoreVideos(masterVideoIdList, redisClient);
+    const { validVideoIds, idsToDelete } = await processAndStoreVideos(masterVideoIdList, redisClient);
     
-    const idsToDelete = existingVideoIds.filter(id => !validVideoIds.has(id));
+    const pipeline = redisClient.multi();
+
     if (idsToDelete.length > 0) {
         console.log(`準備刪除 ${idsToDelete.length} 部失效/過期影片...`);
-        const pipeline = redisClient.multi();
         pipeline.sRem(VIDEOS_SET_KEY, idsToDelete);
         idsToDelete.forEach(id => pipeline.del(`${VIDEO_HASH_PREFIX}${id}`));
-        await pipeline.exec();
     }
     
-    console.log(`標準更新完成，資料庫現有 ${validVideoIds.size} 部有效影片。`);
+    // **修正**: 確保新發現的有效影片 ID 被加入到總名單中
+    if (validVideoIds.size > 0) {
+        // 使用 SADD 將新 ID 加入 Set，Redis 會自動處理重複問題
+        pipeline.sAdd(VIDEOS_SET_KEY, [...validVideoIds]);
+    }
+
+    await pipeline.exec();
+    
+    console.log(`標準更新完成。`);
 }
 
 
