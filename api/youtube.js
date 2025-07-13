@@ -147,7 +147,7 @@ async function processAndStoreVideos(videoIds, redisClient) {
                 channelAvatarUrl: channelDetails?.snippet?.thumbnails?.default?.url || '',
                 publishedAt: detail.snippet.publishedAt,
                 viewCount: detail.statistics ? (detail.statistics.viewCount || 0) : 0,
-                subscriberCount: channelDetails?.statistics ? (channelDetails.subscriberCount || 0) : 0,
+                subscriberCount: channelDetails?.statistics ? (channelDetails.statistics.subscriberCount || 0) : 0,
             };
             pipeline.hSet(`${VIDEO_HASH_PREFIX}${videoId}`, videoData);
         }
@@ -307,9 +307,7 @@ async function updateAndStoreYouTubeData(redisClient) {
         idsToDelete.forEach(id => pipeline.del(`${VIDEO_HASH_PREFIX}${id}`));
     }
     
-    // **修正**: 確保新發現的有效影片 ID 被加入到總名單中
     if (validVideoIds.size > 0) {
-        // 使用 SADD 將新 ID 加入 Set，Redis 會自動處理重複問題
         pipeline.sAdd(VIDEOS_SET_KEY, [...validVideoIds]);
     }
 
