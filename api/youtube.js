@@ -101,7 +101,7 @@ const fetchYouTube = async (endpoint, params) => {
 async function processAndStoreVideos(videoIds, redisClient) {
     if (videoIds.length === 0) {
         console.log('沒有需要處理的影片。');
-        return 0;
+        return new Set();
     }
     console.log(`準備處理總共 ${videoIds.length} 部影片的資訊...`);
 
@@ -145,7 +145,7 @@ async function processAndStoreVideos(videoIds, redisClient) {
                 channelAvatarUrl: channelDetails?.snippet?.thumbnails?.default?.url || '',
                 publishedAt: detail.snippet.publishedAt,
                 viewCount: detail.statistics ? (detail.statistics.viewCount || 0) : 0,
-                subscriberCount: channelDetails?.statistics ? (channelDetails.statistics.subscriberCount || 0) : 0,
+                subscriberCount: channelDetails?.statistics ? (channelDetails.subscriberCount || 0) : 0,
             };
             await redisClient.hSet(`${VIDEO_HASH_PREFIX}${videoId}`, videoData);
         }
@@ -154,7 +154,59 @@ async function processAndStoreVideos(videoIds, redisClient) {
 }
 
 /**
- * 新增：深度回填函式
+ * 新增：指定日期搜尋函式 (已加入 GMT+8 時區校正)
+ */
+async function searchSingleDayAndStoreData(dateString, redisClient) {
+    console.log(`開始執行指定日期搜尋程序：${dateString} (GMT+8)`);
+    
+    // 解析日期字串 YYYYMMDD
+    const year = dateString.substring(0, 4);
+    const month = dateString.substring(4, 6);
+    const day = dateString.substring(6, 8);
+    const dateStr = `${year}-${month}-${day}`;
+
+    // 建立代表 GMT+8 時區的起始與結束時間
+    const startOfDayGMT8 = new Date(`${dateStr}T00:00:00+08:00`);
+    const endOfDayGMT8 = new Date(`${dateStr}T23:59:59+08:00`);
+
+    if (isNaN(startOfDayGMT8.getTime())) {
+        throw new Error(`無效的日期格式: ${dateString}`);
+    }
+
+    // 轉換為 YouTube API 需要的 UTC ISO 格式
+    const publishedAfter = startOfDayGMT8.toISOString();
+    const publishedBefore = endOfDayGMT8.toISOString();
+
+    const searchPromises = SEARCH_KEYWORDS.map(q => fetchYouTube('search', { part: 'snippet', type: 'video', maxResults: 50, q, publishedAfter, publishedBefore }));
+    const searchResults = await Promise.all(searchPromises);
+    
+    const foundIds = new Set();
+    for (const result of searchResults) {
+        result.items?.forEach(item => {
+            if (item.id.videoId && !CHANNEL_BLACKLIST.includes(item.snippet.channelId)) {
+                foundIds.add(item.id.videoId);
+            }
+        });
+    }
+
+    if (foundIds.size === 0) {
+        console.log(`在 ${dateString} (GMT+8) 未找到任何新影片。`);
+        return;
+    }
+
+    console.log(`在 ${dateString} (GMT+8) 找到 ${foundIds.size} 個候選影片，開始處理...`);
+    const validVideoIds = await processAndStoreVideos([...foundIds], redisClient);
+    
+    // 將新找到的有效影片加入總名單中
+    if (validVideoIds.size > 0) {
+        await redisClient.sAdd(VIDEOS_SET_KEY, [...validVideoIds]);
+    }
+    console.log(`指定日期搜尋完成，已新增/更新 ${validVideoIds.size} 部影片。`);
+}
+
+
+/**
+ * 深度回填函式
  */
 async function deepSearchAndStoreData(redisClient) {
     console.log('開始執行深度回填程序...');
@@ -165,10 +217,18 @@ async function deepSearchAndStoreData(redisClient) {
         const targetDate = new Date(today);
         targetDate.setDate(today.getDate() - i);
 
-        const publishedAfter = new Date(targetDate.setHours(0, 0, 0, 0)).toISOString();
-        const publishedBefore = new Date(targetDate.setHours(23, 59, 59, 999)).toISOString();
+        const year = targetDate.getFullYear();
+        const month = String(targetDate.getMonth() + 1).padStart(2, '0');
+        const day = String(targetDate.getDate()).padStart(2, '0');
+        const dateStr = `${year}-${month}-${day}`;
+
+        const startOfDay = new Date(`${dateStr}T00:00:00+08:00`);
+        const endOfDay = new Date(`${dateStr}T23:59:59+08:00`);
+
+        const publishedAfter = startOfDay.toISOString();
+        const publishedBefore = endOfDay.toISOString();
         
-        console.log(`正在深度搜尋 ${targetDate.toLocaleDateString()} 的影片...`);
+        console.log(`正在深度搜尋 ${dateStr} (GMT+8) 的影片...`);
 
         const searchPromises = SEARCH_KEYWORDS.map(q => fetchYouTube('search', { part: 'snippet', type: 'video', maxResults: 50, q, publishedAfter, publishedBefore }));
         const searchResults = await Promise.all(searchPromises);
@@ -260,7 +320,7 @@ export default async function handler(request, response) {
 
   const { searchParams } = new URL(request.url, `http://${request.headers.host}`);
   const forceRefresh = searchParams.get('force_refresh') === 'true';
-  const mode = searchParams.get('mode'); // 'deep' or null
+  const mode = searchParams.get('mode'); // 'deep', a date string like '20250704', or null
   const providedPassword = searchParams.get('password');
   const adminPassword = process.env.ADMIN_PASSWORD;
 
@@ -284,6 +344,9 @@ export default async function handler(request, response) {
         if (mode === 'deep') {
             console.log("管理員密碼驗證成功，強制執行深度回填。");
             await deepSearchAndStoreData(redisClient);
+        } else if (mode && /^\d{8}$/.test(mode)) {
+            console.log(`管理員密碼驗證成功，強制執行指定日期搜尋：${mode}`);
+            await searchSingleDayAndStoreData(mode, redisClient);
         } else {
             console.log("管理員密碼驗證成功，強制執行標準更新。");
             await updateAndStoreYouTubeData(redisClient);
