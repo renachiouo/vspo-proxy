@@ -12,13 +12,14 @@ const UPDATE_INTERVAL_SECONDS = 1800; // 30 分鐘
 // --- YouTube API 設定 (維持不變) ---
 const CHANNEL_WHITELIST = [
   'UCFZ7BPHTgEo5FXuvC9GVY7Q', 
-  'UCWq4bX9UMV1ir3liKRIvCHg', // Irin_translate
+  'UCWq4bX9UMV1ir3liKRIvCHg', 
   'UCbsHmeSh_NGyO8ymoYG02sw',
   'UCd3YtBLO0sGhQ2eTWs80bcg',
   'UCGy_n5NeGfeVzravayHk65Q',
   'UColeV1H-x8MuVLSAdohTOVQ',
 ];
 const SEARCH_KEYWORDS = ["VSPO中文", "VSPO中文精華", "VSPO精華", "VSPO中文剪輯", "VSPO剪輯"];
+const KEYWORD_BLACKLIST = ["MMD"]; 
 const CHANNEL_BLACKLIST = [
   'UCuI5_lA2o-arAIKukGvIEcQ', 'UCWnhOhucHHQubSAkOi8xpew', 
   'UCOnlV05C1t4d-x2NP-kgyzw', 'UCjOaP5dTW_0s1Ui11jm4Rzg', 
@@ -40,6 +41,14 @@ const isVideoValid = (videoDetail, keywords) => {
     const { title, description, tags } = videoDetail.snippet;
     const searchText = `${title} ${description} ${tags ? tags.join(' ') : ''}`.toLowerCase();
     return keywords.some(keyword => searchText.includes(keyword.toLowerCase()));
+};
+
+// 新增：檢查是否包含黑名單關鍵字的函式
+const containsBlacklistedKeyword = (videoDetail, blacklist) => {
+    if (!videoDetail || !videoDetail.snippet) return false;
+    const { title, description, tags } = videoDetail.snippet;
+    const searchText = `${title} ${description} ${tags ? tags.join(' ') : ''}`.toLowerCase();
+    return blacklist.some(keyword => searchText.includes(keyword.toLowerCase()));
 };
 
 async function updateAndGetVisitorCount(redisClient) {
@@ -131,11 +140,12 @@ async function processAndStoreVideos(videoIds, redisClient) {
         if (!detail) continue;
 
         const isChannelBlacklisted = CHANNEL_BLACKLIST.includes(detail.snippet.channelId);
+        const isKeywordBlacklisted = containsBlacklistedKeyword(detail, KEYWORD_BLACKLIST); // 新增：檢查關鍵字黑名單
         const isExpired = new Date(detail.snippet.publishedAt) < oneMonthAgo;
         const isContentValid = isVideoValid(detail, SEARCH_KEYWORDS);
         const isFromWhitelist = CHANNEL_WHITELIST.includes(detail.snippet.channelId);
 
-        if (!isChannelBlacklisted && !isExpired && (isContentValid || isFromWhitelist)) {
+        if (!isChannelBlacklisted && !isKeywordBlacklisted && !isExpired && (isContentValid || isFromWhitelist)) {
             validVideoIds.add(videoId);
             const channelDetails = channelStatsMap.get(detail.snippet.channelId);
             const videoData = {
