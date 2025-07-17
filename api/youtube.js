@@ -49,15 +49,15 @@ const batchArray = (arr, size) => Array.from({ length: Math.ceil(arr.length / si
 
 const isVideoValid = (videoDetail, keywords) => {
     if (!videoDetail || !videoDetail.snippet) return false;
-    const { title, description, tags } = videoDetail.snippet;
-    const searchText = `${title} ${description} ${tags ? tags.join(' ') : ''}`.toLowerCase();
+    const { title, description } = videoDetail.snippet;
+    const searchText = `${title} ${description}`.toLowerCase();
     return keywords.some(keyword => searchText.includes(keyword.toLowerCase()));
 };
 
 const containsBlacklistedKeyword = (videoDetail, blacklist) => {
     if (!videoDetail || !videoDetail.snippet) return false;
-    const { title, description, tags } = videoDetail.snippet;
-    const searchText = `${title} ${description} ${tags ? tags.join(' ') : ''}`.toLowerCase();
+    const { title, description } = videoDetail.snippet;
+    const searchText = `${title} ${description}`.toLowerCase();
     return blacklist.some(keyword => searchText.includes(keyword.toLowerCase()));
 };
 
@@ -166,13 +166,15 @@ async function processAndStoreVideos(videoIds, redisClient) {
         if (!isChannelBlacklisted && !isKeywordBlacklisted && !isExpired && isContentValid) {
             validVideoIds.add(videoId);
             const channelDetails = channelStatsMap.get(channelId);
-            const { title, description, tags } = detail.snippet;
-            const searchableText = `${title} ${description} ${tags ? tags.join(' ') : ''}`.toLowerCase();
+            const { title, description } = detail.snippet; // **不再讀取 tags**
+            
+            // **修正：只合併標題和描述來建立 searchableText**
+            const searchableText = `${title || ''} ${description || ''}`.toLowerCase();
             
             const videoData = {
                 id: videoId,
                 title: title,
-                searchableText: searchableText, // 新增 searchableText 欄位
+                searchableText: searchableText, // 儲存淨化後的 searchableText
                 thumbnail: detail.snippet.thumbnails.high?.url || detail.snippet.thumbnails.default?.url,
                 channelId: channelId, 
                 channelTitle: detail.snippet.channelTitle,
