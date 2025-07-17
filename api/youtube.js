@@ -25,7 +25,7 @@ const CHANNEL_BLACKLIST = [
   'UCOnlV05C1t4d-x2NP-kgyzw', 'UCjOaP5dTW_0s1Ui11jm4Rzg', 
   'UCGZK4lLrDYcOKxmWJIERmjQ', 'UCnERutXxnHTLqckbGCUwtAg', 
   'UC-wCI2w1jvR3SgijNeg29qg', 'UCIvTtZq1vMaEQ1iLnp3MEVQ',
-  'UCBf3eLt6Nj7AJwkDysm0JWw', 
+  'UCBf3eLt6Nj7AJwkDysm0JWw', 'UC9xEUSRrMWbbb-59IehNv3g',
 ];
 const apiKeys = [
     process.env.YOUTUBE_API_KEY_1,
