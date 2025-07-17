@@ -9,8 +9,8 @@ const UPDATE_LOCK_KEY = `${KEY_PREFIX}meta:update_lock`;
 
 const UPDATE_INTERVAL_SECONDS = 1800; // 30 分鐘
 
-// --- YouTube API 設定 (維持不變) ---
-const CHANNEL_WHITELIST = [
+// --- YouTube API 設定 ---
+const CHANNEL_WHITELIST = [ // 第一層：完全信任，不檢查關鍵字
   'UCFZ7BPHTgEo5FXuvC9GVY7Q', 
   'UCWq4bX9UMV1ir3liKRIvCHg', 
   'UCbsHmeSh_NGyO8ymoYG02sw',
@@ -19,6 +19,14 @@ const CHANNEL_WHITELIST = [
   'UColeV1H-x8MuVLSAdohTOVQ',
   'UC9xEUSRrMWbbb-59IehNv3g',
 ];
+
+// 第二層特殊白名單
+const SPECIAL_WHITELIST = [
+    'UCz4GIV8wNBsLBzZy2wA2KKw' 
+];
+const SPECIAL_KEYWORDS = ["vspo"];
+
+// 第三層：一般搜尋用的關鍵字
 const SEARCH_KEYWORDS = ["VSPO中文", "VSPO中文精華", "VSPO精華", "VSPO中文剪輯", "VSPO剪輯"];
 const KEYWORD_BLACKLIST = ["MMD"]; 
 const CHANNEL_BLACKLIST = [
@@ -34,7 +42,7 @@ const apiKeys = [
     process.env.YOUTUBE_API_KEY_3,
 ].filter(key => key);
 
-// --- 輔助函式 (維持不變) ---
+// --- 輔助函式 ---
 const batchArray = (arr, size) => Array.from({ length: Math.ceil(arr.length / size) }, (v, i) => arr.slice(i * size, i * size + size));
 
 const isVideoValid = (videoDetail, keywords) => {
@@ -44,7 +52,6 @@ const isVideoValid = (videoDetail, keywords) => {
     return keywords.some(keyword => searchText.includes(keyword.toLowerCase()));
 };
 
-// 新增：檢查是否包含黑名單關鍵字的函式
 const containsBlacklistedKeyword = (videoDetail, blacklist) => {
     if (!videoDetail || !videoDetail.snippet) return false;
     const { title, description, tags } = videoDetail.snippet;
@@ -140,20 +147,29 @@ async function processAndStoreVideos(videoIds, redisClient) {
         const detail = videoDetailsMap.get(videoId);
         if (!detail) continue;
 
-        const isChannelBlacklisted = CHANNEL_BLACKLIST.includes(detail.snippet.channelId);
-        const isKeywordBlacklisted = containsBlacklistedKeyword(detail, KEYWORD_BLACKLIST); // 新增：檢查關鍵字黑名單
+        const channelId = detail.snippet.channelId;
+        const isChannelBlacklisted = CHANNEL_BLACKLIST.includes(channelId);
+        const isKeywordBlacklisted = containsBlacklistedKeyword(detail, KEYWORD_BLACKLIST);
         const isExpired = new Date(detail.snippet.publishedAt) < oneMonthAgo;
-        const isContentValid = isVideoValid(detail, SEARCH_KEYWORDS);
-        const isFromWhitelist = CHANNEL_WHITELIST.includes(detail.snippet.channelId);
 
-        if (!isChannelBlacklisted && !isKeywordBlacklisted && !isExpired && (isContentValid || isFromWhitelist)) {
+        // 修改後的驗證邏輯
+        let isContentValid = false;
+        if (CHANNEL_WHITELIST.includes(channelId)) {
+            isContentValid = true; // 第一層：完全信任，直接通過
+        } else if (SPECIAL_WHITELIST.includes(channelId)) {
+            isContentValid = isVideoValid(detail, SPECIAL_KEYWORDS); // 第二層：特殊白名單，用寬鬆關鍵字驗證
+        } else {
+            isContentValid = isVideoValid(detail, SEARCH_KEYWORDS); // 第三層：一般影片，用嚴格關鍵字驗證
+        }
+
+        if (!isChannelBlacklisted && !isKeywordBlacklisted && !isExpired && isContentValid) {
             validVideoIds.add(videoId);
-            const channelDetails = channelStatsMap.get(detail.snippet.channelId);
+            const channelDetails = channelStatsMap.get(channelId);
             const videoData = {
                 id: videoId,
                 title: detail.snippet.title,
                 thumbnail: detail.snippet.thumbnails.high?.url || detail.snippet.thumbnails.default?.url,
-                channelId: detail.snippet.channelId, 
+                channelId: channelId, 
                 channelTitle: detail.snippet.channelTitle,
                 channelAvatarUrl: channelDetails?.snippet?.thumbnails?.default?.url || '',
                 publishedAt: detail.snippet.publishedAt,
@@ -171,9 +187,6 @@ async function processAndStoreVideos(videoIds, redisClient) {
     return { validVideoIds, idsToDelete };
 }
 
-/**
- * 新增：指定日期搜尋函式
- */
 async function searchSingleDayAndStoreData(dateString, redisClient) {
     console.log(`開始執行指定日期搜尋程序：${dateString} (GMT+8)`);
     
@@ -218,10 +231,6 @@ async function searchSingleDayAndStoreData(dateString, redisClient) {
     console.log(`指定日期搜尋完成，已新增/更新 ${validVideoIds.size} 部影片。`);
 }
 
-
-/**
- * 深度回填函式
- */
 async function deepSearchAndStoreData(redisClient) {
     console.log('開始執行深度回填程序...');
     const allFoundIds = new Set();
@@ -269,10 +278,6 @@ async function deepSearchAndStoreData(redisClient) {
     console.log(`深度回填完成，資料庫現有 ${validVideoIds.size} 部有效影片。`);
 }
 
-
-/**
- * 標準更新函式
- */
 async function updateAndStoreYouTubeData(redisClient) {
     console.log('開始執行標準更新程序...');
     
@@ -281,8 +286,11 @@ async function updateAndStoreYouTubeData(redisClient) {
     const publishedAfter = oneMonthAgo.toISOString();
     
     const newVideoCandidates = new Set();
-    if (CHANNEL_WHITELIST.length > 0) {
-        const channelsResponse = await fetchYouTube('channels', { part: 'contentDetails', id: CHANNEL_WHITELIST.join(',') });
+    
+    // 將所有白名單合併，一次性抓取影片
+    const allWhitelists = [...CHANNEL_WHITELIST, ...SPECIAL_WHITELIST];
+    if (allWhitelists.length > 0) {
+        const channelsResponse = await fetchYouTube('channels', { part: 'contentDetails', id: allWhitelists.join(',') });
         const uploadPlaylistIds = channelsResponse.items?.map(item => item.contentDetails.relatedPlaylists.uploads).filter(Boolean) || [];
         const playlistItemsPromises = uploadPlaylistIds.map(playlistId => fetchYouTube('playlistItems', { part: 'snippet', playlistId, maxResults: 50 }));
         const playlistItemsResults = await Promise.all(playlistItemsPromises);
