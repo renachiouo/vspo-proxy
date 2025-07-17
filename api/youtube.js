@@ -17,6 +17,7 @@ const CHANNEL_WHITELIST = [
   'UCd3YtBLO0sGhQ2eTWs80bcg',
   'UCGy_n5NeGfeVzravayHk65Q',
   'UColeV1H-x8MuVLSAdohTOVQ',
+  'UC9xEUSRrMWbbb-59IehNv3g',
 ];
 const SEARCH_KEYWORDS = ["VSPO中文", "VSPO中文精華", "VSPO精華", "VSPO中文剪輯", "VSPO剪輯"];
 const KEYWORD_BLACKLIST = ["MMD"]; 
@@ -25,7 +26,7 @@ const CHANNEL_BLACKLIST = [
   'UCOnlV05C1t4d-x2NP-kgyzw', 'UCjOaP5dTW_0s1Ui11jm4Rzg', 
   'UCGZK4lLrDYcOKxmWJIERmjQ', 'UCnERutXxnHTLqckbGCUwtAg', 
   'UC-wCI2w1jvR3SgijNeg29qg', 'UCIvTtZq1vMaEQ1iLnp3MEVQ',
-  'UCBf3eLt6Nj7AJwkDysm0JWw', 'UC9xEUSRrMWbbb-59IehNv3g',
+  'UCBf3eLt6Nj7AJwkDysm0JWw', 
 ];
 const apiKeys = [
     process.env.YOUTUBE_API_KEY_1,
