@@ -152,22 +152,25 @@ async function processAndStoreVideos(videoIds, redisClient) {
         const isKeywordBlacklisted = containsBlacklistedKeyword(detail, KEYWORD_BLACKLIST);
         const isExpired = new Date(detail.snippet.publishedAt) < oneMonthAgo;
 
-        // 修改後的驗證邏輯
         let isContentValid = false;
         if (CHANNEL_WHITELIST.includes(channelId)) {
-            isContentValid = true; // 第一層：完全信任，直接通過
+            isContentValid = true; 
         } else if (SPECIAL_WHITELIST.includes(channelId)) {
-            isContentValid = isVideoValid(detail, SPECIAL_KEYWORDS); // 第二層：特殊白名單，用寬鬆關鍵字驗證
+            isContentValid = isVideoValid(detail, SPECIAL_KEYWORDS); 
         } else {
-            isContentValid = isVideoValid(detail, SEARCH_KEYWORDS); // 第三層：一般影片，用嚴格關鍵字驗證
+            isContentValid = isVideoValid(detail, SEARCH_KEYWORDS); 
         }
 
         if (!isChannelBlacklisted && !isKeywordBlacklisted && !isExpired && isContentValid) {
             validVideoIds.add(videoId);
             const channelDetails = channelStatsMap.get(channelId);
+            const { title, description, tags } = detail.snippet;
+            const searchableText = `${title} ${description} ${tags ? tags.join(' ') : ''}`.toLowerCase();
+            
             const videoData = {
                 id: videoId,
-                title: detail.snippet.title,
+                title: title,
+                searchableText: searchableText, // 新增 searchableText 欄位
                 thumbnail: detail.snippet.thumbnails.high?.url || detail.snippet.thumbnails.default?.url,
                 channelId: channelId, 
                 channelTitle: detail.snippet.channelTitle,
@@ -287,7 +290,6 @@ async function updateAndStoreYouTubeData(redisClient) {
     
     const newVideoCandidates = new Set();
     
-    // 將所有白名單合併，一次性抓取影片
     const allWhitelists = [...CHANNEL_WHITELIST, ...SPECIAL_WHITELIST];
     if (allWhitelists.length > 0) {
         const channelsResponse = await fetchYouTube('channels', { part: 'contentDetails', id: allWhitelists.join(',') });
