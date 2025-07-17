@@ -21,7 +21,7 @@ const CHANNEL_WHITELIST = [ // 第一層：完全信任，不檢查關鍵字
 
 // 第二層特殊白名單
 const SPECIAL_WHITELIST = [
-    'UCz4GIV8wNBsLBzZy2wA2KKw' ,  'UColeV1H-x8MuVLSAdohTOVQ',
+    'UCz4GIV8wNBsLBzZy2wA2KKw', 'UColeV1H-x8MuVLSAdohTOVQ',
 ];
 const SPECIAL_KEYWORDS = ["vspo"];
 
