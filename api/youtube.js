@@ -1,8 +1,8 @@
-// Force rebuild at 2025-07-18
+// Force rebuild at 2025-07-19
 import { createClient } from 'redis';
 
 // --- 版本指紋 ---
-const SCRIPT_VERSION = '8.3-FINAL';
+const SCRIPT_VERSION = '8.4-FINAL'; // 版本號提升
 
 // --- Redis Keys Configuration ---
 const KEY_PREFIX = 'vspo-db:v1:';
@@ -38,7 +38,7 @@ const CHANNEL_BLACKLIST = [
   'UCuI5_lA2o-arAIKukGvIEcQ', 'UCWnhOhucHHQubSAkOi8xpew', 
   'UCOnlV05C1t4d-x2NP-kgyzw', 'UCjOaP5dTW_0s1Ui11jm4Rzg', 
   'UCGZK4lLrDYcOKxmWJIERmjQ', 'UCnERutXxnHTLqckbGCUwtAg', 
-  'UC-wCI2w1jvR3SgijNeg29qg', 'UCIvTtZq1vMaEQ1iLnp3MEVQ',
+  'UC-wCI2w1vMaEQ1iLnp3MEVQ', 'UCIvTtZq1vMaEQ1iLnp3MEVQ',
   'UCBf3eLt6Nj7AJwkDysm0JWw', 'UCnusRHKhMAR7dNM00mk44BA',
   'UCEShI32SUz7g9J9ICOs5Y0g',
 ];
@@ -70,7 +70,10 @@ const containsBlacklistedKeyword = (videoDetail, blacklist) => {
 
 async function checkIfShort(videoId) {
     try {
+        // 使用 HEAD 方法，我們只關心 status code，不需要 body，這樣更快
         const response = await fetch(`https://www.youtube.com/shorts/${videoId}`, { method: 'HEAD', redirect: 'manual' });
+        // status 200 代表這是一個有效的 Shorts 頁面
+        // status 303 (See Other) 通常會將 /shorts/xyz 導向 /watch?v=xyz，代表它不是 Shorts
         return response.status === 200;
     } catch (error) {
         console.error(`探測 Shorts 失敗 (Video ID: ${videoId}):`, error);
@@ -87,7 +90,7 @@ async function updateAndGetVisitorCount(redisClient) {
             redisClient.incr('visits:total'),
             redisClient.incr(todayKey)
         ]);
-        await redisClient.expire(todayKey, 90000);
+        await redisClient.expire(todayKey, 90000); // 設置過期時間 (略大於一天)
         return { totalVisits, todayVisits };
     } catch (error) {
         console.error("Failed to update visitor count:", error);
@@ -181,8 +184,8 @@ async function processAndStoreVideos(videoIds, redisClient) {
             const { title, description } = detail.snippet;
             const searchableText = `${title || ''} ${description || ''}`.toLowerCase();
             
-            const existingData = await redisClient.hGetAll(`${VIDEO_HASH_PREFIX}${videoId}`);
-            let videoType = existingData.videoType || null;
+            const existingVideoType = await redisClient.hGet(`${VIDEO_HASH_PREFIX}${videoId}`, 'videoType');
+            let videoType = existingVideoType;
             
             if (!videoType) {
                 const isShort = await checkIfShort(videoId);
@@ -261,13 +264,11 @@ async function updateAndStoreYouTubeData(redisClient) {
     
     const videosToBackfill = [];
     if (existingVideoIds.length > 0) {
-        // **修正點：改用更可靠的 hGet**
         const pipelineCheck = redisClient.multi();
         existingVideoIds.forEach(id => pipelineCheck.hGet(`${VIDEO_HASH_PREFIX}${id}`, 'videoType'));
         const getTypeResults = await pipelineCheck.exec();
         
         for (let i = 0; i < existingVideoIds.length; i++) {
-            // 如果 hGet 的結果是 null 或 undefined，代表該欄位不存在
             if (!getTypeResults[i]) { 
                 videosToBackfill.push(existingVideoIds[i]);
             }
@@ -313,7 +314,6 @@ async function updateAndStoreYouTubeData(redisClient) {
     console.log(`標準更新完成。`);
 }
 
-// **函式已修正**：改用更可靠的 hGet 進行檢查
 async function initializeBackfill(redisClient) {
     console.log('開始初始化 Shorts 回填計數器...');
     const allVideoIds = await redisClient.sMembers(VIDEOS_SET_KEY);
@@ -332,7 +332,6 @@ async function initializeBackfill(redisClient) {
             pipeline.hGet(`${VIDEO_HASH_PREFIX}${id}`, 'videoType');
         });
         const results = await pipeline.exec();
-        // 如果 hGet 的結果是 null 或 undefined，代表該欄位不存在
         unclassifiedCount += results.filter(videoType => !videoType).length;
     }
     
@@ -373,28 +372,55 @@ export default async function handler(request, response) {
             return response.status(401).json({ error: '無效的管理員密碼。' });
         }
         
+        // --- 管理員指令區 ---
         if (mode === 'deep') {
             console.log("管理員密碼驗證成功，強制執行深度回填。");
             await deepSearchAndStoreData(redisClient);
         } else if (mode === 'start_backfill') {
             console.log("管理員密碼驗證成功，開始初始化 Shorts 回填計數器。");
-            try {
-                const count = await initializeBackfill(redisClient);
-                response.setHeader('Access-Control-Allow-Origin', '*');
-                if (redisClient.isOpen) await redisClient.quit();
-                return response.status(200).json({ message: `Shorts 回填已初始化，共有 ${count} 部影片待處理。` });
-            } catch(e) {
-                console.error("初始化回填時發生錯誤:", e);
-                response.setHeader('Access-Control-Allow-Origin', '*');
-                if (redisClient.isOpen) await redisClient.quit();
-                return response.status(202).json({ message: "回填初始化請求已接受，但伺服器處理時間可能較長。請稍後透過 API 監控進度。" });
-            }
+            const count = await initializeBackfill(redisClient);
+            response.setHeader('Access-Control-Allow-Origin', '*');
+            if (redisClient.isOpen) await redisClient.quit();
+            return response.status(200).json({ message: `Shorts 回填已初始化，共有 ${count} 部影片待處理。` });
         } else if (mode === 'reset_counter') {
             console.log("管理員密碼驗證成功，強制重置回填計數器。");
             await redisClient.set(BACKFILL_COUNTER_KEY, 0);
             response.setHeader('Access-Control-Allow-Origin', '*');
             if (redisClient.isOpen) await redisClient.quit();
             return response.status(200).json({ message: "回填計數器已成功重置為 0。" });
+        } else if (mode === 'reset_classification') { // ★ 新增：重置分類模式
+            console.log("管理員指令：重置所有影片的分類狀態。");
+            const allVideoIds = await redisClient.sMembers(VIDEOS_SET_KEY);
+            if (allVideoIds.length > 0) {
+                const pipeline = redisClient.multi();
+                allVideoIds.forEach(id => {
+                    pipeline.hDel(`${VIDEO_HASH_PREFIX}${id}`, 'videoType');
+                });
+                await pipeline.exec();
+            }
+            const newCount = await initializeBackfill(redisClient); // 重置後立刻重新計算
+            response.setHeader('Access-Control-Allow-Origin', '*');
+            if (redisClient.isOpen) await redisClient.quit();
+            return response.status(200).json({ message: `已重置 ${allVideoIds.length} 部影片的分類狀態。新的待辦計數為: ${newCount}` });
+        } else if (mode === 'inspect_videos') { // ★ 新增：抽查模式
+            console.log("管理員指令：抽查影片分類狀態。");
+            const allVideoIds = await redisClient.sMembers(VIDEOS_SET_KEY);
+            const sampleSize = Math.min(20, allVideoIds.length);
+            const sampleIds = allVideoIds.sort(() => 0.5 - Math.random()).slice(0, sampleSize);
+            
+            let sampleData = [];
+            if (sampleSize > 0) {
+                const pipeline = redisClient.multi();
+                sampleIds.forEach(id => pipeline.hGetAll(`${VIDEO_HASH_PREFIX}${id}`));
+                sampleData = await pipeline.exec();
+            }
+            
+            response.setHeader('Access-Control-Allow-Origin', '*');
+            if (redisClient.isOpen) await redisClient.quit();
+            return response.status(200).json({ 
+                message: `抽查 ${sampleSize} 部影片的結果。請檢查 'videoType' 欄位。`,
+                sample_videos: sampleData 
+            });
         } else if (mode && /^\d{8}$/.test(mode)) {
             console.log(`管理員密碼驗證成功，強制執行指定日期搜尋：${mode}`);
             await searchSingleDayAndStoreData(mode, redisClient);
