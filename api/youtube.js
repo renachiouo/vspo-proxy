@@ -1,7 +1,7 @@
 // Force rebuild at 2025-07-18
 import { createClient } from 'redis';
 
-// --- 版本指紋 ---
+// --- 版本號 ---
 const SCRIPT_VERSION = '8.2-FINAL';
 
 // --- Redis Keys Configuration ---
@@ -26,7 +26,7 @@ const CHANNEL_WHITELIST = [ // 第一層：完全信任，不檢查關鍵字
 ];
 
 const SPECIAL_WHITELIST = [ // 第二層特殊白名單
-    'UCz4GIV8wNBsLBzZy2wA2KKw', 'UColeV1H-x8MuVLSAdohTOVQ',
+    'UCz4GIV8wNBsLBzZy2wA2KKw', 'UColeV1H-x8MuVLSAdohTOVQ','UCGy_n5NeGfeVzravayHk65Q',
 ];
 const SPECIAL_KEYWORDS = ["vspo"];
 
