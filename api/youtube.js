@@ -1,3 +1,4 @@
+// Force rebuild at 2025-07-18
 import { createClient } from 'redis';
 
 // --- 版本指紋 ---
