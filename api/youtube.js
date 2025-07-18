@@ -6,11 +6,11 @@ const VIDEOS_SET_KEY = `${KEY_PREFIX}video_ids`;
 const VIDEO_HASH_PREFIX = `${KEY_PREFIX}video:`;
 const META_LAST_UPDATED_KEY = `${KEY_PREFIX}meta:last_updated`;
 const UPDATE_LOCK_KEY = `${KEY_PREFIX}meta:update_lock`;
-// 新增：用於追蹤 Shorts 回填進度的計數器
+// 用於追蹤 Shorts 回填進度的計數器
 const BACKFILL_COUNTER_KEY = `${KEY_PREFIX}meta:backfill_counter`;
 
 const UPDATE_INTERVAL_SECONDS = 1800; // 30 分鐘
-// 新增：每次更新時，處理舊影片的回填數量上限
+// 每次更新時，處理舊影片的回填數量上限
 const BACKFILL_BATCH_SIZE = 15;
 
 // --- YouTube API 設定 ---
@@ -65,15 +65,12 @@ const containsBlacklistedKeyword = (videoDetail, blacklist) => {
     return blacklist.some(keyword => searchText.includes(keyword.toLowerCase()));
 };
 
-// 新增：用於探測影片是否為 Shorts 的函式
 async function checkIfShort(videoId) {
     try {
         const response = await fetch(`https://www.youtube.com/shorts/${videoId}`, { method: 'HEAD', redirect: 'manual' });
-        // 如果狀態碼是 200，代表頁面存在，是 Shorts
         return response.status === 200;
     } catch (error) {
         console.error(`探測 Shorts 失敗 (Video ID: ${videoId}):`, error);
-        // 如果探測失敗，保守地將其歸類為一般影片
         return false;
     }
 }
@@ -135,7 +132,8 @@ const fetchYouTube = async (endpoint, params) => {
     throw new Error('所有 API 金鑰都已失效。');
 };
 
-async function processAndStoreVideos(videoIds, redisClient) {
+// **函式已更新**：現在會接收 existingVideoIdsSet 以便進行判斷
+async function processAndStoreVideos(videoIds, redisClient, existingVideoIdsSet) {
     if (videoIds.length === 0) {
         console.log('沒有需要處理的影片。');
         return { validVideoIds: new Set(), idsToDelete: [] };
@@ -187,17 +185,19 @@ async function processAndStoreVideos(videoIds, redisClient) {
             const { title, description } = detail.snippet;
             const searchableText = `${title || ''} ${description || ''}`.toLowerCase();
             
-            // 檢查現有資料，看是否已經有 videoType
             const existingData = await redisClient.hGetAll(`${VIDEO_HASH_PREFIX}${videoId}`);
             let videoType = existingData.videoType || null;
             
-            // 如果沒有 videoType，才進行探測
             if (!videoType) {
                 const isShort = await checkIfShort(videoId);
                 videoType = isShort ? 'short' : 'video';
-                console.log(`[回填] 影片 ${videoId} 已分類為: ${videoType}`);
-                // 成功分類後，將計數器減一
-                await redisClient.decr(BACKFILL_COUNTER_KEY);
+                console.log(`[分類] 影片 ${videoId} 已分類為: ${videoType}`);
+                
+                // **修正點**：只有當這是一部資料庫中已存在的影片時，才更新回填計數器
+                if (existingVideoIdsSet.has(videoId)) {
+                    console.log(` -> 這是一部舊影片，更新回填計數器。`);
+                    await redisClient.decr(BACKFILL_COUNTER_KEY);
+                }
             }
 
             const videoData = {
@@ -211,7 +211,7 @@ async function processAndStoreVideos(videoIds, redisClient) {
                 publishedAt: detail.snippet.publishedAt,
                 viewCount: detail.statistics ? (detail.statistics.viewCount || 0) : 0,
                 subscriberCount: channelDetails?.statistics ? (channelDetails.statistics.subscriberCount || 0) : 0,
-                videoType: videoType, // 儲存影片類型
+                videoType: videoType,
             };
             pipeline.hSet(`${VIDEO_HASH_PREFIX}${videoId}`, videoData);
         }
@@ -257,7 +257,7 @@ async function updateAndStoreYouTubeData(redisClient) {
     }
 
     const searchPromises = SEARCH_KEYWORDS.map(q => fetchYouTube('search', { part: 'snippet', type: 'video', maxResults: 50, q, publishedAfter }));
-    const searchResults = await Promise.all(searchPromises);
+    const searchResults = await Promise.all(searchResults);
     for (const result of searchResults) {
       result.items?.forEach(item => {
         if (item.id.videoId && !CHANNEL_BLACKLIST.includes(item.snippet.channelId)) {
@@ -267,9 +267,11 @@ async function updateAndStoreYouTubeData(redisClient) {
     }
 
     const existingVideoIds = await redisClient.sMembers(VIDEOS_SET_KEY);
+    const existingVideoIdsSet = new Set(existingVideoIds);
     
     // --- 漸進式回填邏輯 ---
     const videosToBackfill = [];
+    // **優化**：直接從現有 ID 列表中查找需要回填的影片
     const pipelineCheck = redisClient.multi();
     existingVideoIds.forEach(id => pipelineCheck.hExists(`${VIDEO_HASH_PREFIX}${id}`, 'videoType'));
     const existsResults = await pipelineCheck.exec();
@@ -288,7 +290,8 @@ async function updateAndStoreYouTubeData(redisClient) {
 
     const masterVideoIdList = [...new Set([...newVideoCandidates, ...existingVideoIds, ...backfillBatch])];
     
-    const { validVideoIds, idsToDelete } = await processAndStoreVideos(masterVideoIdList, redisClient);
+    // **傳入 existingVideoIdsSet**
+    const { validVideoIds, idsToDelete } = await processAndStoreVideos(masterVideoIdList, redisClient, existingVideoIdsSet);
     
     const pipeline = redisClient.multi();
 
@@ -307,7 +310,7 @@ async function updateAndStoreYouTubeData(redisClient) {
     console.log(`標準更新完成。`);
 }
 
-// 新增：用於初始化回填計數器的管理員函式
+// **函式已優化**：減少單次操作的資料量，降低超時風險
 async function initializeBackfill(redisClient) {
     console.log('開始初始化 Shorts 回填計數器...');
     const allVideoIds = await redisClient.sMembers(VIDEOS_SET_KEY);
@@ -317,13 +320,18 @@ async function initializeBackfill(redisClient) {
         return 0;
     }
 
-    const pipeline = redisClient.multi();
-    allVideoIds.forEach(id => {
-        pipeline.hExists(`${VIDEO_HASH_PREFIX}${id}`, 'videoType');
-    });
-    const results = await pipeline.exec();
+    let unclassifiedCount = 0;
+    // 分批處理以避免單一 pipeline 過大
+    const idBatches = batchArray(allVideoIds, 200); 
 
-    const unclassifiedCount = results.filter(exists => !exists).length;
+    for (const batch of idBatches) {
+        const pipeline = redisClient.multi();
+        batch.forEach(id => {
+            pipeline.hExists(`${VIDEO_HASH_PREFIX}${id}`, 'videoType');
+        });
+        const results = await pipeline.exec();
+        unclassifiedCount += results.filter(exists => !exists).length;
+    }
     
     await redisClient.set(BACKFILL_COUNTER_KEY, unclassifiedCount);
     console.log(`計算完成：共有 ${unclassifiedCount} 部影片需要回填分類。計數器已設定。`);
@@ -341,7 +349,7 @@ export default async function handler(request, response) {
 
   const { searchParams } = new URL(request.url, `http://${request.headers.host}`);
   const forceRefresh = searchParams.get('force_refresh') === 'true';
-  const mode = searchParams.get('mode'); // 'deep', 'start_backfill', a date string, or null
+  const mode = searchParams.get('mode');
   const providedPassword = searchParams.get('password');
   const adminPassword = process.env.ADMIN_PASSWORD;
 
@@ -367,11 +375,18 @@ export default async function handler(request, response) {
             await deepSearchAndStoreData(redisClient);
         } else if (mode === 'start_backfill') {
             console.log("管理員密碼驗證成功，開始初始化 Shorts 回填計數器。");
-            const count = await initializeBackfill(redisClient);
-            // 為了讓管理者能看到結果，我們直接回傳計數
-            response.setHeader('Access-Control-Allow-Origin', '*');
-            if (redisClient.isOpen) await redisClient.quit();
-            return response.status(200).json({ message: `Shorts 回填已初始化，共有 ${count} 部影片待處理。` });
+            try {
+                const count = await initializeBackfill(redisClient);
+                response.setHeader('Access-Control-Allow-Origin', '*');
+                if (redisClient.isOpen) await redisClient.quit();
+                return response.status(200).json({ message: `Shorts 回填已初始化，共有 ${count} 部影片待處理。` });
+            } catch(e) {
+                // **新增**：處理超時等錯誤
+                console.error("初始化回填時發生錯誤:", e);
+                response.setHeader('Access-Control-Allow-Origin', '*');
+                if (redisClient.isOpen) await redisClient.quit();
+                return response.status(202).json({ message: "回填初始化請求已接受，但伺服器處理時間可能較長。請稍後透過 API 監控進度。" });
+            }
         } else if (mode && /^\d{8}$/.test(mode)) {
             console.log(`管理員密碼驗證成功，強制執行指定日期搜尋：${mode}`);
             await searchSingleDayAndStoreData(mode, redisClient);
@@ -405,7 +420,7 @@ export default async function handler(request, response) {
         timestamp: new Date(parseInt(await redisClient.get(META_LAST_UPDATED_KEY), 10) || Date.now()).toISOString(),
         totalVisits: visitorCount.totalVisits,
         todayVisits: visitorCount.todayVisits,
-        backfill_remaining: backfillRemaining, // 加入回填進度
+        backfill_remaining: backfillRemaining,
     };
 
     response.setHeader('Access-Control-Allow-Origin', '*');
