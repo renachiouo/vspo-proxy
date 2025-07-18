@@ -1,7 +1,7 @@
 import { createClient } from 'redis';
 
 // --- 版本指紋 ---
-const SCRIPT_VERSION = '8.1-FINAL';
+const SCRIPT_VERSION = '8.2-FINAL';
 
 // --- Redis Keys Configuration ---
 const KEY_PREFIX = 'vspo-db:v1:';
