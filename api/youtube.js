@@ -141,7 +141,6 @@ async function processAndStoreVideos(videoIds, redisClient) {
 
     const classifiedIds = new Set(); // 用於記錄本次成功分類的影片
     
-    // ... (前半段的 API 請求邏輯不變)
     const videoDetailBatches = batchArray(videoIds, 50);
     const videoDetailPromises = videoDetailBatches.map(id => fetchYouTube('videos', { part: 'statistics,snippet', id: id.join(',') }));
     const videoDetailResults = await Promise.all(videoDetailPromises);
@@ -186,7 +185,7 @@ async function processAndStoreVideos(videoIds, redisClient) {
             if (!videoType) {
                 const isShort = await checkIfShort(videoId);
                 videoType = isShort ? 'short' : 'video';
-                classifiedIds.add(videoId); // 將成功分類的 ID 加入回報列表
+                classifiedIds.add(videoId);
                 console.log(`[分類] 影片 ${videoId} 已分類為: ${videoType}`);
             }
 
@@ -215,11 +214,11 @@ async function processAndStoreVideos(videoIds, redisClient) {
 }
 
 async function searchSingleDayAndStoreData(dateString, redisClient) {
-    // ... 此函式內容不變，但注意它呼叫的 processAndStoreVideos 簽名已改變
+    // ... 此函式內容不變
 }
 
 async function deepSearchAndStoreData(redisClient) {
-    // ... 此函式內容不變，但注意它呼叫的 processAndStoreVideos 簽名已改變
+    // ... 此函式內容不變
 }
 
 async function updateAndStoreYouTubeData(redisClient) {
@@ -259,13 +258,15 @@ async function updateAndStoreYouTubeData(redisClient) {
     const existingVideoIds = await redisClient.sMembers(VIDEOS_SET_KEY);
     
     const videosToBackfill = [];
-    const pipelineCheck = redisClient.multi();
-    existingVideoIds.forEach(id => pipelineCheck.hExists(`${VIDEO_HASH_PREFIX}${id}`, 'videoType'));
-    const existsResults = await pipelineCheck.exec();
-    
-    for (let i = 0; i < existingVideoIds.length; i++) {
-        if (!existsResults[i]) {
-            videosToBackfill.push(existingVideoIds[i]);
+    if (existingVideoIds.length > 0) {
+        const pipelineCheck = redisClient.multi();
+        existingVideoIds.forEach(id => pipelineCheck.hExists(`${VIDEO_HASH_PREFIX}${id}`, 'videoType'));
+        const existsResults = await pipelineCheck.exec();
+        
+        for (let i = 0; i < existingVideoIds.length; i++) {
+            if (!existsResults[i]) {
+                videosToBackfill.push(existingVideoIds[i]);
+            }
         }
     }
     
@@ -277,23 +278,22 @@ async function updateAndStoreYouTubeData(redisClient) {
 
     const masterVideoIdList = [...new Set([...newVideoCandidates, ...backfillBatch])];
     
-    // **修正點**：接收 classifiedIds 回報
     const { validVideoIds, idsToDelete, classifiedIds } = await processAndStoreVideos(masterVideoIdList, redisClient);
     
-    // **修正點**：精準計算計數器扣減量
     let backfilledCount = 0;
     for (const id of classifiedIds) {
         if (backfillBatchSet.has(id)) {
             backfilledCount++;
         }
     }
-    if (backfilledCount > 0) {
-        console.log(` -> 本次共回填 ${backfilledCount} 部舊影片，更新計數器。`);
-        await redisClient.decrBy(BACKFILL_COUNTER_KEY, backfilledCount);
-    }
-    
+
     const pipeline = redisClient.multi();
 
+    if (backfilledCount > 0) {
+        console.log(` -> 本次共回填 ${backfilledCount} 部舊影片，更新計數器。`);
+        pipeline.decrBy(BACKFILL_COUNTER_KEY, backfilledCount);
+    }
+    
     if (idsToDelete.length > 0) {
         console.log(`準備刪除 ${idsToDelete.length} 部失效/過期影片...`);
         pipeline.sRem(VIDEOS_SET_KEY, idsToDelete);
@@ -309,7 +309,6 @@ async function updateAndStoreYouTubeData(redisClient) {
     console.log(`標準更新完成。`);
 }
 
-// **函式已優化**：減少單次操作的資料量，降低超時風險
 async function initializeBackfill(redisClient) {
     console.log('開始初始化 Shorts 回填計數器...');
     const allVideoIds = await redisClient.sMembers(VIDEOS_SET_KEY);
@@ -382,9 +381,14 @@ export default async function handler(request, response) {
                 console.error("初始化回填時發生錯誤:", e);
                 response.setHeader('Access-Control-Allow-Origin', '*');
                 if (redisClient.isOpen) await redisClient.quit();
-                // **優化**：回傳 202 Accepted，表示請求已接受但仍在背景處理
                 return response.status(202).json({ message: "回填初始化請求已接受，但伺服器處理時間可能較長。請稍後透過 API 監控進度。" });
             }
+        } else if (mode === 'reset_counter') { // **新增：超級重置指令**
+            console.log("管理員密碼驗證成功，強制重置回填計數器。");
+            await redisClient.set(BACKFILL_COUNTER_KEY, 0);
+            response.setHeader('Access-Control-Allow-Origin', '*');
+            if (redisClient.isOpen) await redisClient.quit();
+            return response.status(200).json({ message: "回填計數器已強制歸零。" });
         } else if (mode && /^\d{8}$/.test(mode)) {
             console.log(`管理員密碼驗證成功，強制執行指定日期搜尋：${mode}`);
             await searchSingleDayAndStoreData(mode, redisClient);
