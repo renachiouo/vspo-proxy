@@ -439,3 +439,32 @@ export default async function handler(request, response) {
     return response.status(status).json({ error: error.message });
   }
 }
+} else if (mode === 'debug_db') {
+    console.log("管理員密碼驗證成功，檢查資料庫狀態。");
+    
+    const allVideoIds = await redisClient.sMembers(VIDEOS_SET_KEY);
+    console.log(`資料庫中總影片數: ${allVideoIds.length}`);
+    
+    if (allVideoIds.length > 0) {
+        // 檢查前5部影片的狀態
+        const sampleIds = allVideoIds.slice(0, 5);
+        const pipeline = redisClient.multi();
+        sampleIds.forEach(id => {
+            pipeline.hGetAll(`${VIDEO_HASH_PREFIX}${id}`);
+        });
+        const results = await pipeline.exec();
+        
+        console.log("樣本影片狀態:");
+        results.forEach((video, index) => {
+            const hasVideoType = video && video.videoType;
+            console.log(`影片 ${sampleIds[index]}: videoType = ${hasVideoType ? video.videoType : '未設定'}`);
+        });
+    }
+    
+    response.setHeader('Access-Control-Allow-Origin', '*');
+    if (redisClient.isOpen) await redisClient.quit();
+    return response.status(200).json({ 
+        message: `資料庫狀態檢查完成，總影片數: ${allVideoIds.length}`,
+        totalVideos: allVideoIds.length
+    });
+}
