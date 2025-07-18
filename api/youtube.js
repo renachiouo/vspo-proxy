@@ -1,16 +1,17 @@
 import { createClient } from 'redis';
 
+// --- 版本指紋 ---
+const SCRIPT_VERSION = '8.1-FINAL';
+
 // --- Redis Keys Configuration ---
 const KEY_PREFIX = 'vspo-db:v1:';
 const VIDEOS_SET_KEY = `${KEY_PREFIX}video_ids`;
 const VIDEO_HASH_PREFIX = `${KEY_PREFIX}video:`;
 const META_LAST_UPDATED_KEY = `${KEY_PREFIX}meta:last_updated`;
 const UPDATE_LOCK_KEY = `${KEY_PREFIX}meta:update_lock`;
-// 用於追蹤 Shorts 回填進度的計數器
 const BACKFILL_COUNTER_KEY = `${KEY_PREFIX}meta:backfill_counter`;
 
 const UPDATE_INTERVAL_SECONDS = 1800; // 30 分鐘
-// 每次更新時，處理舊影片的回填數量上限
 const BACKFILL_BATCH_SIZE = 15;
 
 // --- YouTube API 設定 ---
@@ -132,14 +133,13 @@ const fetchYouTube = async (endpoint, params) => {
     throw new Error('所有 API 金鑰都已失效。');
 };
 
-// **函式已更新**：不再處理計數器，而是回傳成功分類的影片 ID
 async function processAndStoreVideos(videoIds, redisClient) {
     if (videoIds.length === 0) {
         return { validVideoIds: new Set(), idsToDelete: [], classifiedIds: new Set() };
     }
     console.log(`準備處理總共 ${videoIds.length} 部影片的資訊...`);
 
-    const classifiedIds = new Set(); // 用於記錄本次成功分類的影片
+    const classifiedIds = new Set();
     
     const videoDetailBatches = batchArray(videoIds, 50);
     const videoDetailPromises = videoDetailBatches.map(id => fetchYouTube('videos', { part: 'statistics,snippet', id: id.join(',') }));
@@ -287,12 +287,12 @@ async function updateAndStoreYouTubeData(redisClient) {
         }
     }
 
-    const pipeline = redisClient.multi();
-
     if (backfilledCount > 0) {
         console.log(` -> 本次共回填 ${backfilledCount} 部舊影片，更新計數器。`);
-        pipeline.decrBy(BACKFILL_COUNTER_KEY, backfilledCount);
+        await redisClient.decrBy(BACKFILL_COUNTER_KEY, backfilledCount);
     }
+    
+    const pipeline = redisClient.multi();
     
     if (idsToDelete.length > 0) {
         console.log(`準備刪除 ${idsToDelete.length} 部失效/過期影片...`);
@@ -388,7 +388,7 @@ export default async function handler(request, response) {
             await redisClient.set(BACKFILL_COUNTER_KEY, 0);
             response.setHeader('Access-Control-Allow-Origin', '*');
             if (redisClient.isOpen) await redisClient.quit();
-            return response.status(200).json({ message: "回填計數器已強制歸零。" });
+            return response.status(200).json({ message: "回填計數器已成功重置為 0。" });
         } else if (mode && /^\d{8}$/.test(mode)) {
             console.log(`管理員密碼驗證成功，強制執行指定日期搜尋：${mode}`);
             await searchSingleDayAndStoreData(mode, redisClient);
@@ -423,6 +423,7 @@ export default async function handler(request, response) {
         totalVisits: visitorCount.totalVisits,
         todayVisits: visitorCount.todayVisits,
         backfill_remaining: backfillRemaining,
+        script_version: SCRIPT_VERSION, // **新增：版本指紋**
     };
 
     response.setHeader('Access-Control-Allow-Origin', '*');
