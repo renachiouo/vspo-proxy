@@ -132,8 +132,8 @@ const fetchYouTube = async (endpoint, params) => {
     throw new Error('所有 API 金鑰都已失效。');
 };
 
-// **函式已更新**：現在會接收 existingVideoIdsSet 以便進行判斷
-async function processAndStoreVideos(videoIds, redisClient, existingVideoIdsSet) {
+// **函式已更新**：現在會接收 backfillBatchSet 以便進行判斷
+async function processAndStoreVideos(videoIds, redisClient, backfillBatchSet) {
     if (videoIds.length === 0) {
         console.log('沒有需要處理的影片。');
         return { validVideoIds: new Set(), idsToDelete: [] };
@@ -193,9 +193,9 @@ async function processAndStoreVideos(videoIds, redisClient, existingVideoIdsSet)
                 videoType = isShort ? 'short' : 'video';
                 console.log(`[分類] 影片 ${videoId} 已分類為: ${videoType}`);
                 
-                // **修正點**：只有當這是一部資料庫中已存在的影片時，才更新回填計數器
-                if (existingVideoIdsSet.has(videoId)) {
-                    console.log(` -> 這是一部舊影片，更新回填計數器。`);
+                // **修正點**：只有當這是一部被選中進行回填的舊影片時，才更新計數器
+                if (backfillBatchSet.has(videoId)) {
+                    console.log(` -> 這是一部回填影片，更新計數器。`);
                     await redisClient.decr(BACKFILL_COUNTER_KEY);
                 }
             }
@@ -257,7 +257,8 @@ async function updateAndStoreYouTubeData(redisClient) {
     }
 
     const searchPromises = SEARCH_KEYWORDS.map(q => fetchYouTube('search', { part: 'snippet', type: 'video', maxResults: 50, q, publishedAfter }));
-    const searchResults = await Promise.all(searchResults);
+    // **修正點**：修正了致命的打字錯誤
+    const searchResults = await Promise.all(searchPromises);
     for (const result of searchResults) {
       result.items?.forEach(item => {
         if (item.id.videoId && !CHANNEL_BLACKLIST.includes(item.snippet.channelId)) {
@@ -267,11 +268,8 @@ async function updateAndStoreYouTubeData(redisClient) {
     }
 
     const existingVideoIds = await redisClient.sMembers(VIDEOS_SET_KEY);
-    const existingVideoIdsSet = new Set(existingVideoIds);
     
-    // --- 漸進式回填邏輯 ---
     const videosToBackfill = [];
-    // **優化**：直接從現有 ID 列表中查找需要回填的影片
     const pipelineCheck = redisClient.multi();
     existingVideoIds.forEach(id => pipelineCheck.hExists(`${VIDEO_HASH_PREFIX}${id}`, 'videoType'));
     const existsResults = await pipelineCheck.exec();
@@ -283,15 +281,15 @@ async function updateAndStoreYouTubeData(redisClient) {
     }
     
     const backfillBatch = videosToBackfill.slice(0, BACKFILL_BATCH_SIZE);
+    const backfillBatchSet = new Set(backfillBatch);
     if (backfillBatch.length > 0) {
         console.log(`[漸進式更新] 發現 ${videosToBackfill.length} 部舊影片待分類，本次處理 ${backfillBatch.length} 部。`);
     }
-    // --- 邏輯結束 ---
 
-    const masterVideoIdList = [...new Set([...newVideoCandidates, ...existingVideoIds, ...backfillBatch])];
+    const masterVideoIdList = [...new Set([...newVideoCandidates, ...backfillBatch])];
     
-    // **傳入 existingVideoIdsSet**
-    const { validVideoIds, idsToDelete } = await processAndStoreVideos(masterVideoIdList, redisClient, existingVideoIdsSet);
+    // **傳入 backfillBatchSet**
+    const { validVideoIds, idsToDelete } = await processAndStoreVideos(masterVideoIdList, redisClient, backfillBatchSet);
     
     const pipeline = redisClient.multi();
 
@@ -321,7 +319,6 @@ async function initializeBackfill(redisClient) {
     }
 
     let unclassifiedCount = 0;
-    // 分批處理以避免單一 pipeline 過大
     const idBatches = batchArray(allVideoIds, 200); 
 
     for (const batch of idBatches) {
@@ -381,7 +378,6 @@ export default async function handler(request, response) {
                 if (redisClient.isOpen) await redisClient.quit();
                 return response.status(200).json({ message: `Shorts 回填已初始化，共有 ${count} 部影片待處理。` });
             } catch(e) {
-                // **新增**：處理超時等錯誤
                 console.error("初始化回填時發生錯誤:", e);
                 response.setHeader('Access-Control-Allow-Origin', '*');
                 if (redisClient.isOpen) await redisClient.quit();
