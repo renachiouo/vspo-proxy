@@ -20,7 +20,6 @@ const CHANNEL_WHITELIST = [ // 第一層：完全信任，不檢查關鍵字
   'UCFZ7BPHTgEo5FXuvC9GVY7Q', 
   'UCWq4bX9UMV1ir3liKRIvCHg', 
   'UCbsHmeSh_NGyO8ymoYG02sw',
-  'UCd3YtBLO0sGhQ2eTWs80bcg',
   'UCGy_n5NeGfeVzravayHk65Q',
   'UC9xEUSRrMWbbb-59IehNv3g',
 ];
@@ -28,6 +27,7 @@ const CHANNEL_WHITELIST = [ // 第一層：完全信任，不檢查關鍵字
 const SPECIAL_WHITELIST = [ // 第二層特殊白名單
     'UCz4GIV8wNBsLBzZy2wA2KKw', 'UColeV1H-x8MuVLSAdohTOVQ',
     'UCGy_n5NeGfeVzravayHk65Q', 'UCibI94U5KocgrbyY9gx3cIg',
+    'UCd3YtBLO0sGhQ2eTWs80bcg', 
 ];
 const SPECIAL_KEYWORDS = ["vspo"];
 
