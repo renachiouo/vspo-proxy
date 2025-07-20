@@ -17,17 +17,19 @@ const BACKFILL_BATCH_SIZE = 15;
 
 // --- YouTube API 設定 ---
 const CHANNEL_WHITELIST = [ // 第一層：完全信任，不檢查關鍵字
-  'UCFZ7BPHTgEo5FXuvC9GVY7Q', 
-  'UCWq4bX9UMV1ir3liKRIvCHg', 
-  'UCbsHmeSh_NGyO8ymoYG02sw',
-  'UCGy_n5NeGfeVzravayHk65Q',
-  'UC9xEUSRrMWbbb-59IehNv3g',
+
 ];
 
 const SPECIAL_WHITELIST = [ // 第二層特殊白名單
     'UCz4GIV8wNBsLBzZy2wA2KKw', 'UColeV1H-x8MuVLSAdohTOVQ',
     'UCGy_n5NeGfeVzravayHk65Q', 'UCibI94U5KocgrbyY9gx3cIg',
-    'UCd3YtBLO0sGhQ2eTWs80bcg', 
+    'UCd3YtBLO0sGhQ2eTWs80bcg', 'UC9xEUSRrMWbbb-59IehNv3g',
+    'UCGy_n5NeGfeVzravayHk65Q', 'UCbsHmeSh_NGyO8ymoYG02sw',
+    'UCWq4bX9UMV1ir3liKRIvCHg', 'UCFZ7BPHTgEo5FXuvC9GVY7Q', 
+    'UCu_KJNiq48jSwBVY7T4-hUQ', 'UC4QGmmdtxLZFFASDVee_atQ',
+    'UCBiATOGgCqf8uoFfX-pZ1gA', 'UCzqsI2AoNYe2F2WGRYqkEjA',
+    'UCIgvpS92srpQrGbXDlc8HFQ', 'UC7lPYbAxGzvbobFq_JxxftA',
+    'UCa_gZCepQ7ZAUAsxnQkuMMA', 'UC0XdcEuxl03Pj6Rm7jcHEnw',
 ];
 const SPECIAL_KEYWORDS = ["vspo"];
 
