@@ -12,7 +12,7 @@ const META_LAST_UPDATED_KEY = `${KEY_PREFIX}meta:last_updated`;
 const UPDATE_LOCK_KEY = `${KEY_PREFIX}meta:update_lock`;
 const BACKFILL_COUNTER_KEY = `${KEY_PREFIX}meta:backfill_counter`;
 
-const UPDATE_INTERVAL_SECONDS = 1800; // 30 分鐘
+const UPDATE_INTERVAL_SECONDS = 1200; // 20 分鐘
 const BACKFILL_BATCH_SIZE = 15;
 
 // --- YouTube API 設定 ---
