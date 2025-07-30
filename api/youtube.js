@@ -1,33 +1,87 @@
 import { createClient } from 'redis';
 
 // --- 版本指紋 ---
-const SCRIPT_VERSION = '10.0'; 
+const SCRIPT_VERSION = '11.0-BACKEND-PREP'; 
 
-// --- Redis Keys Configuration (版本提升至 v2) ---
-const KEY_PREFIX = 'vspo-db:v2:';
+// --- Redis Keys Configuration (版本提升至 v3) ---
+const KEY_PREFIX = 'vspo-db:v3:';
+// --- 主要(中文)影片資料庫 ---
 const VIDEOS_SET_KEY = `${KEY_PREFIX}video_ids`;
 const VIDEO_HASH_PREFIX = `${KEY_PREFIX}video:`;
 const META_LAST_UPDATED_KEY = `${KEY_PREFIX}meta:last_updated`;
 const UPDATE_LOCK_KEY = `${KEY_PREFIX}meta:update_lock`;
-const PENDING_CLASSIFICATION_SET_KEY = `${KEY_PREFIX}pending_classification`; // 新增：待分類影片列表
-const CLASSIFICATION_LOCK_KEY = `${KEY_PREFIX}meta:classification_lock`; // 新增：分類工作鎖
+const PENDING_CLASSIFICATION_SET_KEY = `${KEY_PREFIX}pending_classification`;
+const CLASSIFICATION_LOCK_KEY = `${KEY_PREFIX}meta:classification_lock`;
+// --- 新增：外文影片資料庫 ---
+const FOREIGN_VIDEOS_SET_KEY = `${KEY_PREFIX}foreign_video_ids`;
+const FOREIGN_VIDEO_HASH_PREFIX = `${KEY_PREFIX}foreign_video:`;
+const FOREIGN_META_LAST_UPDATED_KEY = `${KEY_PREFIX}meta:foreign_last_updated`;
+const FOREIGN_UPDATE_LOCK_KEY = `${KEY_PREFIX}meta:foreign_update_lock`;
+// --- 新增：元配信索引 ---
+const STREAM_INDEX_PREFIX = `${KEY_PREFIX}index:`;
 
-const UPDATE_INTERVAL_SECONDS = 1200; // 20 分鐘
+// --- 更新頻率設定 ---
+const UPDATE_INTERVAL_SECONDS = 1200; // 中文影片：20 分鐘
+const FOREIGN_UPDATE_INTERVAL_SECONDS = 3600; // 外文影片：1 小時
 
-// --- YouTube API 設定 (與原先相同) ---
+// --- YouTube API 設定 ---
+// 【修改】所有列表改為雙列排序
 const CHANNEL_WHITELIST = [ /* 頻道白名單 */ ];
-const SPECIAL_WHITELIST = [ /* 頻道特殊白名單 */ 'UCNdRb8JHTX6a-8V1j7olvAQ', 'UCwFDCL9otNlHyP4yMXunohQ', 'UCPfB7gx9yKfzfVirTX77LFA', 'UCqrTGkqVijNpTMPeWZ4_CgA', 'UCmOdNcq3ttIqrI0RBfdEwcQ', 'UCz4GIV8wNBsLBzZy2wA2KKw', 'UColeV1H-x8MuVLSAdohTOVQ', 'UCGy_n5NeGfeVzravayHk65Q', 'UCibI94U5KocgrbyY9gx3cIg', 'UCd3YtBLO0sGhQ2eTWs80bcg', 'UC9xEUSRrMWbbb-59IehNv3g', 'UCGy_n5NeGfeVzravayHk65Q', 'UCbsHmeSh_NGyO8ymoYG02sw', 'UCWq4bX9UMV1ir3liKRIvCHg', 'UCFZ7BPHTgEo5FXuvC9GVY7Q', 'UCu_KJNiq48jSwBVY7T4-hUQ', 'UC4QGmmdtxLZFFASDVee_atQ', 'UCBiATOGgCqf8uoFfX-pZ1gA', 'UCzqsI2AoNYe2F2WGRYqkEjA', 'UCIgvpS92srpQrGbXDlc8HFQ', 'UC7lPYbAxGzvbobFq_JxxftA', 'UCa_gZCepQ7ZAUAsxnQkuMMA', 'UC0XdcEuxl03Pj6Rm7jcHEnw' ];
+const SPECIAL_WHITELIST = [ 
+    'UCNdRb8JHTX6a-8V1j7olvAQ', 'UCwFDCL9otNlHyP4yMXunohQ', 
+    'UCPfB7gx9yKfzfVirTX77LFA', 'UCqrTGkqVijNpTMPeWZ4_CgA', 
+    'UCmOdNcq3ttIqrI0RBfdEwcQ', 'UCz4GIV8wNBsLBzZy2wA2KKw', 
+    'UColeV1H-x8MuVLSAdohTOVQ', 'UCGy_n5NeGfeVzravayHk65Q', 
+    'UCibI94U5KocgrbyY9gx3cIg', 'UCd3YtBLO0sGhQ2eTWs80bcg', 
+    'UC9xEUSRrMWbbb-59IehNv3g', 'UCbsHmeSh_NGyO8ymoYG02sw', 
+    'UCWq4bX9UMV1ir3liKRIvCHg', 'UCFZ7BPHTgEo5FXuvC9GVY7Q', 
+    'UCu_KJNiq48jSwBVY7T4-hUQ', 'UC4QGmmdtxLZFFASDVee_atQ', 
+    'UCBiATOGgCqf8uoFfX-pZ1gA', 'UCzqsI2AoNYe2F2WGRYqkEjA', 
+    'UCIgvpS92srpQrGbXDlc8HFQ', 'UC7lPYbAxGzvbobFq_JxxftA', 
+    'UCa_gZCepQ7ZAUAsxnQkuMMA', 'UC0XdcEuxl03Pj6Rm7jcHEnw' 
+];
+const CHANNEL_BLACKLIST = [
+    'UCuI5_lA2o-arAIKukGvIEcQ', 'UCOnlV05C1t4d-x2NP-kgyzw', 
+    'UCjOaP5dTW_0s1Ui11jm4Rzg', 'UCGZK4lLrDYcOKxmWJIERmjQ', 
+    'UCnERutXxnHTLqckbGCUwtAg', 'UC-wCI2w1vMaEQ1iLnp3MEVQ', 
+    'UCIvTtZq1vMaEQ1iLnp3MEVQ', 'UCBf3eLt6Nj7AJwkDysm0JWw', 
+    'UCnusRHKhMAR7dNM00mk44BA', 'UCEShI32SUz7g9J9ICOs5Y0g' 
+];
+// 【新增】外文頻道白名單
+const FOREIGN_CHANNEL_WHITELIST = [
+    'UCDGJlKGFkvxX-4MXSeNHteg', 'UCbAffpeZmYjQp0u4wtNd2rg',
+    'UCWnhOhucHHQubSAkOi8xpew', 'UCLaBpbUPBvBIBHoKB4IYY_w',
+    'UCoM5tr4Uf8qYDe48IOyMLNw', 'UC3zUXFjSuh4d5lqAQn2WycA',
+    'UCnKtimjem240E6SltCV5XsA', 'UC-ZBjcW60WZsbmD_w7CzFrQ',
+    'UCwH9u8cS5i6P-ms9Ij_5c3A', 'UCxMtLpKehgF1Ryx4X8U79aQ',
+    'UCW6Tau824RZGEdpp7voGvCQ', 'UCBMXkz7a-SKTvDQGkvPkgEA',
+    'UCOizB6qqhzU10djIjuZrXJA', 'UCEHlq4NtouTi4aXLtPyeMzQ',
+    'UCcC2iASzr8hxAlEuSzhBNpg', 'UC4Ep1Uy6bEk8J049mRI8UWQ',
+    'UCgYEO91NqJiU_Z09-OLoOLQ', 'UCiwCmmQcBRHcH20O_A4L-rg',
+    'UCBsNQ9CAiZ_9fik4_N0MjPA', 'UCqy8AfibWWLtlIvuIbRHOTA',
+    'UCYv3ljhqjA_K3NMa4ux6Sag', 'UCrMIzdEEMtJGN95HaaNA1Sg',
+    'UCl_H9O5f_uG-7tSgGKyqhKA', 'UCXOE_414xpAd1FFcwEDpikA',
+    'UCHl9Lk_Nene0QbwuJJFdEyQ', 'UC78ZpgFpbA4KyHinPRQ-vcg',
+    'UC2bTmb1UK1gv9rAvjiORRuQ', 'UCLNI_djAPvsMFihOFblOhhg',
+    'UCo2e68YuP_JkQcnz27J-5qA', 'UC-PzhxFaPulWcgsZ-kH45FA',
+    'UC7TgomjTg0YnXXokfRwccBA', 'UC0_zoJAoiwQSMFdMjkGatAQ',
+    'UCAMXaQMurqT9Xkm-BnNRbDw', 'UCY52ChlPzGWIF4CzI2SdF4Q',
+    'UCmVhuHYFM_HshlRwhesXeuA', 'UCAeN4qh2CJW0qxZCgVO_cVA',
+    'UCowE5eik3vn-pshdaQksdww', 'UCQZ6f0GyKnxQJZe2VZWLIeA',
+    'UC6ln0uzKuMLQaSl7-LMVu5A', 'UCeDnvJ66mIu_D4MtRoKRE_Q',
+    'UC7sjX8lHyqbYAVREGuUrtQg', 'UCPK8tMKReXvewGOz7d0zS9g'
+];
+
 const SPECIAL_KEYWORDS = ["vspo", "ぶいすぽ"];
 const SEARCH_KEYWORDS = ["VSPO中文", "VSPO中文精華", "VSPO精華", "VSPO中文剪輯", "VSPO剪輯"];
 const KEYWORD_BLACKLIST = ["MMD"]; 
-const CHANNEL_BLACKLIST = [  'UCuI5_lA2o-arAIKukGvIEcQ', 'UCWnhOhucHHQubSAkOi8xpew', 'UCOnlV05C1t4d-x2NP-kgyzw', 'UCjOaP5dTW_0s1Ui11jm4Rzg', 'UCGZK4lLrDYcOKxmWJIERmjQ', 'UCnERutXxnHTLqckbGCUwtAg', 'UC-wCI2w1vMaEQ1iLnp3MEVQ', 'UCIvTtZq1vMaEQ1iLnp3MEVQ', 'UCBf3eLt6Nj7AJwkDysm0JWw', 'UCnusRHKhMAR7dNM00mk44BA', 'UCEShI32SUz7g9J9ICOs5Y0g' ];
 const apiKeys = [
     process.env.YOUTUBE_API_KEY_1, process.env.YOUTUBE_API_KEY_2,
     process.env.YOUTUBE_API_KEY_3, process.env.YOUTUBE_API_KEY_4,
     process.env.YOUTUBE_API_KEY_5, process.env.YOUTUBE_API_KEY_6,
 ].filter(key => key);
 
-// --- 輔助函式  ---
+// --- 輔助函式 ---
 const batchArray = (arr, size) => Array.from({ length: Math.ceil(arr.length / size) }, (v, i) => arr.slice(i * size, i * size + size));
 const isVideoValid = (videoDetail, keywords) => {
     if (!videoDetail || !videoDetail.snippet) return false;
@@ -45,7 +99,7 @@ async function checkIfShort(videoId) {
         return response.status === 200;
     } catch (error) {
         console.error(`探測 Shorts 失敗 (Video ID: ${videoId}):`, error.name);
-        return false; // 發生錯誤時，安全起見回傳 false
+        return false;
     }
 }
 async function updateAndGetVisitorCount(redisClient) {
@@ -82,32 +136,43 @@ const fetchYouTube = async (endpoint, params) => {
     throw new Error('所有 API 金鑰都已失效。');
 };
 
-// --- 核心邏輯函式 (重構) ---
+// 【新增】解析元配信資訊的函式
+function parseOriginalStreamInfo(description) {
+    if (!description) return null;
+    const ytRegex = /(?:https?:\/\/)?(?:www\.)?(?:youtube\.com\/(?:watch\?v=|live\/)|youtu\.be\/)([a-zA-Z0-9_-]{11})/;
+    const ytMatch = description.match(ytRegex);
+    if (ytMatch && ytMatch[1]) {
+        return { platform: 'youtube', id: ytMatch[1] };
+    }
+    const twitchRegex = /(?:https?:\/\/)?(?:www\.)?twitch\.tv\/videos\/(\d+)/;
+    const twitchMatch = description.match(twitchRegex);
+    if (twitchMatch && twitchMatch[1]) {
+        return { platform: 'twitch', id: twitchMatch[1] };
+    }
+    return null;
+}
+
+// --- 核心邏輯函式 ---
 
 async function getVideosFromDB(redisClient) {
     const videoIds = await redisClient.sMembers(VIDEOS_SET_KEY);
     if (!videoIds || videoIds.length === 0) return [];
-
     const pipeline = redisClient.multi();
     videoIds.forEach(id => pipeline.hGetAll(`${VIDEO_HASH_PREFIX}${id}`));
     const results = await pipeline.exec();
-
     const videos = results.map(video => {
         if (video && Object.keys(video).length > 0) {
             return { ...video, viewCount: parseInt(video.viewCount, 10) || 0, subscriberCount: parseInt(video.subscriberCount, 10) || 0 };
         }
         return null;
     }).filter(Boolean);
-
     videos.sort((a, b) => new Date(b.publishedAt) - new Date(a.publishedAt));
     return videos;
 }
 
-// 重構：處理並儲存影片，加入選項控制是否進行分類
-async function processAndStoreVideos(videoIds, redisClient, options = { classify: true, addToPending: false }) {
+async function processAndStoreVideos(videoIds, redisClient, storageKeys, options = { classify: false, checkKeywords: true }) {
     if (videoIds.length === 0) return { validVideoIds: new Set(), idsToDelete: [] };
-    console.log(`準備處理 ${videoIds.length} 部影片，分類選項: ${options.classify}`);
-
+    
     const videoDetailsMap = new Map();
     const videoDetailBatches = batchArray(videoIds, 50);
     for (const batch of videoDetailBatches) {
@@ -128,24 +193,8 @@ async function processAndStoreVideos(videoIds, redisClient, options = { classify
     const validVideoIds = new Set();
     const oneMonthAgo = new Date();
     oneMonthAgo.setMonth(oneMonthAgo.getMonth() - 1);
-    
-    let shortsMap = new Map();
-    if (options.classify) {
-        console.log(`開始對 ${videoIds.length} 部影片進行 Shorts 分類...`);
-        const shortsCheckPromises = videoIds.map(async (videoId) => {
-            if (videoDetailsMap.has(videoId)) {
-                const isShort = await checkIfShort(videoId);
-                return { videoId, isShort };
-            }
-            return { videoId, isShort: false };
-        });
-        const shortsCheckResults = await Promise.all(shortsCheckPromises);
-        shortsMap = new Map(shortsCheckResults.map(item => [item.videoId, item.isShort]));
-        console.log('Shorts 分類完成。');
-    }
 
     const pipeline = redisClient.multi();
-    const videosToClassify = [];
 
     for (const videoId of videoIds) {
         const detail = videoDetailsMap.get(videoId);
@@ -157,9 +206,13 @@ async function processAndStoreVideos(videoIds, redisClient, options = { classify
         const isExpired = new Date(detail.snippet.publishedAt) < oneMonthAgo;
 
         let isContentValid = false;
-        if (CHANNEL_WHITELIST.includes(channelId)) isContentValid = true; 
-        else if (SPECIAL_WHITELIST.includes(channelId)) isContentValid = isVideoValid(detail, SPECIAL_KEYWORDS); 
-        else isContentValid = isVideoValid(detail, SEARCH_KEYWORDS); 
+        if (options.checkKeywords) {
+            if (CHANNEL_WHITELIST.includes(channelId)) isContentValid = true; 
+            else if (SPECIAL_WHITELIST.includes(channelId)) isContentValid = isVideoValid(detail, SPECIAL_KEYWORDS); 
+            else isContentValid = isVideoValid(detail, SEARCH_KEYWORDS);
+        } else {
+            isContentValid = true; // For foreign clips, we trust them
+        }
 
         if (!isChannelBlacklisted && !isKeywordBlacklisted && !isExpired && isContentValid) {
             validVideoIds.add(videoId);
@@ -180,31 +233,30 @@ async function processAndStoreVideos(videoIds, redisClient, options = { classify
             };
 
             if (options.classify) {
-                videoData.videoType = shortsMap.get(videoId) ? 'short' : 'video';
-            } else if (options.addToPending) {
-                videosToClassify.push(videoId);
+                // This part is now handled by handleClassifyVideos
             }
             
-            pipeline.hSet(`${VIDEO_HASH_PREFIX}${videoId}`, videoData);
+            const originalStreamInfo = parseOriginalStreamInfo(description);
+            if (originalStreamInfo) {
+                videoData.originalStreamInfo = JSON.stringify(originalStreamInfo);
+                const indexKey = `${STREAM_INDEX_PREFIX}${originalStreamInfo.platform}:${originalStreamInfo.id}`;
+                pipeline.sAdd(indexKey, `${storageKeys.type}:${videoId}`); // Store with type prefix
+            }
+            
+            pipeline.hSet(`${storageKeys.hashPrefix}${videoId}`, videoData);
         }
     }
     
-    if (options.addToPending && videosToClassify.length > 0) {
-        console.log(`將 ${videosToClassify.length} 部影片加入待分類列表。`);
-        pipeline.sAdd(PENDING_CLASSIFICATION_SET_KEY, videosToClassify);
-    }
-
     await pipeline.exec();
     
-    const allIdsInDB = await redisClient.sMembers(VIDEOS_SET_KEY);
+    const allIdsInDB = await redisClient.sMembers(storageKeys.setKey);
     const idsToDelete = allIdsInDB.filter(id => !validVideoIds.has(id));
 
     return { validVideoIds, idsToDelete };
 }
 
-// 重構：主更新函式，加入選項
 async function updateAndStoreYouTubeData(redisClient, options = { classify: true, addToPending: false }) {
-    console.log(`開始執行更新程序，選項:`, options);
+    console.log(`開始執行中文影片更新程序，選項:`, options);
     
     const oneMonthAgo = new Date();
     oneMonthAgo.setMonth(oneMonthAgo.getMonth() - 1);
@@ -237,25 +289,66 @@ async function updateAndStoreYouTubeData(redisClient, options = { classify: true
       });
     }
 
-    const { validVideoIds, idsToDelete } = await processAndStoreVideos([...newVideoCandidates], redisClient, options);
+    const storageKeys = { setKey: VIDEOS_SET_KEY, hashPrefix: VIDEO_HASH_PREFIX, type: 'main' };
+    const { validVideoIds, idsToDelete } = await processAndStoreVideos([...newVideoCandidates], redisClient, storageKeys, { classify: options.classify, checkKeywords: true });
     
     const pipeline = redisClient.multi();
     if (idsToDelete.length > 0) {
-        console.log(`準備刪除 ${idsToDelete.length} 部失效/過期影片...`);
-        pipeline.sRem(VIDEOS_SET_KEY, idsToDelete);
-        idsToDelete.forEach(id => pipeline.del(`${VIDEO_HASH_PREFIX}${id}`));
+        pipeline.sRem(storageKeys.setKey, idsToDelete);
+        idsToDelete.forEach(id => pipeline.del(`${storageKeys.hashPrefix}${id}`));
     }
     if (validVideoIds.size > 0) {
-        pipeline.sAdd(VIDEOS_SET_KEY, [...validVideoIds]);
+        pipeline.sAdd(storageKeys.setKey, [...validVideoIds]);
+    }
+
+    if (options.addToPending) {
+        const videosToClassify = [...validVideoIds].filter(id => !options.classify);
+        if (videosToClassify.length > 0) {
+            console.log(`將 ${videosToClassify.length} 部影片加入待分類列表。`);
+            pipeline.sAdd(PENDING_CLASSIFICATION_SET_KEY, videosToClassify);
+        }
+    }
+
+    await pipeline.exec();
+    console.log(`中文影片更新程序完成。`);
+}
+
+async function updateForeignClips(redisClient) {
+    console.log('開始執行外文影片更新程序...');
+    const oneMonthAgo = new Date();
+    oneMonthAgo.setMonth(oneMonthAgo.getMonth() - 1);
+
+    const newVideoCandidates = new Set();
+    const channelsResponse = await fetchYouTube('channels', { part: 'contentDetails', id: FOREIGN_CHANNEL_WHITELIST.join(',') });
+    const uploadPlaylistIds = channelsResponse.items?.map(item => item.contentDetails.relatedPlaylists.uploads).filter(Boolean) || [];
+    
+    for (const playlistId of uploadPlaylistIds) {
+        const result = await fetchYouTube('playlistItems', { part: 'snippet', playlistId, maxResults: 50 });
+        result.items?.forEach(item => {
+            if (new Date(item.snippet.publishedAt) > oneMonthAgo) {
+                newVideoCandidates.add(item.snippet.resourceId.videoId);
+            }
+        });
+    }
+
+    const storageKeys = { setKey: FOREIGN_VIDEOS_SET_KEY, hashPrefix: FOREIGN_VIDEO_HASH_PREFIX, type: 'foreign' };
+    const { validVideoIds, idsToDelete } = await processAndStoreVideos([...newVideoCandidates], redisClient, storageKeys, { classify: false, checkKeywords: false });
+    
+    const pipeline = redisClient.multi();
+    if (idsToDelete.length > 0) {
+        pipeline.sRem(storageKeys.setKey, idsToDelete);
+        idsToDelete.forEach(id => pipeline.del(`${storageKeys.hashPrefix}${id}`));
+    }
+    if (validVideoIds.size > 0) {
+        pipeline.sAdd(storageKeys.setKey, [...validVideoIds]);
     }
     await pipeline.exec();
-    
-    console.log(`更新程序完成。`);
+    console.log('外文影片更新程序完成。');
 }
+
 
 // --- API 端點處理函式 ---
 
-// GET /api/youtube (主要資料獲取)
 async function handleGetData(request, response, redisClient) {
     const { searchParams } = new URL(request.url, `http://${request.headers.host}`);
     const forceRefresh = searchParams.get('force_refresh') === 'true';
@@ -271,7 +364,6 @@ async function handleGetData(request, response, redisClient) {
             return response.status(401).json({ error: '無效的管理員密碼。' });
         }
         console.log("管理員密碼驗證成功，強制執行快速更新 (不分類)。");
-        // 強制更新時，不分類，而是將任務加入待辦清單
         await updateAndStoreYouTubeData(redisClient, { classify: false, addToPending: true });
         await redisClient.set(META_LAST_UPDATED_KEY, Date.now());
     } else if (needsUpdate) {
@@ -279,7 +371,6 @@ async function handleGetData(request, response, redisClient) {
         if (lockAcquired) {
             console.log('需要更新且已獲取鎖，開始背景標準更新 (含分類)。');
             try {
-                // 排程更新時，完整執行所有分類
                 await updateAndStoreYouTubeData(redisClient, { classify: true, addToPending: false });
                 await redisClient.set(META_LAST_UPDATED_KEY, Date.now());
             } finally {
@@ -287,6 +378,20 @@ async function handleGetData(request, response, redisClient) {
             }
         } else {
             console.log('需要更新，但已有其他程序正在更新。');
+        }
+    }
+    
+    const lastForeignUpdate = await redisClient.get(FOREIGN_META_LAST_UPDATED_KEY);
+    const needsForeignUpdate = !lastForeignUpdate || (Date.now() - parseInt(lastForeignUpdate, 10)) > FOREIGN_UPDATE_INTERVAL_SECONDS * 1000;
+    
+    if (needsForeignUpdate) {
+        const lockAcquired = await redisClient.set(FOREIGN_UPDATE_LOCK_KEY, 'locked', { NX: true, EX: 600 });
+        if (lockAcquired) {
+            console.log('需要更新外文影片且已獲取鎖，開始背景更新。');
+            updateForeignClips(redisClient)
+                .then(() => redisClient.set(FOREIGN_META_LAST_UPDATED_KEY, Date.now()))
+                .catch(err => console.error("背景更新外文影片失敗:", err))
+                .finally(() => redisClient.del(FOREIGN_UPDATE_LOCK_KEY));
         }
     }
 
@@ -303,29 +408,23 @@ async function handleGetData(request, response, redisClient) {
     });
 }
 
-// POST /api/classify-videos (觸發背景分類工作)
 async function handleClassifyVideos(request, response, redisClient) {
     const lockAcquired = await redisClient.set(CLASSIFICATION_LOCK_KEY, 'locked', { NX: true, EX: 600 });
     if (!lockAcquired) {
         return response.status(429).json({ message: "已有分類任務正在進行中。" });
     }
-
     try {
         const videoIdsToClassify = await redisClient.sMembers(PENDING_CLASSIFICATION_SET_KEY);
         if (videoIdsToClassify.length === 0) {
             return response.status(200).json({ message: "沒有需要分類的影片。" });
         }
-        
         console.log(`開始背景分類 ${videoIdsToClassify.length} 部影片...`);
-
         for (const videoId of videoIdsToClassify) {
             const isShort = await checkIfShort(videoId);
             const videoType = isShort ? 'short' : 'video';
-            // 更新 Redis 中的影片資料，並從待辦清單中移除
             await redisClient.hSet(`${VIDEO_HASH_PREFIX}${videoId}`, 'videoType', videoType);
             await redisClient.sRem(PENDING_CLASSIFICATION_SET_KEY, videoId);
         }
-
         console.log(`背景分類完成。`);
         return response.status(200).json({ message: "分類成功。" });
     } catch(error) {
@@ -336,10 +435,50 @@ async function handleClassifyVideos(request, response, redisClient) {
     }
 }
 
-// GET /api/check-status (輪詢分類狀態)
 async function handleCheckStatus(request, response, redisClient) {
     const count = await redisClient.sCard(PENDING_CLASSIFICATION_SET_KEY);
     return response.status(200).json({ isDone: count === 0 });
+}
+
+async function handleGetRelatedClips(request, response, redisClient) {
+    const { searchParams } = new URL(request.url, `http://${request.headers.host}`);
+    const platform = searchParams.get('platform');
+    const id = searchParams.get('id');
+
+    if (!platform || !id) {
+        return response.status(400).json({ error: '缺少 platform 或 id 參數。' });
+    }
+
+    const indexKey = `${STREAM_INDEX_PREFIX}${platform}:${id}`;
+    const relatedVideoIdentifiers = await redisClient.sMembers(indexKey);
+
+    if (relatedVideoIdentifiers.length === 0) {
+        return response.status(200).json({ videos: [] });
+    }
+
+    const pipeline = redisClient.multi();
+    relatedVideoIdentifiers.forEach(identifier => {
+        const [type, videoId] = identifier.split(':');
+        if (type === 'main') {
+            pipeline.hGetAll(`${VIDEO_HASH_PREFIX}${videoId}`);
+        } else if (type === 'foreign') {
+            pipeline.hGetAll(`${FOREIGN_VIDEO_HASH_PREFIX}${videoId}`);
+        }
+    });
+    const results = await pipeline.exec();
+
+    const videos = results.map(videoData => {
+        if (videoData && Object.keys(videoData).length > 0) {
+            if (videoData.originalStreamInfo) {
+                videoData.originalStreamInfo = JSON.parse(videoData.originalStreamInfo);
+            }
+            return { ...videoData, viewCount: parseInt(videoData.viewCount, 10) || 0 };
+        }
+        return null;
+    }).filter(Boolean);
+
+    videos.sort((a, b) => new Date(b.publishedAt) - new Date(a.publishedAt));
+    return response.status(200).json({ videos });
 }
 
 
@@ -354,7 +493,6 @@ export default async function handler(request, response) {
   const url = new URL(request.url, `http://${request.headers.host}`);
   const path = url.pathname;
   
-  // 設定 CORS 標頭
   response.setHeader('Access-Control-Allow-Origin', '*');
   response.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   response.setHeader('Access-Control-Allow-Headers', 'Content-Type');
@@ -368,13 +506,14 @@ export default async function handler(request, response) {
     redisClient = createClient({ url: redisConnectionString });
     await redisClient.connect();
 
-    // 根據路徑路由到不同的處理函式
     if (path.endsWith('/api/youtube')) {
         return await handleGetData(request, response, redisClient);
     } else if (path.endsWith('/api/classify-videos')) {
         return await handleClassifyVideos(request, response, redisClient);
     } else if (path.endsWith('/api/check-status')) {
         return await handleCheckStatus(request, response, redisClient);
+    } else if (path.endsWith('/api/get-related-clips')) {
+        return await handleGetRelatedClips(request, response, redisClient);
     } else {
         return response.status(404).json({ error: '找不到指定的 API 端點。' });
     }
