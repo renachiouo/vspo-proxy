@@ -1,7 +1,7 @@
 import { createClient } from 'redis';
 
 // --- 版本指紋 ---
-const SCRIPT_VERSION = '12.3-STABLE'; 
+const SCRIPT_VERSION = '12.4-FINAL'; 
 
 // --- Redis Keys Configuration ---
 // V10 (舊版) 使用的 Keys
@@ -77,6 +77,11 @@ const FOREIGN_CHANNEL_WHITELIST = [
 
 const SPECIAL_KEYWORDS = ["vspo", "ぶいすぽ"];
 const SEARCH_KEYWORDS = ["VSPO中文", "VSPO中文精華", "VSPO精華", "VSPO中文剪輯", "VSPO剪輯"];
+// ==================================================================
+// == 更動 1-1：新增日文深度搜索關鍵字
+// == 原因：為深度搜索功能提供日文影片的搜索詞。
+// ==================================================================
+const FOREIGN_SEARCH_KEYWORDS = ["ぶいすぽ 切り抜き", "vspo clip", "vspo clutch", "ぶいすぽっ!", "ぶいすぽっ! 切り抜き"];
 const KEYWORD_BLACKLIST = ["MMD"]; 
 const apiKeys = [
     process.env.YOUTUBE_API_KEY_1, process.env.YOUTUBE_API_KEY_2,
@@ -171,7 +176,12 @@ const v11_logic = {
         videos.sort((a, b) => new Date(b.publishedAt) - new Date(a.publishedAt));
         return videos;
     },
-    async processAndStoreVideos(videoIds, redisClient, storageKeys, options = { checkKeywords: true }) {
+    // ==================================================================
+    // == 更動 2-1：修改 processAndStoreVideos 以支援不同的影片保存期限
+    // == 原因：為了讓日文影片能保存三個月。此函式現在接收 retentionMonths 參數，
+    // ==       用以動態決定影片的過期標準。
+    // ==================================================================
+    async processAndStoreVideos(videoIds, redisClient, storageKeys, options = { checkKeywords: true, retentionMonths: 1 }) {
         if (videoIds.length === 0) return { validVideoIds: new Set(), idsToDelete: [] };
         const videoDetailsMap = new Map();
         const videoDetailBatches = batchArray(videoIds, 50);
@@ -189,14 +199,9 @@ const v11_logic = {
             }
         }
         const validVideoIds = new Set();
-        const oneMonthAgo = new Date();
-        oneMonthAgo.setMonth(oneMonthAgo.getMonth() - 1);
+        const retentionDate = new Date();
+        retentionDate.setMonth(retentionDate.getMonth() - options.retentionMonths);
         
-        // ==================================================================
-        // == 更動 1：將 Shorts 分類邏輯從 V10 移植至 V11
-        // == 原因：為了解決 Shorts 篩選器消失的問題。原 V11 邏輯缺少 videoType 欄位，
-        // ==       現在將其補上，確保前端能收到此欄位並正常顯示篩選器。
-        // ==================================================================
         const shortsCheckPromises = videoIds.map(async (videoId) => {
             if (videoDetailsMap.has(videoId)) {
                 const isShort = await checkIfShort(videoId);
@@ -214,7 +219,7 @@ const v11_logic = {
             const channelId = detail.snippet.channelId;
             const isChannelBlacklisted = CHANNEL_BLACKLIST.includes(channelId);
             const isKeywordBlacklisted = containsBlacklistedKeyword(detail, KEYWORD_BLACKLIST);
-            const isExpired = new Date(detail.snippet.publishedAt) < oneMonthAgo;
+            const isExpired = new Date(detail.snippet.publishedAt) < retentionDate;
             let isContentValid = false;
             if (options.checkKeywords) {
                 if (CHANNEL_WHITELIST.includes(channelId)) isContentValid = true; 
@@ -238,7 +243,6 @@ const v11_logic = {
                     publishedAt: detail.snippet.publishedAt,
                     viewCount: detail.statistics?.viewCount || 0,
                     subscriberCount: channelDetails?.statistics?.subscriberCount || 0,
-                    // == 更動 1 (續)：將 videoType 寫入資料
                     videoType: shortsMap.get(videoId) ? 'short' : 'video',
                 };
                 const originalStreamInfo = parseOriginalStreamInfo(description);
@@ -256,7 +260,7 @@ const v11_logic = {
         return { validVideoIds, idsToDelete };
     },
     async updateAndStoreYouTubeData(redisClient) {
-        console.log(`[v11] 開始執行中文影片更新程序...`);
+        console.log(`[v11] 開始執行中文影片常規更新程序...`);
         const oneMonthAgo = new Date();
         oneMonthAgo.setMonth(oneMonthAgo.getMonth() - 1);
         const publishedAfter = oneMonthAgo.toISOString();
@@ -285,7 +289,7 @@ const v11_logic = {
           });
         }
         const storageKeys = { setKey: v11_VIDEOS_SET_KEY, hashPrefix: v11_VIDEO_HASH_PREFIX, type: 'main' };
-        const { validVideoIds, idsToDelete } = await this.processAndStoreVideos([...newVideoCandidates], redisClient, storageKeys, { checkKeywords: true });
+        const { validVideoIds, idsToDelete } = await this.processAndStoreVideos([...newVideoCandidates], redisClient, storageKeys, { checkKeywords: true, retentionMonths: 1 });
         const pipeline = redisClient.multi();
         if (idsToDelete.length > 0) {
             pipeline.sRem(storageKeys.setKey, idsToDelete);
@@ -295,10 +299,10 @@ const v11_logic = {
             pipeline.sAdd(storageKeys.setKey, [...validVideoIds]);
         }
         await pipeline.exec();
-        console.log(`[v11] 中文影片更新程序完成。`);
+        console.log(`[v11] 中文影片常規更新程序完成。`);
     },
     async updateForeignClips(redisClient) {
-        console.log('[v11] 開始執行外文影片更新程序...');
+        console.log('[v11] 開始執行外文影片常規更新程序...');
         const oneMonthAgo = new Date();
         oneMonthAgo.setMonth(oneMonthAgo.getMonth() - 1);
         const newVideoCandidates = new Set();
@@ -313,7 +317,7 @@ const v11_logic = {
             });
         }
         const storageKeys = { setKey: v11_FOREIGN_VIDEOS_SET_KEY, hashPrefix: v11_FOREIGN_VIDEO_HASH_PREFIX, type: 'foreign' };
-        const { validVideoIds, idsToDelete } = await this.processAndStoreVideos([...newVideoCandidates], redisClient, storageKeys, { checkKeywords: false });
+        const { validVideoIds, idsToDelete } = await this.processAndStoreVideos([...newVideoCandidates], redisClient, storageKeys, { checkKeywords: false, retentionMonths: 3 });
         const pipeline = redisClient.multi();
         if (idsToDelete.length > 0) {
             pipeline.sRem(storageKeys.setKey, idsToDelete);
@@ -323,11 +327,44 @@ const v11_logic = {
             pipeline.sAdd(storageKeys.setKey, [...validVideoIds]);
         }
         await pipeline.exec();
-        console.log('[v11] 外文影片更新程序完成。');
-    }
+        console.log('[v11] 外文影片常規更新程序完成。');
+    },
+    // ==================================================================
+    // == 更動 1-2：新增深度搜索函式
+    // == 原因：實作新的管理員指令功能。此函式可根據指定的時間範圍，
+    // ==       使用關鍵字進行廣泛搜索，並強制更新資料庫。
+    // ==================================================================
+    async deepSearchAndStoreYouTubeData(redisClient, storageKeys, searchOptions, isForeign) {
+        const { months, keywords, checkKeywords } = searchOptions;
+        const retentionMonths = isForeign ? 3 : months;
+
+        console.log(`[v11] 開始執行深度搜索 (${months}個月)...`);
+        const publishedAfterDate = new Date();
+        publishedAfterDate.setMonth(publishedAfterDate.getMonth() - months);
+        const publishedAfter = publishedAfterDate.toISOString();
+        
+        const newVideoCandidates = new Set();
+        const searchPromises = keywords.map(q => fetchYouTube('search', { part: 'snippet', type: 'video', maxResults: 50, q, publishedAfter }));
+        const searchResults = await Promise.all(searchPromises);
+        for (const result of searchResults) {
+          result.items?.forEach(item => {
+            if (item.id.videoId && !CHANNEL_BLACKLIST.includes(item.snippet.channelId)) {
+              newVideoCandidates.add(item.id.videoId);
+            }
+          });
+        }
+        
+        const { validVideoIds } = await this.processAndStoreVideos([...newVideoCandidates], redisClient, storageKeys, { checkKeywords, retentionMonths });
+        
+        if (validVideoIds.size > 0) {
+            await redisClient.sAdd(storageKeys.setKey, [...validVideoIds]);
+        }
+        
+        console.log(`[v11] 深度搜索完成，找到 ${validVideoIds.size} 部有效影片。`);
+    },
 };
 
-// --- V10 舊版兼容邏輯函式 ---
+// --- V10 舊版兼容邏輯函式 (無變動) ---
 const v10_logic = {
     async getVideosFromDB(redisClient) {
         const videoIds = await redisClient.sMembers(V10_VIDEOS_SET_KEY);
@@ -490,14 +527,6 @@ export default async function handler(request, response) {
         redisClient = createClient({ url: redisConnectionString });
         await redisClient.connect();
 
-        // ==================================================================
-        // == 更動 2：移除導致死鎖的全局日文影片更新觸發器
-        // == 原因：此段程式碼會對所有請求（包含中文）都嘗試鎖定並更新日文影片，
-        // ==       導致後續真正需要同步更新日文影片的邏輯無法取得鎖定，造成死鎖。
-        // ==       將更新邏輯統一移至下方的 V11 處理區塊內。
-        // ==================================================================
-        // (此處原有的程式碼已被刪除)
-
         const numericVersion = clientVersion ? parseFloat(clientVersion.replace('V', '')) : 0;
         if (clientVersion && numericVersion >= 11.0) {
             console.log(`偵測到新版客戶端 (V${clientVersion})，使用 v11 邏輯。`);
@@ -505,40 +534,75 @@ export default async function handler(request, response) {
             if (path.endsWith('/api/youtube')) {
                 const lang = searchParams.get('lang') || 'cn';
                 const isForeign = lang === 'jp';
+                const forceRefresh = searchParams.get('force_refresh') === 'true';
+                const providedPassword = searchParams.get('password');
+                const adminPassword = process.env.ADMIN_PASSWORD;
+                const mode = searchParams.get('mode') || 'normal';
+                const duration = searchParams.get('duration');
 
                 // ==================================================================
-                // == 更動 3：將 V11 的更新邏輯改為與 V10 一致的同步等待模式
-                // == 原因：解決 V11 非同步更新導致的空資料庫問題。現在，當需要更新時，
-                // ==       伺服器會像 V10 一樣，等待更新完成後才回傳資料，確保客戶端
-                // ==       永遠能拿到有效的影片列表。
+                // == 更動 1-3：修改 Handler 以處理新的管理員指令
+                // == 原因：讓後端能接收並執行前端發來的深度搜索指令。
                 // ==================================================================
-                if (isForeign) {
-                    const lastUpdate = await redisClient.get(v11_FOREIGN_META_LAST_UPDATED_KEY);
-                    const needsUpdate = !lastUpdate || (Date.now() - parseInt(lastUpdate, 10)) > FOREIGN_UPDATE_INTERVAL_SECONDS * 1000;
-                    if (needsUpdate) {
-                        const lockAcquired = await redisClient.set(v11_FOREIGN_UPDATE_LOCK_KEY, 'locked', { NX: true, EX: 600 });
-                        if (lockAcquired) {
-                            try {
-                                console.log('[v11] 執行日文影片同步更新...');
-                                await v11_logic.updateForeignClips(redisClient);
-                                await redisClient.set(v11_FOREIGN_META_LAST_UPDATED_KEY, Date.now());
-                            } finally {
-                                await redisClient.del(v11_FOREIGN_UPDATE_LOCK_KEY);
-                            }
+                if (forceRefresh) {
+                    if (!adminPassword || providedPassword !== adminPassword) {
+                        return response.status(401).json({ error: '無效的管理員密碼。' });
+                    }
+                    if (mode === 'deep') {
+                        const months = duration ? parseInt(duration.replace('m', '')) : 1;
+                        const searchOptions = {
+                            months,
+                            keywords: isForeign ? FOREIGN_SEARCH_KEYWORDS : SEARCH_KEYWORDS,
+                            checkKeywords: !isForeign,
+                        };
+                        const storageKeys = isForeign
+                            ? { setKey: v11_FOREIGN_VIDEOS_SET_KEY, hashPrefix: v11_FOREIGN_VIDEO_HASH_PREFIX, type: 'foreign' }
+                            : { setKey: v11_VIDEOS_SET_KEY, hashPrefix: v11_VIDEO_HASH_PREFIX, type: 'main' };
+                        
+                        await v11_logic.deepSearchAndStoreYouTubeData(redisClient, storageKeys, searchOptions, isForeign);
+                        // 更新時間戳
+                        const timestampKey = isForeign ? v11_FOREIGN_META_LAST_UPDATED_KEY : v11_META_LAST_UPDATED_KEY;
+                        await redisClient.set(timestampKey, Date.now());
+
+                    } else { // normal force refresh
+                        if (isForeign) {
+                            await v11_logic.updateForeignClips(redisClient);
+                            await redisClient.set(v11_FOREIGN_META_LAST_UPDATED_KEY, Date.now());
+                        } else {
+                            await v11_logic.updateAndStoreYouTubeData(redisClient);
+                            await redisClient.set(v11_META_LAST_UPDATED_KEY, Date.now());
                         }
                     }
-                } else { // is 'cn'
-                    const lastUpdate = await redisClient.get(v11_META_LAST_UPDATED_KEY);
-                    const needsUpdate = !lastUpdate || (Date.now() - parseInt(lastUpdate, 10)) > UPDATE_INTERVAL_SECONDS * 1000;
-                    if (needsUpdate) {
-                        const lockAcquired = await redisClient.set(v11_UPDATE_LOCK_KEY, 'locked', { NX: true, EX: 600 });
-                        if (lockAcquired) {
-                            try {
-                                console.log('[v11] 執行中文影片同步更新...');
-                                await v11_logic.updateAndStoreYouTubeData(redisClient);
-                                await redisClient.set(v11_META_LAST_UPDATED_KEY, Date.now());
-                            } finally {
-                                await redisClient.del(v11_UPDATE_LOCK_KEY);
+                } else {
+                    // 常規的、非管理員觸發的更新邏輯
+                    if (isForeign) {
+                        const lastUpdate = await redisClient.get(v11_FOREIGN_META_LAST_UPDATED_KEY);
+                        const needsUpdate = !lastUpdate || (Date.now() - parseInt(lastUpdate, 10)) > FOREIGN_UPDATE_INTERVAL_SECONDS * 1000;
+                        if (needsUpdate) {
+                            const lockAcquired = await redisClient.set(v11_FOREIGN_UPDATE_LOCK_KEY, 'locked', { NX: true, EX: 600 });
+                            if (lockAcquired) {
+                                try {
+                                    console.log('[v11] 執行日文影片同步更新...');
+                                    await v11_logic.updateForeignClips(redisClient);
+                                    await redisClient.set(v11_FOREIGN_META_LAST_UPDATED_KEY, Date.now());
+                                } finally {
+                                    await redisClient.del(v11_FOREIGN_UPDATE_LOCK_KEY);
+                                }
+                            }
+                        }
+                    } else { // is 'cn'
+                        const lastUpdate = await redisClient.get(v11_META_LAST_UPDATED_KEY);
+                        const needsUpdate = !lastUpdate || (Date.now() - parseInt(lastUpdate, 10)) > UPDATE_INTERVAL_SECONDS * 1000;
+                        if (needsUpdate) {
+                            const lockAcquired = await redisClient.set(v11_UPDATE_LOCK_KEY, 'locked', { NX: true, EX: 600 });
+                            if (lockAcquired) {
+                                try {
+                                    console.log('[v11] 執行中文影片同步更新...');
+                                    await v11_logic.updateAndStoreYouTubeData(redisClient);
+                                    await redisClient.set(v11_META_LAST_UPDATED_KEY, Date.now());
+                                } finally {
+                                    await redisClient.del(v11_UPDATE_LOCK_KEY);
+                                }
                             }
                         }
                     }
@@ -564,6 +628,7 @@ export default async function handler(request, response) {
                 const indexKey = `${v11_STREAM_INDEX_PREFIX}${platform}:${id}`;
                 const relatedVideoIdentifiers = await redisClient.sMembers(indexKey);
                 if (relatedVideoIdentifiers.length === 0) { return response.status(200).json({ videos: [] }); }
+                
                 const pipeline = redisClient.multi();
                 relatedVideoIdentifiers.forEach(identifier => {
                     const [type, videoId] = identifier.split(':');
@@ -571,22 +636,37 @@ export default async function handler(request, response) {
                     else if (type === 'foreign') { pipeline.hGetAll(`${v11_FOREIGN_VIDEO_HASH_PREFIX}${videoId}`); }
                 });
                 const results = await pipeline.exec();
+
+                // ==================================================================
+                // == 更動 3：修復 /api/get-related-clips 回傳資料不完整的問題
+                // == 原因：原邏輯回傳的資料缺少 videoType 和 originalStreamInfo，導致前端渲染錯誤。
+                // ==       現在手動補全這兩個欄位，確保資料結構與主列表一致。
+                // ==================================================================
                 const videos = results.map(videoData => {
                     if (videoData && Object.keys(videoData).length > 0) {
-                        if (videoData.originalStreamInfo) { videoData.originalStreamInfo = JSON.parse(videoData.originalStreamInfo); }
-                        return { ...videoData, viewCount: parseInt(videoData.viewCount, 10) || 0 };
+                        // 確保 originalStreamInfo 是解析過的物件
+                        if (videoData.originalStreamInfo && typeof videoData.originalStreamInfo === 'string') { 
+                            videoData.originalStreamInfo = JSON.parse(videoData.originalStreamInfo); 
+                        }
+                        // 確保 viewCount 是數字
+                        videoData.viewCount = parseInt(videoData.viewCount, 10) || 0;
+                        // 補上 videoType (如果不存在) -> 這是一個保險措施，理論上深度搜索後都會有
+                        if (!videoData.videoType) {
+                            videoData.videoType = 'video'; // 預設為 video
+                        }
+                        return videoData;
                     }
                     return null;
                 }).filter(Boolean);
+
                 videos.sort((a, b) => new Date(b.publishedAt) - new Date(a.publishedAt));
                 return response.status(200).json({ videos });
             }
-            // v11 不再需要 classify 和 check-status
             return response.status(404).json({ error: '找不到指定的 API 端點。' });
             // --- END: v11 新版邏輯 ---
         } else {
             console.log(`未偵測到版本號或版本過舊，使用 V10 兼容模式。`);
-            // --- START: V10 舊版兼容邏輯 ---
+            // --- START: V10 舊版兼容邏輯 (無變動) ---
             if (path.endsWith('/api/youtube')) {
                 const forceRefresh = searchParams.get('force_refresh') === 'true';
                 const providedPassword = searchParams.get('password');
@@ -616,7 +696,7 @@ export default async function handler(request, response) {
                     timestamp: new Date(parseInt(updatedTimestamp, 10) || Date.now()).toISOString(),
                     totalVisits: visitorCount.totalVisits,
                     todayVisits: visitorCount.todayVisits,
-                    script_version: SCRIPT_VERSION, // 回傳新版號，但不影響功能
+                    script_version: SCRIPT_VERSION,
                 });
             } else if (path.endsWith('/api/classify-videos')) {
                 const lockAcquired = await redisClient.set(V10_CLASSIFICATION_LOCK_KEY, 'locked', { NX: true, EX: 600 });
