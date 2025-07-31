@@ -1,7 +1,7 @@
 import { createClient } from 'redis';
 
 // --- 版本指紋 ---
-const SCRIPT_VERSION = '12.2-FIX'; 
+const SCRIPT_VERSION = '12.3-STABLE'; 
 
 // --- Redis Keys Configuration ---
 // V10 (舊版) 使用的 Keys
@@ -191,9 +191,9 @@ const v11_logic = {
         const validVideoIds = new Set();
         const oneMonthAgo = new Date();
         oneMonthAgo.setMonth(oneMonthAgo.getMonth() - 1);
-
+        
         // ==================================================================
-        // == 更動 2：將 Shorts 分類邏輯從 V10 移植至 V11
+        // == 更動 1：將 Shorts 分類邏輯從 V10 移植至 V11
         // == 原因：為了解決 Shorts 篩選器消失的問題。原 V11 邏輯缺少 videoType 欄位，
         // ==       現在將其補上，確保前端能收到此欄位並正常顯示篩選器。
         // ==================================================================
@@ -206,7 +206,7 @@ const v11_logic = {
         });
         const shortsCheckResults = await Promise.all(shortsCheckPromises);
         const shortsMap = new Map(shortsCheckResults.map(item => [item.videoId, item.isShort]));
-        
+
         const pipeline = redisClient.multi();
         for (const videoId of videoIds) {
             const detail = videoDetailsMap.get(videoId);
@@ -238,7 +238,7 @@ const v11_logic = {
                     publishedAt: detail.snippet.publishedAt,
                     viewCount: detail.statistics?.viewCount || 0,
                     subscriberCount: channelDetails?.statistics?.subscriberCount || 0,
-                    // == 更動 2 (續)：將 videoType 寫入資料
+                    // == 更動 1 (續)：將 videoType 寫入資料
                     videoType: shortsMap.get(videoId) ? 'short' : 'video',
                 };
                 const originalStreamInfo = parseOriginalStreamInfo(description);
@@ -255,8 +255,8 @@ const v11_logic = {
         const idsToDelete = allIdsInDB.filter(id => !validVideoIds.has(id));
         return { validVideoIds, idsToDelete };
     },
-    async updateAndStoreYouTubeData(redisClient, options = { classify: true, addToPending: false }) {
-        console.log(`[v11] 開始執行中文影片更新程序，選項:`, options);
+    async updateAndStoreYouTubeData(redisClient) {
+        console.log(`[v11] 開始執行中文影片更新程序...`);
         const oneMonthAgo = new Date();
         oneMonthAgo.setMonth(oneMonthAgo.getMonth() - 1);
         const publishedAfter = oneMonthAgo.toISOString();
@@ -293,12 +293,6 @@ const v11_logic = {
         }
         if (validVideoIds.size > 0) {
             pipeline.sAdd(storageKeys.setKey, [...validVideoIds]);
-        }
-        if (options.addToPending) {
-            const videosToClassify = [...validVideoIds];
-            if (videosToClassify.length > 0) {
-                pipeline.sAdd(V10_PENDING_CLASSIFICATION_SET_KEY, videosToClassify); // Note: still uses V10 key for this
-            }
         }
         await pipeline.exec();
         console.log(`[v11] 中文影片更新程序完成。`);
@@ -496,6 +490,14 @@ export default async function handler(request, response) {
         redisClient = createClient({ url: redisConnectionString });
         await redisClient.connect();
 
+        // ==================================================================
+        // == 更動 2：移除導致死鎖的全局日文影片更新觸發器
+        // == 原因：此段程式碼會對所有請求（包含中文）都嘗試鎖定並更新日文影片，
+        // ==       導致後續真正需要同步更新日文影片的邏輯無法取得鎖定，造成死鎖。
+        // ==       將更新邏輯統一移至下方的 V11 處理區塊內。
+        // ==================================================================
+        // (此處原有的程式碼已被刪除)
+
         const numericVersion = clientVersion ? parseFloat(clientVersion.replace('V', '')) : 0;
         if (clientVersion && numericVersion >= 11.0) {
             console.log(`偵測到新版客戶端 (V${clientVersion})，使用 v11 邏輯。`);
@@ -503,53 +505,41 @@ export default async function handler(request, response) {
             if (path.endsWith('/api/youtube')) {
                 const lang = searchParams.get('lang') || 'cn';
                 const isForeign = lang === 'jp';
-                
+
                 // ==================================================================
-                // == 更動 3：修改日文影片的更新觸發機制
-                // == 原因：為了解決首次載入日文頻道時，因資料庫為空而回傳空列表的問題。
-                // ==       現在會檢查資料庫是否為空，如果是，則同步等待更新完成後再回傳資料。
+                // == 更動 3：將 V11 的更新邏輯改為與 V10 一致的同步等待模式
+                // == 原因：解決 V11 非同步更新導致的空資料庫問題。現在，當需要更新時，
+                // ==       伺服器會像 V10 一樣，等待更新完成後才回傳資料，確保客戶端
+                // ==       永遠能拿到有效的影片列表。
                 // ==================================================================
                 if (isForeign) {
-                    const lastForeignUpdate = await redisClient.get(v11_FOREIGN_META_LAST_UPDATED_KEY);
-                    const videoCount = await redisClient.sCard(v11_FOREIGN_VIDEOS_SET_KEY);
-                    const needsForeignUpdate = !lastForeignUpdate || (Date.now() - parseInt(lastForeignUpdate, 10)) > FOREIGN_UPDATE_INTERVAL_SECONDS * 1000;
-
-                    // 條件：需要更新，且資料庫是空的 -> 同步更新
-                    if (needsForeignUpdate && videoCount === 0) {
-                        console.log('[v11] 日文影片資料庫為空，執行同步更新...');
+                    const lastUpdate = await redisClient.get(v11_FOREIGN_META_LAST_UPDATED_KEY);
+                    const needsUpdate = !lastUpdate || (Date.now() - parseInt(lastUpdate, 10)) > FOREIGN_UPDATE_INTERVAL_SECONDS * 1000;
+                    if (needsUpdate) {
                         const lockAcquired = await redisClient.set(v11_FOREIGN_UPDATE_LOCK_KEY, 'locked', { NX: true, EX: 600 });
                         if (lockAcquired) {
                             try {
+                                console.log('[v11] 執行日文影片同步更新...');
                                 await v11_logic.updateForeignClips(redisClient);
                                 await redisClient.set(v11_FOREIGN_META_LAST_UPDATED_KEY, Date.now());
                             } finally {
                                 await redisClient.del(v11_FOREIGN_UPDATE_LOCK_KEY);
                             }
                         }
-                    // 條件：需要更新，但資料庫不是空的 -> 背景更新
-                    } else if (needsForeignUpdate) {
-                        const lockAcquired = await redisClient.set(v11_FOREIGN_UPDATE_LOCK_KEY, 'locked', { NX: true, EX: 600 });
-                        if (lockAcquired) {
-                            console.log('[v11] 背景觸發日文影片更新。');
-                            v11_logic.updateForeignClips(redisClient)
-                                .then(() => redisClient.set(v11_FOREIGN_META_LAST_UPDATED_KEY, Date.now()))
-                                .catch(err => console.error("背景更新日文影片失敗:", err))
-                                .finally(() => redisClient.del(v11_FOREIGN_UPDATE_LOCK_KEY));
-                        }
                     }
-                }
-                // (中文影片的更新邏輯保持不變，仍然是非阻塞的)
-                else {
+                } else { // is 'cn'
                     const lastUpdate = await redisClient.get(v11_META_LAST_UPDATED_KEY);
                     const needsUpdate = !lastUpdate || (Date.now() - parseInt(lastUpdate, 10)) > UPDATE_INTERVAL_SECONDS * 1000;
-                     if (needsUpdate) {
+                    if (needsUpdate) {
                         const lockAcquired = await redisClient.set(v11_UPDATE_LOCK_KEY, 'locked', { NX: true, EX: 600 });
                         if (lockAcquired) {
-                            console.log('[v11] 背景觸發中文影片更新。');
-                            v11_logic.updateAndStoreYouTubeData(redisClient)
-                                .then(() => redisClient.set(v11_META_LAST_UPDATED_KEY, Date.now()))
-                                .catch(err => console.error("背景更新中文影片失敗:", err))
-                                .finally(() => redisClient.del(v11_UPDATE_LOCK_KEY));
+                            try {
+                                console.log('[v11] 執行中文影片同步更新...');
+                                await v11_logic.updateAndStoreYouTubeData(redisClient);
+                                await redisClient.set(v11_META_LAST_UPDATED_KEY, Date.now());
+                            } finally {
+                                await redisClient.del(v11_UPDATE_LOCK_KEY);
+                            }
                         }
                     }
                 }
