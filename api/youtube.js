@@ -30,7 +30,7 @@ const UPDATE_INTERVAL_SECONDS = 1200; // 20 分鐘
 const FOREIGN_UPDATE_INTERVAL_SECONDS = 3600; // 1 小時
 
 // --- YouTube API 設定 ---
-const CHANNEL_WHITELIST = [ /* 您的中文頻道白名單 */ ];
+const CHANNEL_WHITELIST = [ 'UCuI5_lA2o-arAIKukGvIEcQ', 'UCOnlV05C1t4d-x2NP-kgyzw', 'UCjOaP5dTW_0s1Ui11jm4Rzg', 'UCGZK4lLrDYcOKxmWJIERmjQ', 'UCnERutXxnHTLqckbGCUwtAg', 'UC-wCI2w1vMaEQ1iLnp3MEVQ', 'UCIvTtZq1vMaEQ1iLnp3MEVQ', 'UCBf3eLt6Nj7AJwkDysm0JWw', 'UCnusRHKhMAR7dNM00mk44BA', 'UCEShI32SUz7g9J9ICOs5Y0g' ];
 const SPECIAL_WHITELIST = [ 
     'UCNdRb8JHTX6a-8V1j7olvAQ', 'UCwFDCL9otNlHyP4yMXunohQ', 
     'UCPfB7gx9yKfzfVirTX77LFA', 'UCqrTGkqVijNpTMPeWZ4_CgA', 
@@ -77,10 +77,6 @@ const FOREIGN_CHANNEL_WHITELIST = [
 
 const SPECIAL_KEYWORDS = ["vspo", "ぶいすぽ"];
 const SEARCH_KEYWORDS = ["VSPO中文", "VSPO中文精華", "VSPO精華", "VSPO中文剪輯", "VSPO剪輯"];
-// ==================================================================
-// == 更動 1-1：新增日文深度搜索關鍵字
-// == 原因：為深度搜索功能提供日文影片的搜索詞。
-// ==================================================================
 const KEYWORD_BLACKLIST = ["MMD"]; 
 const apiKeys = [
     process.env.YOUTUBE_API_KEY_1, process.env.YOUTUBE_API_KEY_2,
@@ -168,12 +164,17 @@ const v11_logic = {
         const results = await pipeline.exec();
         const videos = results.map(video => {
             if (video && Object.keys(video).length > 0) {
-                // ===== 更動 2：在主獲取邏輯中標準化資料格式 =====
-                // 原因：確保從資料庫直接讀取時，資料類型正確（特別是數字），並為後續操作提供一致的基礎。
+                // ===== 更動 1：【核心修復】統一資料處理邏輯 =====
+                // 原因：此處的處理邏輯必須與 /api/get-related-clips 完全一致，以解決 Failed to fetch 問題。
+                //       主要增加了對 videoType 欄位的檢查與補全，確保所有 API 回傳的影片物件結構都相同。
                 video.viewCount = parseInt(video.viewCount, 10) || 0;
                 video.subscriberCount = parseInt(video.subscriberCount, 10) || 0;
                 if (video.originalStreamInfo && typeof video.originalStreamInfo === 'string') {
                     try { video.originalStreamInfo = JSON.parse(video.originalStreamInfo); } catch { video.originalStreamInfo = null; }
+                }
+                // 關鍵修正：確保 videoType 欄位永遠存在
+                if (!video.videoType) {
+                    video.videoType = 'video';
                 }
                 return video;
             }
@@ -226,7 +227,16 @@ const v11_logic = {
         const oneMonthAgo = new Date(); oneMonthAgo.setMonth(oneMonthAgo.getMonth() - 1); const publishedAfter = oneMonthAgo.toISOString();
         const newVideoCandidates = new Set();
         const allWhitelists = [...CHANNEL_WHITELIST, ...SPECIAL_WHITELIST];
-        if (allWhitelists.length > 0) { const channelsResponse = await fetchYouTube('channels', { part: 'contentDetails', id: allWhitelists.join(',') }); const uploadPlaylistIds = channelsResponse.items?.map(item => item.contentDetails.relatedPlaylists.uploads).filter(Boolean) || []; const playlistItemsPromises = uploadPlaylistIds.map(playlistId => fetchYouTube('playlistItems', { part: 'snippet', playlistId, maxResults: 50 })); const playlistItemsResults = await Promise.all(playlistItemsPromises); for (const result of playlistItemsResults) { result.items?.forEach(item => { if (new Date(item.snippet.publishedAt) > oneMonthAgo) { newVideoCandidates.add(item.snippet.resourceId.videoId); } }); } }
+        if (allWhitelists.length > 0) { 
+            const channelsResponse = await fetchYouTube('channels', { part: 'contentDetails', id: allWhitelists.join(',') }); 
+            // ===== 更動 2：【穩定性修復】防止 'map' of undefined 錯誤 =====
+            // 原因：當 YouTube API 因故未回傳 items 陣列時，直接對 undefined 執行 .map 會導致程式崩潰。
+            //       透過 (channelsResponse.items || []) 的寫法，確保 .map 永遠在一個有效的陣列（即使是空陣列）上執行。
+            const uploadPlaylistIds = (channelsResponse.items || []).map(item => item.contentDetails.relatedPlaylists.uploads).filter(Boolean);
+            const playlistItemsPromises = uploadPlaylistIds.map(playlistId => fetchYouTube('playlistItems', { part: 'snippet', playlistId, maxResults: 50 })); 
+            const playlistItemsResults = await Promise.all(playlistItemsPromises); 
+            for (const result of playlistItemsResults) { result.items?.forEach(item => { if (new Date(item.snippet.publishedAt) > oneMonthAgo) { newVideoCandidates.add(item.snippet.resourceId.videoId); } }); } 
+        }
         const searchPromises = SEARCH_KEYWORDS.map(q => fetchYouTube('search', { part: 'snippet', type: 'video', maxResults: 50, q, publishedAfter }));
         const searchResults = await Promise.all(searchPromises);
         for (const result of searchResults) { result.items?.forEach(item => { if (item.id.videoId && !CHANNEL_BLACKLIST.includes(item.snippet.channelId)) { newVideoCandidates.add(item.id.videoId); } }); }
@@ -243,7 +253,9 @@ const v11_logic = {
         const threeMonthsAgo = new Date(); threeMonthsAgo.setMonth(threeMonthsAgo.getMonth() - 3);
         const newVideoCandidates = new Set();
         const channelsResponse = await fetchYouTube('channels', { part: 'contentDetails', id: FOREIGN_CHANNEL_WHITELIST.join(',') });
-        const uploadPlaylistIds = channelsResponse.items?.map(item => item.contentDetails.relatedPlaylists.uploads).filter(Boolean) || [];
+        // ===== 更動 3：【穩定性修復】防止 'map' of undefined 錯誤 =====
+        // 原因：同上，確保程式在處理 API 回應時的穩定性，防止因 API 意外回應而導致的崩潰。
+        const uploadPlaylistIds = (channelsResponse.items || []).map(item => item.contentDetails.relatedPlaylists.uploads).filter(Boolean);
         for (const playlistId of uploadPlaylistIds) { const result = await fetchYouTube('playlistItems', { part: 'snippet', playlistId, maxResults: 50 }); result.items?.forEach(item => { if (new Date(item.snippet.publishedAt) > threeMonthsAgo) { newVideoCandidates.add(item.snippet.resourceId.videoId); } }); }
         const storageKeys = { setKey: v11_FOREIGN_VIDEOS_SET_KEY, hashPrefix: v11_FOREIGN_VIDEO_HASH_PREFIX, type: 'foreign' };
         const { validVideoIds, idsToDelete } = await this.processAndStoreVideos([...newVideoCandidates], redisClient, storageKeys, { checkKeywords: false, retentionMonths: 3 });
@@ -253,10 +265,6 @@ const v11_logic = {
         await pipeline.exec();
         console.log('[v11] 外文影片常規更新程序完成。');
     },
-    // ===== 修正 2：重構深度搜索函式 =====
-    // 原因：根據您的指示，此函式現在有兩種完全不同的行為。
-    // 1. 日文模式 (isForeign = true): 完全忽略關鍵字，僅從 FOREIGN_CHANNEL_WHITELIST 的頻道中深度抓取指定月份內的所有影片。
-    // 2. 中文模式 (isForeign = false): 維持原有的邏輯，使用 SEARCH_KEYWORDS 進行關鍵字搜索。
     async deepSearchAndStoreYouTubeData(redisClient, storageKeys, searchOptions, isForeign) {
         const { months, keywords, checkKeywords } = searchOptions;
         const retentionMonths = isForeign ? 3 : months;
@@ -270,7 +278,9 @@ const v11_logic = {
             console.log('[v11] 深度搜索 (日文模式): 僅從頻道白名單獲取影片。');
             if (FOREIGN_CHANNEL_WHITELIST.length > 0) {
                 const channelsResponse = await fetchYouTube('channels', { part: 'contentDetails', id: FOREIGN_CHANNEL_WHITELIST.join(',') });
-                const uploadPlaylistIds = channelsResponse.items?.map(item => item.contentDetails.relatedPlaylists.uploads).filter(Boolean) || [];
+                // ===== 更動 4：【穩定性修復】防止 'map' of undefined 錯誤 =====
+                // 原因：同上，確保深度搜索在處理日文頻道時的穩定性。
+                const uploadPlaylistIds = (channelsResponse.items || []).map(item => item.contentDetails.relatedPlaylists.uploads).filter(Boolean);
                 
                 for (const playlistId of uploadPlaylistIds) {
                     let nextPageToken = null;
@@ -284,7 +294,6 @@ const v11_logic = {
                             }
                         });
                         nextPageToken = result.nextPageToken;
-                        // 優化：如果當前頁的最後一個影片已經早於目標日期，就沒必要再翻頁了
                         if (result.items && result.items.length > 0) {
                             const lastVideoDate = new Date(result.items[result.items.length - 1].snippet.publishedAt);
                             if (lastVideoDate < publishedAfterDate) {
@@ -317,7 +326,7 @@ const v11_logic = {
     },
 };
 
-// --- V10 舊版兼容邏輯函式 (無變動) ---
+// --- V10 舊版兼容邏輯函式 ---
 const v10_logic = {
     async getVideosFromDB(redisClient) {
         const videoIds = await redisClient.sMembers(V10_VIDEOS_SET_KEY);
@@ -420,7 +429,9 @@ const v10_logic = {
         const allWhitelists = [...CHANNEL_WHITELIST, ...SPECIAL_WHITELIST];
         if (allWhitelists.length > 0) {
             const channelsResponse = await fetchYouTube('channels', { part: 'contentDetails', id: allWhitelists.join(',') });
-            const uploadPlaylistIds = channelsResponse.items?.map(item => item.contentDetails.relatedPlaylists.uploads).filter(Boolean) || [];
+            // ===== 更動 5：【穩定性修復】(V10 邏輯) 防止 'map' of undefined 錯誤 =====
+            // 原因：將 v11 的穩定性修復同樣應用於 V10 的邏輯，確保舊版 API 的穩定性。
+            const uploadPlaylistIds = (channelsResponse.items || []).map(item => item.contentDetails.relatedPlaylists.uploads).filter(Boolean);
             const playlistItemsPromises = uploadPlaylistIds.map(playlistId => fetchYouTube('playlistItems', { part: 'snippet', playlistId, maxResults: 50 }));
             const playlistItemsResults = await Promise.all(playlistItemsPromises);
             for (const result of playlistItemsResults) {
@@ -470,7 +481,7 @@ export default async function handler(request, response) {
 
     response.setHeader('Access-Control-Allow-Origin', '*');
     response.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-    response.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+    response.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
     if (request.method === 'OPTIONS') {
         return response.status(204).end();
     }
@@ -490,8 +501,6 @@ export default async function handler(request, response) {
                 const forceRefresh = searchParams.get('force_refresh') === 'true';
                 
                 if (forceRefresh) {
-                    // ===== 更動 3：強化管理員指令的驗證與錯誤處理 =====
-                    // 原因：對管理員操作增加嚴格的密碼和參數驗證，防止未授權或錯誤的操作，並提供清晰的回應。
                     const providedPassword = request.headers.authorization?.split(' ')[1] || searchParams.get('password');
                     const adminPassword = process.env.ADMIN_PASSWORD;
                     if (!adminPassword || providedPassword !== adminPassword) {
@@ -506,9 +515,6 @@ export default async function handler(request, response) {
                             return response.status(400).json({ error: '無效的參數：duration 必須是 1m 到 12m 之間的有效值。' });
                         }
                         
-                        // ===== 修正 3：修正深度搜索的呼叫方式 =====
-                        // 原因：確保呼叫 deepSearchAndStoreYouTubeData 時，參數正確傳遞。
-                        // 日文模式下，keywords 會被忽略，函式內部會自行處理白名單。
                         const searchOptions = { months, keywords: SEARCH_KEYWORDS, checkKeywords: !isForeign };
                         const storageKeys = isForeign ? { setKey: v11_FOREIGN_VIDEOS_SET_KEY, hashPrefix: v11_FOREIGN_VIDEO_HASH_PREFIX, type: 'foreign' } : { setKey: v11_VIDEOS_SET_KEY, hashPrefix: v11_VIDEO_HASH_PREFIX, type: 'main' };
                         
@@ -536,8 +542,6 @@ export default async function handler(request, response) {
                 return response.status(200).json({ videos: videos, timestamp: new Date(parseInt(updatedTimestamp, 10) || Date.now()).toISOString(), totalVisits: visitorCount.totalVisits, todayVisits: visitorCount.todayVisits, script_version: SCRIPT_VERSION, });
 
             } else if (path.endsWith('/api/get-related-clips')) {
-                // ===== 更動 4：強化 /api/get-related-clips 的輸入驗證 =====
-                // 原因：確保傳入的 platform 和 id 參數有效，防止無效的資料庫查詢。
                 const platform = searchParams.get('platform');
                 const id = searchParams.get('id');
                 if (!platform || !id || !['youtube', 'twitch'].includes(platform)) { 
@@ -556,9 +560,6 @@ export default async function handler(request, response) {
                 });
                 const results = await pipeline.exec();
 
-                // ===== 更動 5：【核心修復】自動補全關聯影片的資料 =====
-                // 原因：這解決了您提到的主要問題。此處的程式碼確保從索引中找到的影片，其回傳的資料結構
-                //       與主列表 API 完全一致。它會自動解析 JSON 字串、轉換數字，並確保所有必要欄位都存在。
                 const videos = results.map(videoData => {
                     if (videoData && Object.keys(videoData).length > 0) {
                         videoData.viewCount = parseInt(videoData.viewCount, 10) || 0;
@@ -579,7 +580,7 @@ export default async function handler(request, response) {
             // --- END: v11 新版邏輯 ---
         } else {
             console.log(`未偵測到版本號或版本過舊，使用 V10 兼容模式。`);
-            // --- START: V10 舊版兼容邏輯 (無變動) ---
+            // --- START: V10 舊版兼容邏輯 ---
             if (path.endsWith('/api/youtube')) {
                 const forceRefresh = searchParams.get('force_refresh') === 'true';
                 const providedPassword = searchParams.get('password');
@@ -637,8 +638,6 @@ export default async function handler(request, response) {
 
     } catch (error) {
         console.error(`Handler 錯誤 (${path}):`, error);
-        // ===== 更動 6：優化全域錯誤處理 =====
-        // 原因：提供更具體的錯誤狀態碼和統一的 JSON 錯誤格式，方便前端進行錯誤處理。
         const isQuotaError = error.message?.toLowerCase().includes('quota');
         const status = isQuotaError ? 429 : 500;
         const message = isQuotaError ? 'API 配額已用盡，請稍後再試。' : '伺服器內部錯誤。';
