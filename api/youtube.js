@@ -493,7 +493,7 @@ export default async function handler(request, response) {
         }
 
         // 版本判斷
-        if (clientVersion && parseFloat(clientVersion) >= 12.0) {
+        if (clientVersion && parseFloat(clientVersion) >= 11.0) {
             console.log(`偵測到新版客戶端 (V${clientVersion})，使用 v11 邏輯。`);
             // --- START: v11 新版邏輯 ---
             if (path.endsWith('/api/youtube')) {
