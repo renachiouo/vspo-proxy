@@ -82,6 +82,7 @@ const apiKeys = [
     process.env.YOUTUBE_API_KEY_1, process.env.YOUTUBE_API_KEY_2,
     process.env.YOUTUBE_API_KEY_3, process.env.YOUTUBE_API_KEY_4,
     process.env.YOUTUBE_API_KEY_5, process.env.YOUTUBE_API_KEY_6,
+    process.env.YOUTUBE_API_KEY_7,
 ].filter(key => key);
 
 // --- 輔助函式 (通用) ---
