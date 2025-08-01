@@ -165,15 +165,11 @@ const v11_logic = {
         const results = await pipeline.exec();
         const videos = results.map(video => {
             if (video && Object.keys(video).length > 0) {
-                // ===== 更動 1：【核心修復】統一資料處理邏輯 =====
-                // 原因：此處的處理邏輯必須與 /api/get-related-clips 完全一致，以解決 Failed to fetch 問題。
-                //       主要增加了對 videoType 欄位的檢查與補全，確保所有 API 回傳的影片物件結構都相同。
                 video.viewCount = parseInt(video.viewCount, 10) || 0;
                 video.subscriberCount = parseInt(video.subscriberCount, 10) || 0;
                 if (video.originalStreamInfo && typeof video.originalStreamInfo === 'string') {
                     try { video.originalStreamInfo = JSON.parse(video.originalStreamInfo); } catch { video.originalStreamInfo = null; }
                 }
-                // 關鍵修正：確保 videoType 欄位永遠存在
                 if (!video.videoType) {
                     video.videoType = 'video';
                 }
@@ -230,7 +226,7 @@ const v11_logic = {
         const allWhitelists = [...CHANNEL_WHITELIST, ...SPECIAL_WHITELIST];
         if (allWhitelists.length > 0) { 
             const channelsResponse = await fetchYouTube('channels', { part: 'contentDetails', id: allWhitelists.join(',') }); 
-            // ===== 更動 2：【穩定性修復】防止 'map' of undefined 錯誤 =====
+            // ===== 更動 1：【穩定性修復】防止 'map' of undefined 錯誤 =====
             // 原因：當 YouTube API 因故未回傳 items 陣列時，直接對 undefined 執行 .map 會導致程式崩潰。
             //       透過 (channelsResponse.items || []) 的寫法，確保 .map 永遠在一個有效的陣列（即使是空陣列）上執行。
             const uploadPlaylistIds = (channelsResponse.items || []).map(item => item.contentDetails.relatedPlaylists.uploads).filter(Boolean);
@@ -254,7 +250,7 @@ const v11_logic = {
         const threeMonthsAgo = new Date(); threeMonthsAgo.setMonth(threeMonthsAgo.getMonth() - 3);
         const newVideoCandidates = new Set();
         const channelsResponse = await fetchYouTube('channels', { part: 'contentDetails', id: FOREIGN_CHANNEL_WHITELIST.join(',') });
-        // ===== 更動 3：【穩定性修復】防止 'map' of undefined 錯誤 =====
+        // ===== 更動 2：【穩定性修復】防止 'map' of undefined 錯誤 =====
         // 原因：同上，確保程式在處理 API 回應時的穩定性，防止因 API 意外回應而導致的崩潰。
         const uploadPlaylistIds = (channelsResponse.items || []).map(item => item.contentDetails.relatedPlaylists.uploads).filter(Boolean);
         for (const playlistId of uploadPlaylistIds) { const result = await fetchYouTube('playlistItems', { part: 'snippet', playlistId, maxResults: 50 }); result.items?.forEach(item => { if (new Date(item.snippet.publishedAt) > threeMonthsAgo) { newVideoCandidates.add(item.snippet.resourceId.videoId); } }); }
@@ -264,7 +260,7 @@ const v11_logic = {
         if (idsToDelete.length > 0) { pipeline.sRem(storageKeys.setKey, idsToDelete); idsToDelete.forEach(id => pipeline.del(`${storageKeys.hashPrefix}${id}`)); }
         if (validVideoIds.size > 0) { pipeline.sAdd(storageKeys.setKey, [...validVideoIds]); }
         await pipeline.exec();
-        console.log('[v11] 外文影片常規更新程序完成。');
+        console.log('[v11] 外文影片常規更新程序完成。`);
     },
     async deepSearchAndStoreYouTubeData(redisClient, storageKeys, searchOptions, isForeign) {
         const { months, keywords, checkKeywords } = searchOptions;
@@ -279,7 +275,7 @@ const v11_logic = {
             console.log('[v11] 深度搜索 (日文模式): 僅從頻道白名單獲取影片。');
             if (FOREIGN_CHANNEL_WHITELIST.length > 0) {
                 const channelsResponse = await fetchYouTube('channels', { part: 'contentDetails', id: FOREIGN_CHANNEL_WHITELIST.join(',') });
-                // ===== 更動 4：【穩定性修復】防止 'map' of undefined 錯誤 =====
+                // ===== 更動 3：【穩定性修復】防止 'map' of undefined 錯誤 =====
                 // 原因：同上，確保深度搜索在處理日文頻道時的穩定性。
                 const uploadPlaylistIds = (channelsResponse.items || []).map(item => item.contentDetails.relatedPlaylists.uploads).filter(Boolean);
                 
@@ -430,7 +426,7 @@ const v10_logic = {
         const allWhitelists = [...CHANNEL_WHITELIST, ...SPECIAL_WHITELIST];
         if (allWhitelists.length > 0) {
             const channelsResponse = await fetchYouTube('channels', { part: 'contentDetails', id: allWhitelists.join(',') });
-            // ===== 更動 5：【穩定性修復】(V10 邏輯) 防止 'map' of undefined 錯誤 =====
+            // ===== 更動 4：【穩定性修復】(V10 邏輯) 防止 'map' of undefined 錯誤 =====
             // 原因：將 v11 的穩定性修復同樣應用於 V10 的邏輯，確保舊版 API 的穩定性。
             const uploadPlaylistIds = (channelsResponse.items || []).map(item => item.contentDetails.relatedPlaylists.uploads).filter(Boolean);
             const playlistItemsPromises = uploadPlaylistIds.map(playlistId => fetchYouTube('playlistItems', { part: 'snippet', playlistId, maxResults: 50 }));
