@@ -295,7 +295,7 @@ const v11_logic = {
         if (idsToDelete.length > 0) { pipeline.sRem(storageKeys.setKey, idsToDelete); idsToDelete.forEach(id => pipeline.del(`${storageKeys.hashPrefix}${id}`)); }
         if (validVideoIds.size > 0) { pipeline.sAdd(storageKeys.setKey, [...validVideoIds]); }
         await pipeline.exec();
-        console.log('[v11] 外文影片常規更新程序完成。`);
+        console.log('[v11] 外文影片常規更新程序完成。');
     },
     async deepSearchAndStoreYouTubeData(redisClient, storageKeys, searchOptions, isForeign) {
         const { months, keywords, checkKeywords } = searchOptions;
