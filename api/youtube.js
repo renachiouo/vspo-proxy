@@ -1,3 +1,4 @@
+
 import { createClient } from 'redis';
 
 // --- 版本指紋 ---
@@ -506,13 +507,19 @@ export default async function handler(request, response) {
     const { searchParams } = url;
     const clientVersion = searchParams.get('version');
 
+    // 新增：CORS 標頭設定（全局允許所有來源）
     response.setHeader('Access-Control-Allow-Origin', '*');
     response.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
     response.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+    
+    // 新增：處理 OPTIONS 預檢請求
     if (request.method === 'OPTIONS') {
         return response.status(204).end();
     }
 
+    let redisClient;
+    // ... 從這裡開始，其餘程式碼保持原狀（包括 try { redisClient = createClient(...); } 和後續的端點邏輯）
+}
     let redisClient;
     try {
         redisClient = createClient({ url: redisConnectionString });
