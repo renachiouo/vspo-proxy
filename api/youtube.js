@@ -1,3 +1,4 @@
+
 import { createClient } from 'redis';
 
 // --- 版本指紋 ---
@@ -495,9 +496,18 @@ const v10_logic = {
 
 // --- 主 Handler ---
 export default async function handler(request, response) {
+    // 新增：立即設定 CORS 標頭（在任何檢查之前）
+    response.setHeader('Access-Control-Allow-Origin', '*');
+    response.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    response.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+    
+    // 新增：立即處理 OPTIONS 預檢請求（在任何檢查之前）
+    if (request.method === 'OPTIONS') {
+        return response.status(204).end();
+    }
+
     const redisConnectionString = process.env.REDIS_URL;
     if (!redisConnectionString) {
-        response.setHeader('Access-Control-Allow-Origin', '*');
         return response.status(500).json({ error: 'Redis 儲存庫未設定。' });
     }
 
@@ -506,12 +516,6 @@ export default async function handler(request, response) {
     const { searchParams } = url;
     const clientVersion = searchParams.get('version');
 
-    response.setHeader('Access-Control-Allow-Origin', '*');
-    response.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-    response.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-    if (request.method === 'OPTIONS') {
-        return response.status(204).end();
-    }
 
     let redisClient;
     try {
