@@ -43,7 +43,7 @@ const SPECIAL_WHITELIST = [
     'UCu_KJNiq48jSwBVY7T4-hUQ', 'UC4QGmmdtxLZFFASDVee_atQ', 
     'UCBiATOGgCqf8uoFfX-pZ1gA', 'UCzqsI2AoNYe2F2WGRYqkEjA', 
     'UCIgvpS92srpQrGbXDlc8HFQ', 'UC7lPYbAxGzvbobFq_JxxftA', 
-    'UCa_gZCepQ7ZAUAsxnQkuMMA', 'UC0XdcEuxl03Pj6Rm7jcHEnw' 
+    'UCa_gZCepQ7ZAUAsxnQkuMMA', 'UC0XdcEuxl03Pj6Rm7jcHEnw',
     'UCb7sghJ15e22ZuaHO-n65RQ',
 ];
 const CHANNEL_BLACKLIST = [
@@ -716,4 +716,5 @@ export default async function handler(request, response) {
         if (redisClient?.isOpen) await redisClient.quit();
     }
 }
+
 
