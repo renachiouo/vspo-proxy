@@ -1,6 +1,6 @@
 import { createClient } from 'redis';
 
-// --- 版本指紋 ---
+// --- 版本指紋 ----
 const SCRIPT_VERSION = '12.8-CRON'; 
 
 // --- Redis Keys Configuration ---
