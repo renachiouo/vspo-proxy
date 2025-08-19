@@ -15,16 +15,5 @@
       "source": "/api/:path*",
       "destination": "/api/youtube"
     }
-  ],
-  "crons": [
-    {
-      "path": "/api/cron/update?lang=cn",
-      "schedule": "0/20 * * * *"
-    },
-    {
-      "path": "/api/cron/update?lang=jp",
-      "schedule": "0 * * * *"
-    }
   ]
 }
-
