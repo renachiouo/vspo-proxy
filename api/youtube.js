@@ -78,20 +78,7 @@ const FOREIGN_SPECIAL_WHITELIST = [
     'UCmVhuHYFM_HshlRwhesXeuA', 'UCAeN4qh2CJW0qxZCgVO_cVA',
     'UCowE5eik3vn-pshdaQksdww', 'UCQZ6f0GyKnxQJZe2VZWLIeA',
     'UC6ln0uzKuMLQaSl7-LMVu5A', 'UCeDnvJ66mIu_D4MtRoKRE_Q',
-    'UC7sjX8lHyqbYAVREGuUrtQg', 'UCPK8tMKReXvewGOz7d0zS9g',
-    'UCnKUNFM_UebiiPnFgwMyH9w', 'UCZ_Gm9ipdFovmM8Pf9f-_Ww',
-    'UCiNnXR8m4PbY1bbU-BbJVYQ', 'UCQjZjJDCufqOGMMa_gAWHAg',
-    'UCvl8Om_nj-SUhVkL32xCT-w', 'UC7tHRqIe9_70eFKxN3VNqWg',
-    'UCz08kYEJtqgKrYzOvyaKF9g', 'UCdEVNGf6gS0fY7Psuvulxnw',
-    'UCB8lWDZmBJoT4ivtzHkXqag', 'UCDnXu6ZXrBbwOBMWIzTM90Q',
-    'UCxN17yjDj7uDX6G5QPC74gg', 'UCwH9u8cS5i6P-ms9Ij_5c3A',
-    'UCJ1ScYk0y-RVN7Y3F6hHKMA', 'UCR2fkFG3hbXGPpCph6efTxA',
-    'UCOw-ImCTMysmC8oz5pR5C0Q', 'UC9yV6UJNPnnwMKLp3elA28A',
-    'UCCJfNsvm5YX7vxcpWC2QJCg', 'UCve_e5k_BPNKKZtFaPJDkJQ',
-    'UCzQd9jKE--_ck5LioUp2_FQ', 'UCFht3Ite1H2fDF5_alQBgHQ',
-    'UCFeU34oYiLjgjdwhqgZMv3g', 'UCNqzS2OTCeu3ifBW2sAu5KQ',
-    'UCSiBiSbq9zRN1jVEl_URcwg', 'UCqHY8BZzCtufwgzeONw0msg',
-    'UCMbXZjnda1o_47CnM7W3QIA', 'UC4EQ-N1u5MlmDCVj9t8tHsA',
+    'UC7sjX8lHyqbYAVREGuUrtQg', 'UCPK8tMKReXvewGOz7d0zS9g'
 ];
 
 const SPECIAL_KEYWORDS = ["vspo", "ぶいすぽ"]; // 中文白名單的關鍵字
