@@ -328,6 +328,11 @@ const v11_logic = {
 
 // --- 主 Handler ---
 export default async function handler(request, response) {
+    if (request.method === 'OPTIONS') {
+        // vercel.json 中已設定好CORS標頭，這裡我們只需要回傳成功狀態即可。
+        return response.status(200).end();
+    }
+    
     const redisConnectionString = process.env.REDIS_URL;
     if (!redisConnectionString) {
         return response.status(500).json({ error: 'Redis 儲存庫未設定。' });
