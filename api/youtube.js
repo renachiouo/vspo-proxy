@@ -106,9 +106,13 @@ const containsBlacklistedKeyword = (videoDetail, blacklist) => {
 };
 async function checkIfShort(videoId) {
     try {
-        const response = await fetch(`https://www.youtube.com/shorts/${videoId}`, { method: 'HEAD', redirect: 'manual' });
-        return response.status === 200;
+        // 使用 GET 請求並允許自動重定向，然後檢查最終的 URL
+        const response = await fetch(`https://www.youtube.com/shorts/${videoId}`);
+        // 如果最終 URL 仍然包含 /shorts/，我們就將其視為 Shorts 影片。
+        // 這是比檢查狀態碼更可靠的方法，因為非 Shorts 影片會被重定向到 /watch?v=...
+        return response.url.includes('/shorts/');
     } catch (error) {
+        // 在發生網路錯誤等情況時，記錄錯誤並安全地回傳 false
         console.error(`探測 Shorts 失敗 (Video ID: ${videoId}):`, error.name);
         return false;
     }
@@ -190,9 +194,10 @@ function v11_normalizeVideoData(videoData) {
             video.originalStreamInfo = null;
         }
     }
-    if (!video.videoType) {
-        video.videoType = 'video';
-    }
+    // 以下 if 判斷式已被移除，以確保未分類影片不會被預設為 'video'
+    // if (!video.videoType) {
+    //     video.videoType = 'video';
+    // }
     return video;
 }
 const v11_logic = {
