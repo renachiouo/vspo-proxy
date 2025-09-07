@@ -25,7 +25,7 @@ const v11_STREAM_INDEX_PREFIX = `${v11_KEY_PREFIX}index:`;
 
 // --- 更新頻率設定 ---
 const UPDATE_INTERVAL_SECONDS = 1200; // 20 分鐘
-const FOREIGN_UPDATE_INTERVAL_SECONDS = 2000; // 20 分鐘
+const FOREIGN_UPDATE_INTERVAL_SECONDS = 1200; // 20 分鐘
 
 // --- YouTube API 設定 ---
 const SPECIAL_WHITELIST = [ 
