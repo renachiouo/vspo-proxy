@@ -49,6 +49,7 @@ const SPECIAL_WHITELIST = [
     'UC0jwe2WCScTAX3ci-9cYx3g', 'UCMK6ii0LL4Ouwq5TQDM-gjA',
     'UC8fQSjxjztQB6ofKrWNmAfA', 'UCzBQFiL0S1Kc8eq7XuuPwgg',
     'UCKhhVOFXHoXpF9oVsHOKiQA', 'UCgu4Qro3kCHTqYOjRLZxo0Q',
+    'UCgg8m0M1jRaZoDllNWuorPQ', 'UCr2D2GyOcmcELjdr2bkxAOg',
 ];
 const CHANNEL_BLACKLIST = [
     'UCuI5_lA2o-arAIKukGvIEcQ', 'UCOnlV05C1t4d-x2NP-kgyzw', 
