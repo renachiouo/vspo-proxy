@@ -203,13 +203,13 @@ const v11_logic = {
     async updateAndStoreYouTubeData(redisClient) {
         console.log(`[v12] 開始執行中文影片常規更新程序 (自動白名單)...`);
         const oneMonthAgo = new Date(); oneMonthAgo.setMonth(oneMonthAgo.getMonth() - 1); const publishedAfter = oneMonthAgo.toISOString();
-        
+    
         // 1. 從 Redis 獲取當前白名單
         const currentWhitelist = await redisClient.sMembers(V12_WHITELIST_CN_KEY);
         console.log(`[v12] 從 Redis 載入 ${currentWhitelist.length} 個中文白名單頻道。`);
-        
+    
         const newVideoCandidates = new Set();
-        
+    
         // 2. 掃描白名單上的頻道
         if (currentWhitelist.length > 0) { 
             const channelsResponse = await fetchYouTube('channels', { part: 'contentDetails', id: currentWhitelist.join(',') }); 
@@ -227,27 +227,35 @@ const v11_logic = {
 
         // 4. 自動新增頻道到白名單
         if (searchResultVideoIds.size > 0) {
-            const videoDetailsResponse = await fetchYouTube('videos', { part: 'snippet', id: [...searchResultVideoIds].join(',') });
+            // --- START: 錯誤修正 ---
+            // 將找到的影片 ID 分批處理，每批 50 個
+            const videoIdBatches = batchArray([...searchResultVideoIds], 50);
             const newChannelsToAdd = new Set();
-            (videoDetailsResponse.items || []).forEach(video => {
-                const channelId = video.snippet.channelId;
-                // 核心邏輯：如果頻道不在白名單中，且說明包含 'ぶいすぽ'，則加入
-                if (!currentWhitelist.includes(channelId) && (video.snippet.description || '').includes('ぶいすぽ')) {
-                    newChannelsToAdd.add(channelId);
-                }
-            });
+
+            for (const batch of videoIdBatches) {
+                const videoDetailsResponse = await fetchYouTube('videos', { part: 'snippet', id: batch.join(',') });
+                (videoDetailsResponse.items || []).forEach(video => {
+                    const channelId = video.snippet.channelId;
+                    // 核心邏輯：如果頻道不在白名單中，且說明包含 'ぶいすぽ'，則加入
+                    if (!currentWhitelist.includes(channelId) && (video.snippet.description || '').includes('ぶいすぽ')) {
+                        newChannelsToAdd.add(channelId);
+                    }
+                });
+            }
+            // --- END: 錯誤修正 ---
+
             if (newChannelsToAdd.size > 0) {
                 await redisClient.sAdd(V12_WHITELIST_CN_KEY, [...newChannelsToAdd]);
                 console.log(`[v12] 自動新增 ${newChannelsToAdd.size} 個新頻道到中文白名單: ${[...newChannelsToAdd].join(', ')}`);
             }
         }
-        
+    
         // 5. 處理和儲存所有影片
         const storageKeys = { setKey: v11_VIDEOS_SET_KEY, hashPrefix: v11_VIDEO_HASH_PREFIX, type: 'main' };
         const options = { retentionDate: oneMonthAgo, validKeywords: SPECIAL_KEYWORDS };
-        
+    
         const { validVideoIds, idsToDelete } = await this.processAndStoreVideos([...newVideoCandidates], redisClient, storageKeys, options);
-        
+    
         const pipeline = redisClient.multi();
         if (idsToDelete.length > 0) { pipeline.sRem(storageKeys.setKey, idsToDelete); idsToDelete.forEach(id => pipeline.del(`${storageKeys.hashPrefix}${id}`)); }
         if (validVideoIds.size > 0) { pipeline.sAdd(storageKeys.setKey, [...validVideoIds]); }
