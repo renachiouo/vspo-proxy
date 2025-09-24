@@ -95,7 +95,8 @@ const CHANNEL_BLACKLIST = [
     'UCjOaP5dTW_0s1Ui11jm4Rzg', 'UCGZK4lLrDYcOKxmWJIERmjQ', 
     'UCnERutXxnHTLqckbGCUwtAg', 'UC-wCI2w1vMaEQ1iLnp3MEVQ', 
     'UCIvTtZq1vMaEQ1iLnp3MEVQ', 'UCBf3eLt6Nj7AJwkDysm0JWw', 
-    'UCnusRHKhMAR7dNM00mk44BA', 'UCEShI32SUz7g9J9ICOs5Y0g' 
+    'UCnusRHKhMAR7dNM00mk44BA', 'UCEShI32SUz7g9J9ICOs5Y0g',
+    'UCqd0XUtNr_yQ5nqoiPsPw5g',
 ];
 const SPECIAL_KEYWORDS = ["vspo", "ぶいすぽ"];
 const FOREIGN_SPECIAL_KEYWORDS = ["ぶいすぽ"]; 
