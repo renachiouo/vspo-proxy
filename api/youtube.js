@@ -86,8 +86,8 @@ const FOREIGN_SPECIAL_WHITELIST = [
     'UC7sjX8lHyqbYAVREGuUrtQg', 'UCPK8tMKReXvewGOz7d0zS9g',
 ];
 
-const SPECIAL_KEYWORDS = ["vspo", "ぶいすぽ"]; // 中文白名單的關鍵字
-const FOREIGN_SPECIAL_KEYWORDS = ["ぶいすぽ"]; // 新增：日文白名單的關鍵字
+const SPECIAL_KEYWORDS = ["ぶいすぽっ！許諾番号"]; // 中文白名單的關鍵字
+const FOREIGN_SPECIAL_KEYWORDS = ["ぶいすぽっ！許諾番号"]; // 新增：日文白名單的關鍵字
 const SEARCH_KEYWORDS = ["VSPO中文", "VSPO中文精華", "VSPO精華", "VSPO中文剪輯", "VSPO剪輯"];
 const KEYWORD_BLACKLIST = ["MMD"]; 
 const apiKeys = [
