@@ -35,8 +35,8 @@ const FOREIGN_UPDATE_INTERVAL_SECONDS = 1200; // 20 分鐘
 // --- YouTube API 設定 ---
 // 初始白名單已被移除，因為現在透過 UI 在 Redis 中進行管理。
 
-const SPECIAL_KEYWORDS = ["vspo", "ぶいすぽ"];
-const FOREIGN_SPECIAL_KEYWORDS = ["ぶいすぽ", "ぶいすぽ 切り抜き"];
+const SPECIAL_KEYWORDS = ["ぶいすぽっ！許諾番号"];
+const FOREIGN_SPECIAL_KEYWORDS = ["ぶいすぽっ！許諾番号"];
 const SEARCH_KEYWORDS = ["VSPO中文", "VSPO中文精華", "VSPO精華", "VSPO中文剪輯", "VSPO剪輯"];
 const KEYWORD_BLACKLIST = ["MMD"];
 const apiKeys = [
