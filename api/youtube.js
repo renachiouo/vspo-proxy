@@ -1,7 +1,7 @@
 import { createClient } from 'redis';
 
 // --- 版本指紋 ---
-const SCRIPT_VERSION = '16.0-DualBlacklist'; 
+const SCRIPT_VERSION = '16.0-DualBlacklist';
 
 // --- Redis Keys Configuration ---
 const V12_WHITELIST_CN_KEY = 'vspo-db:v4:whitelist:cn';
@@ -36,9 +36,9 @@ const FOREIGN_UPDATE_INTERVAL_SECONDS = 1200; // 20 分鐘
 // 初始白名單已被移除，因為現在透過 UI 在 Redis 中進行管理。
 
 const SPECIAL_KEYWORDS = ["vspo", "ぶいすぽ"];
-const FOREIGN_SPECIAL_KEYWORDS = ["ぶいすぽ", "ぶいすぽ 切り抜き"]; 
+const FOREIGN_SPECIAL_KEYWORDS = ["ぶいすぽ", "ぶいすぽ 切り抜き"];
 const SEARCH_KEYWORDS = ["VSPO中文", "VSPO中文精華", "VSPO精華", "VSPO中文剪輯", "VSPO剪輯"];
-const KEYWORD_BLACKLIST = ["MMD"]; 
+const KEYWORD_BLACKLIST = ["MMD"];
 const apiKeys = [
     process.env.YOUTUBE_API_KEY_1, process.env.YOUTUBE_API_KEY_2,
     process.env.YOUTUBE_API_KEY_3, process.env.YOUTUBE_API_KEY_4,
@@ -106,13 +106,13 @@ const fetchYouTube = async (endpoint, params) => {
             const res = await fetch(url);
             const data = await res.json();
             if (data.error && (data.error.message.toLowerCase().includes('quota') || data.error.reason === 'quotaExceeded')) {
-                console.warn(`金鑰 ${apiKey.substring(0,8)}... 配額錯誤，嘗試下一個。`);
+                console.warn(`金鑰 ${apiKey.substring(0, 8)}... 配額錯誤，嘗試下一個。`);
                 continue;
             }
-            if(data.error) throw new Error(data.error.message);
+            if (data.error) throw new Error(data.error.message);
             return data;
-        } catch(e) {
-             console.error(`金鑰 ${apiKey.substring(0,8)}... 發生錯誤`, e);
+        } catch (e) {
+            console.error(`金鑰 ${apiKey.substring(0, 8)}... 發生錯誤`, e);
         }
     }
     throw new Error('所有 API 金鑰都已失效。');
@@ -161,16 +161,16 @@ const v11_logic = {
     },
     async processAndStoreVideos(videoIds, redisClient, storageKeys, options = {}) {
         const { retentionDate, validKeywords, blacklist = [] } = options;
-        
+
         if (videoIds.length === 0) return { validVideoIds: new Set(), idsToDelete: [] };
         const videoDetailsMap = new Map();
         const videoDetailBatches = batchArray(videoIds, 50);
         for (const batch of videoDetailBatches) { const result = await fetchYouTube('videos', { part: 'statistics,snippet', id: batch.join(',') }); result.items?.forEach(item => videoDetailsMap.set(item.id, item)); }
-        
+
         const channelStatsMap = new Map();
         const allChannelIds = [...new Set(Array.from(videoDetailsMap.values()).map(d => d.snippet.channelId))];
         if (allChannelIds.length > 0) { const channelDetailBatches = batchArray(allChannelIds, 50); for (const batch of channelDetailBatches) { const result = await fetchYouTube('channels', { part: 'statistics,snippet', id: batch.join(',') }); result.items?.forEach(item => channelStatsMap.set(item.id, item)); } }
-        
+
         const validVideoIds = new Set();
         const pipeline = redisClient.multi();
         const videosToClassify = [];
@@ -183,25 +183,25 @@ const v11_logic = {
             const isKeywordBlacklisted = containsBlacklistedKeyword(detail, KEYWORD_BLACKLIST);
             const isExpired = new Date(detail.snippet.publishedAt) < retentionDate;
             const isContentValid = isVideoValid(detail, validKeywords);
-            
+
             if (!isChannelBlacklisted && !isKeywordBlacklisted && !isExpired && isContentValid) {
                 validVideoIds.add(videoId);
                 const channelDetails = channelStatsMap.get(channelId);
                 const { title, description } = detail.snippet;
                 const videoData = { id: videoId, title: title, searchableText: `${title || ''} ${description || ''}`.toLowerCase(), thumbnail: detail.snippet.thumbnails.high?.url || detail.snippet.thumbnails.default?.url, channelId: channelId, channelTitle: detail.snippet.channelTitle, channelAvatarUrl: channelDetails?.snippet?.thumbnails?.default?.url || '', publishedAt: detail.snippet.publishedAt, viewCount: detail.statistics?.viewCount || 0, subscriberCount: channelDetails?.statistics?.subscriberCount || 0, };
-                
+
                 videosToClassify.push(videoId);
 
                 const originalStreamInfo = parseOriginalStreamInfo(description);
-                if (originalStreamInfo) { 
-                    videoData.originalStreamInfo = JSON.stringify(originalStreamInfo); 
-                    const indexKey = `${v11_STREAM_INDEX_PREFIX}${originalStreamInfo.platform}:${originalStreamInfo.id}`; 
-                    pipeline.sAdd(indexKey, `${storageKeys.type}:${videoId}`); 
+                if (originalStreamInfo) {
+                    videoData.originalStreamInfo = JSON.stringify(originalStreamInfo);
+                    const indexKey = `${v11_STREAM_INDEX_PREFIX}${originalStreamInfo.platform}:${originalStreamInfo.id}`;
+                    pipeline.sAdd(indexKey, `${storageKeys.type}:${videoId}`);
                 }
                 pipeline.hSet(`${storageKeys.hashPrefix}${videoId}`, videoData);
             }
         }
-        
+
         if (videosToClassify.length > 0) {
             pipeline.sAdd(V10_PENDING_CLASSIFICATION_SET_KEY, videosToClassify);
         }
@@ -214,16 +214,16 @@ const v11_logic = {
     async updateAndStoreYouTubeData(redisClient) {
         console.log(`[v16.0] 開始執行中文影片常規更新程序...`);
         const oneMonthAgo = new Date(); oneMonthAgo.setMonth(oneMonthAgo.getMonth() - 1); const publishedAfter = oneMonthAgo.toISOString();
-        
+
         const [currentWhitelist, blacklist] = await Promise.all([
             redisClient.sMembers(V12_WHITELIST_CN_KEY),
             redisClient.sMembers(V12_BLACKLIST_CN_KEY) // --- START: 修改 (使用中文黑名單) ---
         ]);
         console.log(`[v16.0] 從 Redis 載入 ${currentWhitelist.length} 個中文白名單頻道和 ${blacklist.length} 個中文黑名單頻道。`);
         // --- END: 修改 ---
-        
+
         const newVideoCandidates = new Set();
-        
+
         if (currentWhitelist.length > 0) {
             const uploadPlaylistIds = [];
             const channelBatches = batchArray(currentWhitelist, 50);
@@ -236,8 +236,8 @@ const v11_logic = {
                 });
             }
             const playlistItemsPromises = uploadPlaylistIds.map(playlistId => fetchYouTube('playlistItems', { part: 'snippet', playlistId, maxResults: 50 }));
-            const playlistItemsResults = await Promise.all(playlistItemsPromises); 
-            for (const result of playlistItemsResults) { result.items?.forEach(item => { if (new Date(item.snippet.publishedAt) > oneMonthAgo) { newVideoCandidates.add(item.snippet.resourceId.videoId); } }); } 
+            const playlistItemsResults = await Promise.all(playlistItemsPromises);
+            for (const result of playlistItemsResults) { result.items?.forEach(item => { if (new Date(item.snippet.publishedAt) > oneMonthAgo) { newVideoCandidates.add(item.snippet.resourceId.videoId); } }); }
         }
 
         const searchPromises = SEARCH_KEYWORDS.map(q => fetchYouTube('search', { part: 'snippet', type: 'video', maxResults: 50, q, publishedAfter }));
@@ -262,12 +262,12 @@ const v11_logic = {
                 console.log(`[v16.0] 自動新增 ${newChannelsToAdd.size} 個新頻道到中文白名單: ${[...newChannelsToAdd].join(', ')}`);
             }
         }
-        
+
         const storageKeys = { setKey: v11_VIDEOS_SET_KEY, hashPrefix: v11_VIDEO_HASH_PREFIX, type: 'main' };
         const options = { retentionDate: oneMonthAgo, validKeywords: SPECIAL_KEYWORDS, blacklist };
-        
+
         const { validVideoIds, idsToDelete } = await this.processAndStoreVideos([...newVideoCandidates], redisClient, storageKeys, options);
-        
+
         const pipeline = redisClient.multi();
         if (idsToDelete.length > 0) { pipeline.sRem(storageKeys.setKey, idsToDelete); idsToDelete.forEach(id => pipeline.del(`${storageKeys.hashPrefix}${id}`)); }
         if (validVideoIds.size > 0) { pipeline.sAdd(storageKeys.setKey, [...validVideoIds]); }
@@ -284,12 +284,12 @@ const v11_logic = {
         ]);
         console.log(`[v16.0] 從 Redis 載入 ${currentWhitelist.length} 個日文白名單頻道和 ${blacklist.length} 個日文黑名單頻道。`);
         // --- END: 修改 ---
-        
+
         if (currentWhitelist.length === 0) {
             console.warn("[v16.0] 日文白名單為空，更新程序終止。");
             return;
         }
-        
+
         const newVideoCandidates = new Set();
         const uploadPlaylistIds = [];
         const channelBatches = batchArray(currentWhitelist, 50);
@@ -301,14 +301,14 @@ const v11_logic = {
                 }
             });
         }
-        
+
         for (const playlistId of uploadPlaylistIds) { const result = await fetchYouTube('playlistItems', { part: 'snippet', playlistId, maxResults: 50 }); result.items?.forEach(item => { if (new Date(item.snippet.publishedAt) > threeMonthsAgo) { newVideoCandidates.add(item.snippet.resourceId.videoId); } }); }
-        
+
         const storageKeys = { setKey: v11_FOREIGN_VIDEOS_SET_KEY, hashPrefix: v11_FOREIGN_VIDEO_HASH_PREFIX, type: 'foreign' };
         const options = { retentionDate: threeMonthsAgo, validKeywords: FOREIGN_SPECIAL_KEYWORDS, blacklist };
 
         const { validVideoIds, idsToDelete } = await this.processAndStoreVideos([...newVideoCandidates], redisClient, storageKeys, options);
-        
+
         const pipeline = redisClient.multi();
         if (idsToDelete.length > 0) { pipeline.sRem(storageKeys.setKey, idsToDelete); idsToDelete.forEach(id => pipeline.del(`${storageKeys.hashPrefix}${id}`)); }
         if (validVideoIds.size > 0) { pipeline.sAdd(storageKeys.setKey, [...validVideoIds]); }
@@ -339,8 +339,11 @@ export default async function handler(request, response) {
         let body = {};
         if (request.method === 'POST') {
             try {
-                // 只有當 content-type 是 json 時才解析，避免非 json 請求出錯
-                if (request.headers.get('content-type')?.includes('application/json')) {
+                // Vercel Node.js 環境通常會自動解析 body
+                if (request.body) {
+                    body = typeof request.body === 'string' ? JSON.parse(request.body) : request.body;
+                } else if (typeof request.json === 'function') {
+                    // Edge Runtime 或其他支援 Request API 的環境
                     body = await request.json();
                 }
             } catch (e) {
@@ -366,7 +369,7 @@ export default async function handler(request, response) {
             console.log('[v16.0] 開始執行日文頻道探索任務...');
             const searchPromises = FOREIGN_SPECIAL_KEYWORDS.map(q => fetchYouTube('search', { part: 'snippet', type: 'video', maxResults: 50, q }));
             const searchResults = await Promise.all(searchPromises);
-            
+
             const discoveredChannelIds = new Set();
             for (const result of searchResults) {
                 result.items?.forEach(item => discoveredChannelIds.add(item.snippet.channelId));
@@ -388,7 +391,7 @@ export default async function handler(request, response) {
             // 中文黑名單中的頻道，仍然可以被加入日文待審核列表，所以這裡不檢查 cnBlacklist
             const allExistingIds = new Set([...cnWhitelist, ...jpWhitelist, ...pendingWhitelist, ...jpBlacklist]);
             // --- END: 修改 ---
-            
+
             const newChannelsToAdd = [...discoveredChannelIds].filter(id => !allExistingIds.has(id));
 
             if (newChannelsToAdd.length > 0) {
@@ -396,7 +399,7 @@ export default async function handler(request, response) {
                 console.log(`[v16.0] 發現 ${newChannelsToAdd.length} 個新頻道，已加入待審核列表。`);
                 return response.status(200).json({ message: `探索完成，發現 ${newChannelsToAdd.length} 個新頻道，已加入待審核列表。` });
             }
-            
+
             return response.status(200).json({ message: '探索完成，沒有發現需要加入的新頻道。' });
         }
 
@@ -410,7 +413,7 @@ export default async function handler(request, response) {
                 redisClient.sMembers(V12_BLACKLIST_CN_KEY),
                 redisClient.sMembers(V12_BLACKLIST_JP_KEY)
             ]);
-            
+
             const allIds = [...new Set([...pending_jp_ids, ...whitelist_cn_ids, ...whitelist_jp_ids, ...blacklist_cn_ids, ...blacklist_jp_ids])];
             // --- END: 修改 ---
             const channelDetailsMap = new Map();
@@ -426,8 +429,8 @@ export default async function handler(request, response) {
                     }));
                 }
             }
-            
-            const getDetails = (ids) => ids.map(id => channelDetailsMap.get(id)).filter(Boolean).sort((a,b) => a.name.localeCompare(b.name));
+
+            const getDetails = (ids) => ids.map(id => channelDetailsMap.get(id)).filter(Boolean).sort((a, b) => a.name.localeCompare(b.name));
 
             return response.status(200).json({
                 pending_jp: getDetails(pending_jp_ids),
@@ -437,19 +440,19 @@ export default async function handler(request, response) {
                 blacklist_jp: getDetails(blacklist_jp_ids), // --- END: 修改 ---
             });
         }
-        
+
         if (path === '/api/admin/manage') {
             if (request.method !== 'POST') return response.status(405).json({ error: '僅允許 POST 方法' });
-            
+
             if (body.parseError) {
-                 return response.status(400).json({ error: '無效的 JSON body' });
+                return response.status(400).json({ error: '無效的 JSON body' });
             }
             if (!authenticate()) return;
-            
+
             const { action, channelId, listType } = body;
             if (!action || !channelId) return response.status(400).json({ error: '缺少 action 或 channelId 參數' });
 
-            switch(action) {
+            switch (action) {
                 case 'approve_jp':
                     await redisClient.sMove(V12_WHITELIST_PENDING_JP_KEY, V12_WHITELIST_JP_KEY, channelId);
                     break;
@@ -460,9 +463,9 @@ export default async function handler(request, response) {
                 case 'delete': {
                     if (!listType) return response.status(400).json({ error: '刪除操作需要 listType 參數' });
                     // --- START: 修改 (使用分離後的黑名單 Key) ---
-                    const keyMap = { 
-                        cn: V12_WHITELIST_CN_KEY, 
-                        jp: V12_WHITELIST_JP_KEY, 
+                    const keyMap = {
+                        cn: V12_WHITELIST_CN_KEY,
+                        jp: V12_WHITELIST_JP_KEY,
                         blacklist_cn: V12_BLACKLIST_CN_KEY,
                         blacklist_jp: V12_BLACKLIST_JP_KEY
                     };
@@ -474,14 +477,14 @@ export default async function handler(request, response) {
                 case 'add': {
                     if (!listType) return response.status(400).json({ error: '新增操作需要有效的 listType' });
                     // --- START: 修改 (使用分離後的黑名單 Key) ---
-                    const keyMap = { 
-                        cn: V12_WHITELIST_CN_KEY, 
+                    const keyMap = {
+                        cn: V12_WHITELIST_CN_KEY,
                         jp: V12_WHITELIST_JP_KEY,
                         blacklist_cn: V12_BLACKLIST_CN_KEY,
                         blacklist_jp: V12_BLACKLIST_JP_KEY
                     };
                     if (!keyMap[listType]) return response.status(400).json({ error: '無效的 listType' });
-                     // --- END: 修改 ---
+                    // --- END: 修改 ---
                     await redisClient.sAdd(keyMap[listType], channelId);
                     break;
                 }
@@ -530,7 +533,7 @@ export default async function handler(request, response) {
                 return response.status(500).json({ error: '處理狀態檢查請求時發生內部錯誤。', details: e.message });
             }
         }
-        
+
         if (clientVersion && parseFloat(clientVersion.replace('V', '')) >= 11.0) {
             if (path === '/api/youtube') {
                 try {
@@ -540,7 +543,7 @@ export default async function handler(request, response) {
                     const noIncrement = searchParams.get('no_increment') === 'true';
                     const visitorCount = noIncrement ? await getVisitorCount(redisClient) : await incrementAndGetVisitorCount(redisClient);
                     if (forceRefresh) {
-                        if(!authenticate()) return;
+                        if (!authenticate()) return;
                         if (isForeign) {
                             await v11_logic.updateForeignClips(redisClient);
                             await redisClient.set(v11_FOREIGN_META_LAST_UPDATED_KEY, Date.now());
@@ -618,7 +621,7 @@ export default async function handler(request, response) {
                 }
             }
         }
-        
+
         return response.status(404).json({ error: `找不到指定的 API 端點: ${path}` });
 
     } catch (error) {
