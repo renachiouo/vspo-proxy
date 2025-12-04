@@ -1,7 +1,7 @@
 import { createClient } from 'redis';
 
 // --- 版本指紋 ---
-const SCRIPT_VERSION = '16.0-DualBlacklist';
+const SCRIPT_VERSION = '16.1-UniversalTrigger';
 
 // --- Redis Keys Configuration ---
 const V12_WHITELIST_CN_KEY = 'vspo-db:v4:whitelist:cn';
@@ -609,27 +609,45 @@ export default async function handler(request, response) {
                             await redisClient.set(v11_META_LAST_UPDATED_KEY, Date.now());
                         }
                     } else {
-                        const lastUpdateKey = isForeign ? v11_FOREIGN_META_LAST_UPDATED_KEY : v11_META_LAST_UPDATED_KEY;
-                        const updateInterval = isForeign ? FOREIGN_UPDATE_INTERVAL_SECONDS : UPDATE_INTERVAL_SECONDS;
-                        const lockKey = isForeign ? v11_FOREIGN_UPDATE_LOCK_KEY : v11_UPDATE_LOCK_KEY;
-                        const lastUpdate = await redisClient.get(lastUpdateKey);
-                        const needsUpdate = !lastUpdate || (Date.now() - parseInt(lastUpdate, 10)) > updateInterval * 1000;
-                        if (needsUpdate) {
-                            const lockAcquired = await redisClient.set(lockKey, 'locked', { NX: true, EX: 600 });
+                        // --- START: 修改 (全面觸發更新) ---
+                        // 不論當前請求的語言為何，都嘗試檢查並更新中文與日文資料
+
+                        // 1. 檢查中文更新
+                        const lastUpdateCN = await redisClient.get(v11_META_LAST_UPDATED_KEY);
+                        const needsUpdateCN = !lastUpdateCN || (Date.now() - parseInt(lastUpdateCN, 10)) > UPDATE_INTERVAL_SECONDS * 1000;
+                        if (needsUpdateCN) {
+                            const lockAcquired = await redisClient.set(v11_UPDATE_LOCK_KEY, 'locked', { NX: true, EX: 600 });
                             if (lockAcquired) {
                                 try {
-                                    console.log(`[v16.0] 執行${isForeign ? '日文' : '中文'}影片同步更新...`);
-                                    if (isForeign) {
-                                        await v11_logic.updateForeignClips(redisClient);
-                                    } else {
-                                        await v11_logic.updateAndStoreYouTubeData(redisClient);
-                                    }
-                                    await redisClient.set(lastUpdateKey, Date.now());
+                                    console.log(`[v16.0] 觸發中文影片同步更新...`);
+                                    await v11_logic.updateAndStoreYouTubeData(redisClient);
+                                    await redisClient.set(v11_META_LAST_UPDATED_KEY, Date.now());
+                                } catch (e) {
+                                    console.error("中文更新失敗:", e);
                                 } finally {
-                                    await redisClient.del(lockKey);
+                                    await redisClient.del(v11_UPDATE_LOCK_KEY);
                                 }
                             }
                         }
+
+                        // 2. 檢查日文更新
+                        const lastUpdateJP = await redisClient.get(v11_FOREIGN_META_LAST_UPDATED_KEY);
+                        const needsUpdateJP = !lastUpdateJP || (Date.now() - parseInt(lastUpdateJP, 10)) > FOREIGN_UPDATE_INTERVAL_SECONDS * 1000;
+                        if (needsUpdateJP) {
+                            const lockAcquired = await redisClient.set(v11_FOREIGN_UPDATE_LOCK_KEY, 'locked', { NX: true, EX: 600 });
+                            if (lockAcquired) {
+                                try {
+                                    console.log(`[v16.0] 觸發日文影片同步更新...`);
+                                    await v11_logic.updateForeignClips(redisClient);
+                                    await redisClient.set(v11_FOREIGN_META_LAST_UPDATED_KEY, Date.now());
+                                } catch (e) {
+                                    console.error("日文更新失敗:", e);
+                                } finally {
+                                    await redisClient.del(v11_FOREIGN_UPDATE_LOCK_KEY);
+                                }
+                            }
+                        }
+                        // --- END: 修改 ---
                     }
                     const storageKeys = isForeign ? { setKey: v11_FOREIGN_VIDEOS_SET_KEY, hashPrefix: v11_FOREIGN_VIDEO_HASH_PREFIX } : { setKey: v11_VIDEOS_SET_KEY, hashPrefix: v11_VIDEO_HASH_PREFIX };
                     const videos = await v11_logic.getVideosFromDB(redisClient, storageKeys);
