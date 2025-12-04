@@ -10,6 +10,7 @@ const V12_WHITELIST_PENDING_JP_KEY = 'vspo-db:v4:whitelist:pending:jp';
 // --- START: 修改 (黑名單分離) ---
 const V12_BLACKLIST_CN_KEY = 'vspo-db:v4:blacklist:cn';
 const V12_BLACKLIST_JP_KEY = 'vspo-db:v4:blacklist:jp';
+const V12_ANNOUNCEMENT_KEY = 'vspo-db:v4:announcement';
 // --- END: 修改 ---
 
 const v11_KEY_PREFIX = 'vspo-db:v3:';
@@ -407,12 +408,13 @@ export default async function handler(request, response) {
         if (path === '/api/admin/lists') {
             if (!authenticate()) return;
             // --- START: 修改 (獲取分離後的黑名單) ---
-            const [pending_jp_ids, whitelist_cn_ids, whitelist_jp_ids, blacklist_cn_ids, blacklist_jp_ids] = await Promise.all([
+            const [pending_jp_ids, whitelist_cn_ids, whitelist_jp_ids, blacklist_cn_ids, blacklist_jp_ids, announcement] = await Promise.all([
                 redisClient.sMembers(V12_WHITELIST_PENDING_JP_KEY),
                 redisClient.sMembers(V12_WHITELIST_CN_KEY),
                 redisClient.sMembers(V12_WHITELIST_JP_KEY),
                 redisClient.sMembers(V12_BLACKLIST_CN_KEY),
-                redisClient.sMembers(V12_BLACKLIST_JP_KEY)
+                redisClient.sMembers(V12_BLACKLIST_JP_KEY),
+                redisClient.hGetAll(V12_ANNOUNCEMENT_KEY)
             ]);
 
             const allIds = [...new Set([...pending_jp_ids, ...whitelist_cn_ids, ...whitelist_jp_ids, ...blacklist_cn_ids, ...blacklist_jp_ids])];
@@ -439,6 +441,7 @@ export default async function handler(request, response) {
                 whitelist_jp: getDetails(whitelist_jp_ids),
                 blacklist_cn: getDetails(blacklist_cn_ids), // --- START: 修改 ---
                 blacklist_jp: getDetails(blacklist_jp_ids), // --- END: 修改 ---
+                announcement: announcement // 回傳公告設定
             });
         }
 
@@ -451,17 +454,20 @@ export default async function handler(request, response) {
             if (!authenticate()) return;
 
             const { action, channelId, listType } = body;
-            if (!action || !channelId) return response.status(400).json({ error: '缺少 action 或 channelId 參數' });
+            if (!action) return response.status(400).json({ error: '缺少 action 參數' });
 
             switch (action) {
                 case 'approve_jp':
+                    if (!channelId) return response.status(400).json({ error: '缺少 channelId' });
                     await redisClient.sMove(V12_WHITELIST_PENDING_JP_KEY, V12_WHITELIST_JP_KEY, channelId);
                     break;
                 case 'reject_jp':
+                    if (!channelId) return response.status(400).json({ error: '缺少 channelId' });
                     // 否決日文頻道 -> 加入日文黑名單
                     await redisClient.sMove(V12_WHITELIST_PENDING_JP_KEY, V12_BLACKLIST_JP_KEY, channelId);
                     break;
                 case 'delete': {
+                    if (!channelId) return response.status(400).json({ error: '缺少 channelId' });
                     if (!listType) return response.status(400).json({ error: '刪除操作需要 listType 參數' });
                     // --- START: 修改 (使用分離後的黑名單 Key) ---
                     const keyMap = {
@@ -476,6 +482,7 @@ export default async function handler(request, response) {
                     break;
                 }
                 case 'add': {
+                    if (!channelId) return response.status(400).json({ error: '缺少 channelId' });
                     if (!listType) return response.status(400).json({ error: '新增操作需要有效的 listType' });
                     // --- START: 修改 (使用分離後的黑名單 Key) ---
                     const keyMap = {
@@ -487,6 +494,16 @@ export default async function handler(request, response) {
                     if (!keyMap[listType]) return response.status(400).json({ error: '無效的 listType' });
                     // --- END: 修改 ---
                     await redisClient.sAdd(keyMap[listType], channelId);
+                    break;
+                }
+                case 'update_announcement': {
+                    const { content, type, active } = body;
+                    await redisClient.hSet(V12_ANNOUNCEMENT_KEY, {
+                        content: content || '',
+                        type: type || 'info',
+                        active: String(active),
+                        timestamp: Date.now()
+                    });
                     break;
                 }
                 default:
@@ -578,7 +595,18 @@ export default async function handler(request, response) {
                     const storageKeys = isForeign ? { setKey: v11_FOREIGN_VIDEOS_SET_KEY, hashPrefix: v11_FOREIGN_VIDEO_HASH_PREFIX } : { setKey: v11_VIDEOS_SET_KEY, hashPrefix: v11_VIDEO_HASH_PREFIX };
                     const videos = await v11_logic.getVideosFromDB(redisClient, storageKeys);
                     const updatedTimestamp = await redisClient.get(isForeign ? v11_FOREIGN_META_LAST_UPDATED_KEY : v11_META_LAST_UPDATED_KEY);
-                    return response.status(200).json({ videos: videos, timestamp: new Date(parseInt(updatedTimestamp, 10) || Date.now()).toISOString(), totalVisits: visitorCount.totalVisits, todayVisits: visitorCount.todayVisits, script_version: SCRIPT_VERSION, });
+
+                    // 獲取公告
+                    const announcement = await redisClient.hGetAll(V12_ANNOUNCEMENT_KEY);
+
+                    return response.status(200).json({
+                        videos: videos,
+                        timestamp: new Date(parseInt(updatedTimestamp, 10) || Date.now()).toISOString(),
+                        totalVisits: visitorCount.totalVisits,
+                        todayVisits: visitorCount.todayVisits,
+                        script_version: SCRIPT_VERSION,
+                        announcement: announcement && announcement.active === 'true' ? announcement : null
+                    });
                 } catch (e) {
                     console.error(`[API /api/youtube V11] Error:`, e);
                     return response.status(500).json({ error: '處理 V11 /api/youtube 請求時發生內部錯誤。', details: e.message });
