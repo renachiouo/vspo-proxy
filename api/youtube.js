@@ -20,6 +20,7 @@ const v11_FOREIGN_VIDEOS_SET_KEY = `${v11_KEY_PREFIX}foreign_video_ids`;
 const v11_FOREIGN_VIDEO_HASH_PREFIX = `${v11_KEY_PREFIX}foreign_video:`;
 const v11_META_LAST_UPDATED_KEY = `${v11_KEY_PREFIX}meta:last_updated`;
 const v11_FOREIGN_META_LAST_UPDATED_KEY = `${v11_KEY_PREFIX}meta:foreign_last_updated`;
+const v11_FOREIGN_META_LAST_SEARCH_KEY = `${v11_KEY_PREFIX}meta:foreign_last_search`;
 const v11_UPDATE_LOCK_KEY = `${v11_KEY_PREFIX}meta:update_lock`;
 const v11_FOREIGN_UPDATE_LOCK_KEY = `${v11_KEY_PREFIX}meta:foreign_update_lock`;
 const v11_STREAM_INDEX_PREFIX = `${v11_KEY_PREFIX}index:`;
@@ -31,7 +32,8 @@ const V10_VIDEO_HASH_PREFIX = `vspo-db:v2:video:`;
 
 // --- 更新頻率設定 ---
 const UPDATE_INTERVAL_SECONDS = 1200; // 20 分鐘
-const FOREIGN_UPDATE_INTERVAL_SECONDS = 3600; // 1 小時
+const FOREIGN_UPDATE_INTERVAL_SECONDS = 1200; // 20 分鐘 (白名單更新頻率)
+const FOREIGN_SEARCH_INTERVAL_SECONDS = 3600; // 60 分鐘 (關鍵字搜尋頻率)
 
 // --- YouTube API 設定 ---
 // 初始白名單已被移除，因為現在透過 UI 在 Redis 中進行管理。
@@ -315,7 +317,44 @@ const v11_logic = {
         if (idsToDelete.length > 0) { pipeline.sRem(storageKeys.setKey, idsToDelete); idsToDelete.forEach(id => pipeline.del(`${storageKeys.hashPrefix}${id}`)); }
         if (validVideoIds.size > 0) { pipeline.sAdd(storageKeys.setKey, [...validVideoIds]); }
         await pipeline.exec();
-        console.log('[v16.0] 外文影片常規更新程序完成。');
+        console.log('[v16.0] 外文影片常規更新程序 (白名單) 完成。');
+
+        // --- START: 關鍵字搜尋 (每 60 分鐘執行一次) ---
+        const lastSearchTime = await redisClient.get(v11_FOREIGN_META_LAST_SEARCH_KEY);
+        const shouldSearch = !lastSearchTime || (Date.now() - parseInt(lastSearchTime, 10)) > FOREIGN_SEARCH_INTERVAL_SECONDS * 1000;
+
+        if (shouldSearch) {
+            console.log('[v16.0] 距離上次搜尋已超過 60 分鐘，開始執行日文關鍵字探索...');
+            const searchPromises = FOREIGN_SEARCH_KEYWORDS.map(q => fetchYouTube('search', { part: 'snippet', type: 'video', maxResults: 50, q }));
+            const searchResults = await Promise.all(searchPromises);
+
+            const discoveredChannelIds = new Set();
+            for (const result of searchResults) {
+                result.items?.forEach(item => discoveredChannelIds.add(item.snippet.channelId));
+            }
+
+            if (discoveredChannelIds.size > 0) {
+                const [cnWhitelist, jpWhitelist, pendingWhitelist, jpBlacklist] = await Promise.all([
+                    redisClient.sMembers(V12_WHITELIST_CN_KEY),
+                    redisClient.sMembers(V12_WHITELIST_JP_KEY),
+                    redisClient.sMembers(V12_WHITELIST_PENDING_JP_KEY),
+                    redisClient.sMembers(V12_BLACKLIST_JP_KEY)
+                ]);
+                const allExistingIds = new Set([...cnWhitelist, ...jpWhitelist, ...pendingWhitelist, ...jpBlacklist]);
+                const newChannelsToAdd = [...discoveredChannelIds].filter(id => !allExistingIds.has(id));
+
+                if (newChannelsToAdd.length > 0) {
+                    await redisClient.sAdd(V12_WHITELIST_PENDING_JP_KEY, newChannelsToAdd);
+                    console.log(`[v16.0] 自動探索發現 ${newChannelsToAdd.length} 個新頻道，已加入待審核列表。`);
+                } else {
+                    console.log('[v16.0] 自動探索完成，未發現新頻道。');
+                }
+            }
+            await redisClient.set(v11_FOREIGN_META_LAST_SEARCH_KEY, Date.now());
+        } else {
+            console.log('[v16.0] 距離上次搜尋未滿 60 分鐘，跳過關鍵字探索。');
+        }
+        // --- END: 關鍵字搜尋 ---
     },
 };
 
