@@ -30,12 +30,13 @@ const V10_VIDEO_HASH_PREFIX = `vspo-db:v2:video:`;
 
 // --- 更新頻率設定 ---
 const UPDATE_INTERVAL_SECONDS = 1200; // 20 分鐘
-const FOREIGN_UPDATE_INTERVAL_SECONDS = 1200; // 20 分鐘
+const FOREIGN_UPDATE_INTERVAL_SECONDS = 3600; // 1 小時
 
 // --- YouTube API 設定 ---
 // 初始白名單已被移除，因為現在透過 UI 在 Redis 中進行管理。
 
 const SPECIAL_KEYWORDS = ["ぶいすぽっ！許諾番号"];
+const FOREIGN_SEARCH_KEYWORDS = ["ぶいすぽ", "ぶいすぽ 切り抜き"];
 const FOREIGN_SPECIAL_KEYWORDS = ["ぶいすぽっ！許諾番号"];
 const SEARCH_KEYWORDS = ["VSPO中文", "VSPO中文精華", "VSPO精華", "VSPO中文剪輯", "VSPO剪輯"];
 const KEYWORD_BLACKLIST = ["MMD"];
@@ -367,7 +368,7 @@ export default async function handler(request, response) {
         if (path === '/api/discover-jp-channels') {
             if (!authenticate()) return;
             console.log('[v16.0] 開始執行日文頻道探索任務...');
-            const searchPromises = FOREIGN_SPECIAL_KEYWORDS.map(q => fetchYouTube('search', { part: 'snippet', type: 'video', maxResults: 50, q }));
+            const searchPromises = FOREIGN_SEARCH_KEYWORDS.map(q => fetchYouTube('search', { part: 'snippet', type: 'video', maxResults: 50, q }));
             const searchResults = await Promise.all(searchPromises);
 
             const discoveredChannelIds = new Set();
