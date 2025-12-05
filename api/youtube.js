@@ -140,6 +140,7 @@ function v11_normalizeVideoData(videoData) {
         return null;
     }
     const video = { ...videoData };
+    if (!video.id) return null; // 確保影片 ID 存在，否則視為無效資料
     video.viewCount = parseInt(video.viewCount, 10) || 0;
     video.subscriberCount = parseInt(video.subscriberCount, 10) || 0;
     if (video.originalStreamInfo && typeof video.originalStreamInfo === 'string') {
