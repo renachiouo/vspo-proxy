@@ -11,6 +11,7 @@ const V12_WHITELIST_PENDING_JP_KEY = 'vspo-db:v4:whitelist:pending:jp';
 const V12_BLACKLIST_CN_KEY = 'vspo-db:v4:blacklist:cn';
 const V12_BLACKLIST_JP_KEY = 'vspo-db:v4:blacklist:jp';
 const V12_ANNOUNCEMENT_KEY = 'vspo-db:v4:announcement';
+const V12_VIDEO_BLACKLIST_KEY = 'vspo-db:v4:video-blacklist'; // New Video Blacklist Key
 const V12_LEADERBOARD_CACHE_KEY = 'vspo-db:v4:leaderboard:cache';
 
 // 影片資料仍沿用 v3 架構以保留舊資料，但邏輯層升級為 V12
@@ -72,7 +73,12 @@ const isVideoValid = (videoDetail, keywords, useDoubleKeywordCheck = false) => {
     // 2. 如果需要雙重驗證，檢查是否包含 VSPO 成員關鍵字
     if (useDoubleKeywordCheck) {
         const hasMemberKeyword = VSPO_MEMBER_KEYWORDS.some(keyword => searchText.includes(keyword.toLowerCase()));
-        return hasMemberKeyword;
+        if (!hasMemberKeyword) return false;
+    }
+
+    // 3. 檢查直播狀態 (排除 live 和 upcoming)
+    if (videoDetail.snippet.liveBroadcastContent === 'live' || videoDetail.snippet.liveBroadcastContent === 'upcoming') {
+        return false;
     }
 
     return true;
@@ -203,6 +209,9 @@ const v12_logic = {
         const videoDetailBatches = batchArray(videoIds, 50);
         for (const batch of videoDetailBatches) { const result = await fetchYouTube('videos', { part: 'statistics,snippet,contentDetails', id: batch.join(',') }); result.items?.forEach(item => videoDetailsMap.set(item.id, item)); }
 
+        // Fetch Video Blacklist
+        const videoBlacklist = await redisClient.sMembers(V12_VIDEO_BLACKLIST_KEY);
+
         const channelStatsMap = new Map();
         const allChannelIds = [...new Set(Array.from(videoDetailsMap.values()).map(d => d.snippet.channelId))];
         if (allChannelIds.length > 0) { const channelDetailBatches = batchArray(allChannelIds, 50); for (const batch of channelDetailBatches) { const result = await fetchYouTube('channels', { part: 'statistics,snippet', id: batch.join(',') }); result.items?.forEach(item => channelStatsMap.set(item.id, item)); } }
@@ -214,6 +223,13 @@ const v12_logic = {
         for (const videoId of videoIds) {
             const detail = videoDetailsMap.get(videoId);
             if (!detail) continue;
+
+            // Check Video Blacklist
+            if (videoBlacklist.includes(videoId)) {
+                console.log(`[Filter] 影片 ${videoId} 在影片黑名單中，跳過。`);
+                continue;
+            }
+
             const channelId = detail.snippet.channelId;
             const isChannelBlacklisted = blacklist.includes(channelId);
             const isKeywordBlacklisted = containsBlacklistedKeyword(detail, KEYWORD_BLACKLIST);
@@ -682,6 +698,31 @@ export default async function handler(request, response) {
                         console.log(`[Backfill] ${date} 未找到任何影片。`);
                         return response.status(200).json({ success: true, message: '未找到任何影片。', count: 0 });
                     }
+                }
+                // --- Video Blacklist Management ---
+                case 'add_video_blacklist': {
+                    const { videoId } = body;
+                    if (!videoId) return response.status(400).json({ error: '缺少 videoId' });
+
+                    await redisClient.sAdd(V12_VIDEO_BLACKLIST_KEY, videoId);
+
+                    // Also remove from existing sets if present
+                    await redisClient.sRem(V12_VIDEOS_SET_KEY, videoId);
+                    await redisClient.sRem(V12_FOREIGN_VIDEOS_SET_KEY, videoId);
+                    await redisClient.del(`${v12_VIDEO_HASH_PREFIX}${videoId}`);
+                    await redisClient.del(`${v12_FOREIGN_VIDEO_HASH_PREFIX}${videoId}`);
+
+                    return response.status(200).json({ success: true, message: `影片 ${videoId} 已加入黑名單並從資料庫移除。` });
+                }
+                case 'remove_video_blacklist': {
+                    const { videoId } = body;
+                    if (!videoId) return response.status(400).json({ error: '缺少 videoId' });
+                    await redisClient.sRem(V12_VIDEO_BLACKLIST_KEY, videoId);
+                    return response.status(200).json({ success: true, message: `影片 ${videoId} 已從黑名單移除。` });
+                }
+                case 'get_video_blacklist': {
+                    const blacklist = await redisClient.sMembers(V12_VIDEO_BLACKLIST_KEY);
+                    return response.status(200).json({ success: true, blacklist });
                 }
                 default:
                     return response.status(400).json({ error: '無效的 action' });
