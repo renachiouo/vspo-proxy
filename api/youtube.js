@@ -1,7 +1,7 @@
 import { createClient } from 'redis';
 
 // --- 版本指紋 ---
-const SCRIPT_VERSION = '16.4-V12-MutualExclusion';
+const SCRIPT_VERSION = '16.6-V12-RefinedKeywords';
 
 // --- Redis Keys Configuration ---
 // V12 使用 v4 版本的 Key
@@ -34,7 +34,7 @@ const V10_VIDEO_HASH_PREFIX = `vspo-db:v2:video:`;
 // --- 更新頻率設定 ---
 const UPDATE_INTERVAL_SECONDS = 1200; // 20 分鐘
 const FOREIGN_UPDATE_INTERVAL_SECONDS = 1200; // 20 分鐘 (白名單更新頻率)
-const FOREIGN_SEARCH_INTERVAL_SECONDS = 21600; // 360 分鐘 (關鍵字搜尋頻率)
+const FOREIGN_SEARCH_INTERVAL_SECONDS = 3600; // 60 分鐘 (關鍵字搜尋頻率)
 
 // --- YouTube API 設定 ---
 const SPECIAL_KEYWORDS = ["ぶいすぽっ！許諾番号"];
@@ -42,6 +42,13 @@ const FOREIGN_SEARCH_KEYWORDS = ["ぶいすぽ 切り抜き"];
 const FOREIGN_SPECIAL_KEYWORDS = ["ぶいすぽっ！許諾番号"];
 const SEARCH_KEYWORDS = ["VSPO中文", "VSPO中文精華", "VSPO精華", "VSPO中文剪輯", "VSPO剪輯"];
 const KEYWORD_BLACKLIST = ["MMD"];
+const VSPO_MEMBER_KEYWORDS = [
+    "花芽すみれ", "花芽なずな", "小雀とと", "一ノ瀬うるは", "胡桃のあ", "兎咲ミミ", "空澄セナ", "橘ひなの", "英リサ", "如月れん", "神成きゅぴ", "八雲べに", "藍沢エマ", "紫宮るな", "猫汰つな", "白波らむね", "小森めと", "夢野あかり", "夜乃くろむ", "紡木こかげ", "千燈ゆうひ", "蝶屋はなび", "甘結もか",
+    "Remia", "Arya", "Jira", "Narin", "Riko", "Eris",
+    "小針彩", "白咲露理", "帕妃", "千郁郁",
+    "ひなーの", "ひなの", "べに", "つな", "らむち", "らむね", "めと", "なずな", "なずぴ", "すみー", "すみれ", "ととち", "とと", "のせ", "うるは", "のあ", "ミミ", "たや", "セナ", "あしゅみ", "リサ", "れん", "きゅぴ", "エマたそ", "るな", "あかり", "あかりん", "くろむ", "こかげ", "つむお", "うひ", "ゆうひ", "はなび", "もか"
+];
+
 const apiKeys = [
     process.env.YOUTUBE_API_KEY_1, process.env.YOUTUBE_API_KEY_2,
     process.env.YOUTUBE_API_KEY_3, process.env.YOUTUBE_API_KEY_4,
@@ -55,7 +62,14 @@ const batchArray = (arr, size) => Array.from({ length: Math.ceil(arr.length / si
 const isVideoValid = (videoDetail, keywords) => {
     if (!videoDetail || !videoDetail.snippet) return false;
     const searchText = `${videoDetail.snippet.title} ${videoDetail.snippet.description}`.toLowerCase();
-    return keywords.some(keyword => searchText.includes(keyword.toLowerCase()));
+
+    // 1. 檢查是否包含許諾番號 (keywords 通常是 SPECIAL_KEYWORDS)
+    const hasLicense = keywords.some(keyword => searchText.includes(keyword.toLowerCase()));
+    if (!hasLicense) return false;
+
+    // 2. 檢查是否包含 VSPO 成員關鍵字 (雙重驗證)
+    const hasMemberKeyword = VSPO_MEMBER_KEYWORDS.some(keyword => searchText.includes(keyword.toLowerCase()));
+    return hasMemberKeyword;
 };
 const containsBlacklistedKeyword = (videoDetail, blacklist) => {
     if (!videoDetail || !videoDetail.snippet) return false;
@@ -216,7 +230,7 @@ const v12_logic = {
         return { validVideoIds, idsToDelete };
     },
     async updateAndStoreYouTubeData(redisClient) {
-        console.log(`[v16.4] 開始執行中文影片常規更新程序...`);
+        console.log(`[v16.6] 開始執行中文影片常規更新程序...`);
         const oneMonthAgo = new Date(); oneMonthAgo.setMonth(oneMonthAgo.getMonth() - 1); const publishedAfter = oneMonthAgo.toISOString();
 
         // [MUTUAL EXCLUSION] Fetch JP Whitelist as well
@@ -225,7 +239,7 @@ const v12_logic = {
             redisClient.sMembers(V12_BLACKLIST_CN_KEY),
             redisClient.sMembers(V12_WHITELIST_JP_KEY)
         ]);
-        console.log(`[v16.4] 從 Redis 載入 ${currentWhitelist.length} 個中文白名單頻道、${blacklist.length} 個中文黑名單頻道以及 ${jpWhitelist.length} 個日文白名單頻道。`);
+        console.log(`[v16.6] 從 Redis 載入 ${currentWhitelist.length} 個中文白名單頻道、${blacklist.length} 個中文黑名單頻道以及 ${jpWhitelist.length} 個日文白名單頻道。`);
 
         const newVideoCandidates = new Set();
 
@@ -265,7 +279,7 @@ const v12_logic = {
             }
             if (newChannelsToAdd.size > 0) {
                 await redisClient.sAdd(V12_WHITELIST_CN_KEY, [...newChannelsToAdd]);
-                console.log(`[v16.4] 自動新增 ${newChannelsToAdd.size} 個新頻道到中文白名單: ${[...newChannelsToAdd].join(', ')}`);
+                console.log(`[v16.6] 自動新增 ${newChannelsToAdd.size} 個新頻道到中文白名單: ${[...newChannelsToAdd].join(', ')}`);
             }
         }
 
@@ -278,20 +292,20 @@ const v12_logic = {
         if (idsToDelete.length > 0) { pipeline.sRem(storageKeys.setKey, idsToDelete); idsToDelete.forEach(id => pipeline.del(`${storageKeys.hashPrefix}${id}`)); }
         if (validVideoIds.size > 0) { pipeline.sAdd(storageKeys.setKey, [...validVideoIds]); }
         await pipeline.exec();
-        console.log(`[v16.4] 中文影片常規更新程序完成。`);
+        console.log(`[v16.6] 中文影片常規更新程序完成。`);
     },
     async updateForeignClips(redisClient) {
-        console.log('[v16.4] 開始執行外文影片常規更新程序...');
+        console.log('[v16.6] 開始執行外文影片常規更新程序...');
         const threeMonthsAgo = new Date(); threeMonthsAgo.setMonth(threeMonthsAgo.getMonth() - 3);
 
         const [currentWhitelist, blacklist] = await Promise.all([
             redisClient.sMembers(V12_WHITELIST_JP_KEY),
             redisClient.sMembers(V12_BLACKLIST_JP_KEY)
         ]);
-        console.log(`[v16.4] 從 Redis 載入 ${currentWhitelist.length} 個日文白名單頻道和 ${blacklist.length} 個日文黑名單頻道。`);
+        console.log(`[v16.6] 從 Redis 載入 ${currentWhitelist.length} 個日文白名單頻道和 ${blacklist.length} 個日文黑名單頻道。`);
 
         if (currentWhitelist.length === 0) {
-            console.warn("[v16.4] 日文白名單為空，更新程序終止。");
+            console.warn("[v16.6] 日文白名單為空，更新程序終止。");
             return;
         }
 
@@ -318,14 +332,14 @@ const v12_logic = {
         if (idsToDelete.length > 0) { pipeline.sRem(storageKeys.setKey, idsToDelete); idsToDelete.forEach(id => pipeline.del(`${storageKeys.hashPrefix}${id}`)); }
         if (validVideoIds.size > 0) { pipeline.sAdd(storageKeys.setKey, [...validVideoIds]); }
         await pipeline.exec();
-        console.log('[v16.4] 外文影片常規更新程序 (白名單) 完成。');
+        console.log('[v16.6] 外文影片常規更新程序 (白名單) 完成。');
 
         // --- START: 關鍵字搜尋 (每 60 分鐘執行一次) ---
         const lastSearchTime = await redisClient.get(v12_FOREIGN_META_LAST_SEARCH_KEY);
         const shouldSearch = !lastSearchTime || (Date.now() - parseInt(lastSearchTime, 10)) > FOREIGN_SEARCH_INTERVAL_SECONDS * 1000;
 
         if (shouldSearch) {
-            console.log('[v16.4] 距離上次搜尋已超過 60 分鐘，開始執行日文關鍵字探索...');
+            console.log('[v16.6] 距離上次搜尋已超過 60 分鐘，開始執行日文關鍵字探索...');
             const searchPromises = FOREIGN_SEARCH_KEYWORDS.map(q => fetchYouTube('search', { part: 'snippet', type: 'video', maxResults: 50, q }));
             const searchResults = await Promise.all(searchPromises);
 
@@ -346,14 +360,14 @@ const v12_logic = {
 
                 if (newChannelsToAdd.length > 0) {
                     await redisClient.sAdd(V12_WHITELIST_PENDING_JP_KEY, newChannelsToAdd);
-                    console.log(`[v16.4] 自動探索發現 ${newChannelsToAdd.length} 個新頻道，已加入待審核列表。`);
+                    console.log(`[v16.6] 自動探索發現 ${newChannelsToAdd.length} 個新頻道，已加入待審核列表。`);
                 } else {
-                    console.log('[v16.4] 自動探索完成，未發現新頻道。');
+                    console.log('[v16.6] 自動探索完成，未發現新頻道。');
                 }
             }
             await redisClient.set(v12_FOREIGN_META_LAST_SEARCH_KEY, Date.now());
         } else {
-            console.log('[v16.4] 距離上次搜尋未滿 60 分鐘，跳過關鍵字探索。');
+            console.log('[v16.6] 距離上次搜尋未滿 60 分鐘，跳過關鍵字探索。');
         }
         // --- END: 關鍵字搜尋 ---
     },
@@ -403,7 +417,7 @@ export default async function handler(request, response) {
 
         if (path === '/api/discover-jp-channels') {
             if (!authenticate()) return;
-            console.log('[v16.4] 開始執行日文頻道探索任務...');
+            console.log('[v16.6] 開始執行日文頻道探索任務...');
             const searchPromises = FOREIGN_SEARCH_KEYWORDS.map(q => fetchYouTube('search', { part: 'snippet', type: 'video', maxResults: 50, q }));
             const searchResults = await Promise.all(searchPromises);
 
@@ -430,7 +444,7 @@ export default async function handler(request, response) {
 
             if (newChannelsToAdd.length > 0) {
                 await redisClient.sAdd(V12_WHITELIST_PENDING_JP_KEY, newChannelsToAdd);
-                console.log(`[v16.4] 發現 ${newChannelsToAdd.length} 個新頻道，已加入待審核列表。`);
+                console.log(`[v16.6] 發現 ${newChannelsToAdd.length} 個新頻道，已加入待審核列表。`);
                 return response.status(200).json({ message: `探索完成，發現 ${newChannelsToAdd.length} 個新頻道，已加入待審核列表。` });
             }
 
@@ -663,7 +677,7 @@ export default async function handler(request, response) {
                             const lockAcquired = await redisClient.set(v12_UPDATE_LOCK_KEY, 'locked', { NX: true, EX: 600 });
                             if (lockAcquired) {
                                 try {
-                                    console.log(`[v16.4] 觸發中文影片同步更新...`);
+                                    console.log(`[v16.6] 觸發中文影片同步更新...`);
                                     await v12_logic.updateAndStoreYouTubeData(redisClient);
                                     await redisClient.set(v12_META_LAST_UPDATED_KEY, Date.now());
                                 } catch (e) {
@@ -680,7 +694,7 @@ export default async function handler(request, response) {
                             const lockAcquired = await redisClient.set(v12_FOREIGN_UPDATE_LOCK_KEY, 'locked', { NX: true, EX: 600 });
                             if (lockAcquired) {
                                 try {
-                                    console.log(`[v16.4] 觸發日文影片同步更新...`);
+                                    console.log(`[v16.6] 觸發日文影片同步更新...`);
                                     await v12_logic.updateForeignClips(redisClient);
                                     await redisClient.set(v12_FOREIGN_META_LAST_UPDATED_KEY, Date.now());
                                 } catch (e) {
