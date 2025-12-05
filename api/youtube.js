@@ -269,6 +269,7 @@ const v12_logic = {
         }
 
         if (videosToClassify.length > 0) {
+            console.log(`[Classify] ${videosToClassify.length} 部影片缺少 videoType，已加入待分類清單。`);
             pipeline.sAdd(V10_PENDING_CLASSIFICATION_SET_KEY, videosToClassify);
         }
 
