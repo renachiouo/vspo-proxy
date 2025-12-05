@@ -34,7 +34,7 @@ const V10_VIDEO_HASH_PREFIX = `vspo-db:v2:video:`;
 // --- 更新頻率設定 ---
 const UPDATE_INTERVAL_SECONDS = 1200; // 20 分鐘
 const FOREIGN_UPDATE_INTERVAL_SECONDS = 1200; // 20 分鐘 (白名單更新頻率)
-const FOREIGN_SEARCH_INTERVAL_SECONDS = 3600; // 60 分鐘 (關鍵字搜尋頻率)
+const FOREIGN_SEARCH_INTERVAL_SECONDS = 21600; // 360 分鐘 (關鍵字搜尋頻率)
 
 // --- YouTube API 設定 ---
 const SPECIAL_KEYWORDS = ["ぶいすぽっ！許諾番号"];
