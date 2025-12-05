@@ -220,6 +220,17 @@ const v12_logic = {
         const pipeline = redisClient.multi();
         const videosToClassify = [];
 
+        // Pre-fetch videoTypes to avoid re-classifying
+        const typeCheckPipeline = redisClient.multi();
+        videoIds.forEach(id => typeCheckPipeline.hGet(`${storageKeys.hashPrefix}${id}`, 'videoType'));
+        const existingVideoTypes = await typeCheckPipeline.exec();
+        const classifiedMap = new Map();
+        videoIds.forEach((id, index) => {
+            if (existingVideoTypes[index]) {
+                classifiedMap.set(id, true);
+            }
+        });
+
         for (const videoId of videoIds) {
             const detail = videoDetailsMap.get(videoId);
             if (!detail) continue;
@@ -242,7 +253,10 @@ const v12_logic = {
                 const { title, description } = detail.snippet;
                 const videoData = { id: videoId, title: title, searchableText: `${title || ''} ${description || ''}`.toLowerCase(), thumbnail: detail.snippet.thumbnails.high?.url || detail.snippet.thumbnails.default?.url, channelId: channelId, channelTitle: detail.snippet.channelTitle, channelAvatarUrl: channelDetails?.snippet?.thumbnails?.default?.url || '', publishedAt: detail.snippet.publishedAt, viewCount: detail.statistics?.viewCount || 0, subscriberCount: channelDetails?.statistics?.subscriberCount || 0, duration: detail.contentDetails?.duration || '' };
 
-                videosToClassify.push(videoId);
+                // Only add to pending classification if not already classified
+                if (!classifiedMap.has(videoId)) {
+                    videosToClassify.push(videoId);
+                }
 
                 const originalStreamInfo = parseOriginalStreamInfo(description);
                 if (originalStreamInfo) {
