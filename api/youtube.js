@@ -1,7 +1,7 @@
 import { createClient } from 'redis';
 
 // --- 版本指紋 ---
-const SCRIPT_VERSION = '16.7-V12-CNDoubleCheckOnly';
+const SCRIPT_VERSION = '16.8-V12-Leaderboard';
 
 // --- Redis Keys Configuration ---
 // V12 使用 v4 版本的 Key
@@ -11,6 +11,7 @@ const V12_WHITELIST_PENDING_JP_KEY = 'vspo-db:v4:whitelist:pending:jp';
 const V12_BLACKLIST_CN_KEY = 'vspo-db:v4:blacklist:cn';
 const V12_BLACKLIST_JP_KEY = 'vspo-db:v4:blacklist:jp';
 const V12_ANNOUNCEMENT_KEY = 'vspo-db:v4:announcement';
+const V12_LEADERBOARD_CACHE_KEY = 'vspo-db:v4:leaderboard:cache';
 
 // 影片資料仍沿用 v3 架構以保留舊資料，但邏輯層升級為 V12
 const v12_KEY_PREFIX = 'vspo-db:v3:';
@@ -35,6 +36,7 @@ const V10_VIDEO_HASH_PREFIX = `vspo-db:v2:video:`;
 const UPDATE_INTERVAL_SECONDS = 1200; // 20 分鐘
 const FOREIGN_UPDATE_INTERVAL_SECONDS = 1200; // 20 分鐘 (白名單更新頻率)
 const FOREIGN_SEARCH_INTERVAL_SECONDS = 21600; // 360 分鐘 (關鍵字搜尋頻率)
+const LEADERBOARD_CACHE_TTL = 3600; // 1 小時 (排行榜快取時間)
 
 // --- YouTube API 設定 ---
 const SPECIAL_KEYWORDS = ["ぶいすぽっ！許諾番号"];
@@ -80,6 +82,18 @@ const containsBlacklistedKeyword = (videoDetail, blacklist) => {
     const searchText = `${videoDetail.snippet.title} ${videoDetail.snippet.description}`.toLowerCase();
     return blacklist.some(keyword => searchText.includes(keyword.toLowerCase()));
 };
+
+function parseISODuration(duration) {
+    if (!duration) return 0;
+    let minutes = 0;
+    const hoursMatch = duration.match(/(\d+)H/);
+    const minutesMatch = duration.match(/(\d+)M/);
+    const secondsMatch = duration.match(/(\d+)S/);
+    if (hoursMatch) minutes += parseInt(hoursMatch[1]) * 60;
+    if (minutesMatch) minutes += parseInt(minutesMatch[1]);
+    if (secondsMatch) minutes += Math.round(parseInt(secondsMatch[1]) / 60);
+    return minutes;
+}
 
 async function checkIfShort(videoId) {
     try {
@@ -234,7 +248,7 @@ const v12_logic = {
         return { validVideoIds, idsToDelete };
     },
     async updateAndStoreYouTubeData(redisClient) {
-        console.log(`[v16.7] 開始執行中文影片常規更新程序...`);
+        console.log(`[v16.8] 開始執行中文影片常規更新程序...`);
         const oneMonthAgo = new Date(); oneMonthAgo.setMonth(oneMonthAgo.getMonth() - 1); const publishedAfter = oneMonthAgo.toISOString();
 
         // [MUTUAL EXCLUSION] Fetch JP Whitelist as well
@@ -243,7 +257,7 @@ const v12_logic = {
             redisClient.sMembers(V12_BLACKLIST_CN_KEY),
             redisClient.sMembers(V12_WHITELIST_JP_KEY)
         ]);
-        console.log(`[v16.7] 從 Redis 載入 ${currentWhitelist.length} 個中文白名單頻道、${blacklist.length} 個中文黑名單頻道以及 ${jpWhitelist.length} 個日文白名單頻道。`);
+        console.log(`[v16.8] 從 Redis 載入 ${currentWhitelist.length} 個中文白名單頻道、${blacklist.length} 個中文黑名單頻道以及 ${jpWhitelist.length} 個日文白名單頻道。`);
 
         const newVideoCandidates = new Set();
 
@@ -283,7 +297,7 @@ const v12_logic = {
             }
             if (newChannelsToAdd.size > 0) {
                 await redisClient.sAdd(V12_WHITELIST_CN_KEY, [...newChannelsToAdd]);
-                console.log(`[v16.7] 自動新增 ${newChannelsToAdd.size} 個新頻道到中文白名單: ${[...newChannelsToAdd].join(', ')}`);
+                console.log(`[v16.8] 自動新增 ${newChannelsToAdd.size} 個新頻道到中文白名單: ${[...newChannelsToAdd].join(', ')}`);
             }
         }
 
@@ -297,20 +311,20 @@ const v12_logic = {
         if (idsToDelete.length > 0) { pipeline.sRem(storageKeys.setKey, idsToDelete); idsToDelete.forEach(id => pipeline.del(`${storageKeys.hashPrefix}${id}`)); }
         if (validVideoIds.size > 0) { pipeline.sAdd(storageKeys.setKey, [...validVideoIds]); }
         await pipeline.exec();
-        console.log(`[v16.7] 中文影片常規更新程序完成。`);
+        console.log(`[v16.8] 中文影片常規更新程序完成。`);
     },
     async updateForeignClips(redisClient) {
-        console.log('[v16.7] 開始執行外文影片常規更新程序...');
+        console.log('[v16.8] 開始執行外文影片常規更新程序...');
         const threeMonthsAgo = new Date(); threeMonthsAgo.setMonth(threeMonthsAgo.getMonth() - 3);
 
         const [currentWhitelist, blacklist] = await Promise.all([
             redisClient.sMembers(V12_WHITELIST_JP_KEY),
             redisClient.sMembers(V12_BLACKLIST_JP_KEY)
         ]);
-        console.log(`[v16.7] 從 Redis 載入 ${currentWhitelist.length} 個日文白名單頻道和 ${blacklist.length} 個日文黑名單頻道。`);
+        console.log(`[v16.8] 從 Redis 載入 ${currentWhitelist.length} 個日文白名單頻道和 ${blacklist.length} 個日文黑名單頻道。`);
 
         if (currentWhitelist.length === 0) {
-            console.warn("[v16.7] 日文白名單為空，更新程序終止。");
+            console.warn("[v16.8] 日文白名單為空，更新程序終止。");
             return;
         }
 
@@ -338,14 +352,14 @@ const v12_logic = {
         if (idsToDelete.length > 0) { pipeline.sRem(storageKeys.setKey, idsToDelete); idsToDelete.forEach(id => pipeline.del(`${storageKeys.hashPrefix}${id}`)); }
         if (validVideoIds.size > 0) { pipeline.sAdd(storageKeys.setKey, [...validVideoIds]); }
         await pipeline.exec();
-        console.log('[v16.7] 外文影片常規更新程序 (白名單) 完成。');
+        console.log('[v16.8] 外文影片常規更新程序 (白名單) 完成。');
 
         // --- START: 關鍵字搜尋 (每 60 分鐘執行一次) ---
         const lastSearchTime = await redisClient.get(v12_FOREIGN_META_LAST_SEARCH_KEY);
         const shouldSearch = !lastSearchTime || (Date.now() - parseInt(lastSearchTime, 10)) > FOREIGN_SEARCH_INTERVAL_SECONDS * 1000;
 
         if (shouldSearch) {
-            console.log('[v16.7] 距離上次搜尋已超過 60 分鐘，開始執行日文關鍵字探索...');
+            console.log('[v16.8] 距離上次搜尋已超過 60 分鐘，開始執行日文關鍵字探索...');
             const searchPromises = FOREIGN_SEARCH_KEYWORDS.map(q => fetchYouTube('search', { part: 'snippet', type: 'video', maxResults: 50, q }));
             const searchResults = await Promise.all(searchPromises);
 
@@ -366,14 +380,14 @@ const v12_logic = {
 
                 if (newChannelsToAdd.length > 0) {
                     await redisClient.sAdd(V12_WHITELIST_PENDING_JP_KEY, newChannelsToAdd);
-                    console.log(`[v16.7] 自動探索發現 ${newChannelsToAdd.length} 個新頻道，已加入待審核列表。`);
+                    console.log(`[v16.8] 自動探索發現 ${newChannelsToAdd.length} 個新頻道，已加入待審核列表。`);
                 } else {
-                    console.log('[v16.7] 自動探索完成，未發現新頻道。');
+                    console.log('[v16.8] 自動探索完成，未發現新頻道。');
                 }
             }
             await redisClient.set(v12_FOREIGN_META_LAST_SEARCH_KEY, Date.now());
         } else {
-            console.log('[v16.7] 距離上次搜尋未滿 60 分鐘，跳過關鍵字探索。');
+            console.log('[v16.8] 距離上次搜尋未滿 60 分鐘，跳過關鍵字探索。');
         }
         // --- END: 關鍵字搜尋 ---
     },
@@ -421,9 +435,65 @@ export default async function handler(request, response) {
             return true;
         };
 
+        if (path === '/api/leaderboard') {
+            try {
+                // 1. 檢查快取
+                const cachedData = await redisClient.get(V12_LEADERBOARD_CACHE_KEY);
+                if (cachedData) {
+                    return response.status(200).json(JSON.parse(cachedData));
+                }
+
+                // 2. 計算排行榜
+                const videoIds = await redisClient.sMembers(v12_VIDEOS_SET_KEY);
+                if (!videoIds || videoIds.length === 0) {
+                    return response.status(200).json([]);
+                }
+
+                const pipeline = redisClient.multi();
+                videoIds.forEach(id => pipeline.hGetAll(`${v12_VIDEO_HASH_PREFIX}${id}`));
+                const results = await pipeline.exec();
+
+                const videos = results.map(video => v12_normalizeVideoData(video)).filter(Boolean);
+                const thirtyDaysAgo = new Date();
+                thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+
+                const channelStats = {};
+
+                videos.forEach(video => {
+                    if (new Date(video.publishedAt) >= thirtyDaysAgo) {
+                        const durationMinutes = parseISODuration(video.duration);
+                        if (!channelStats[video.channelId]) {
+                            channelStats[video.channelId] = {
+                                channelId: video.channelId,
+                                channelTitle: video.channelTitle,
+                                channelAvatarUrl: video.channelAvatarUrl,
+                                totalMinutes: 0,
+                                videoCount: 0
+                            };
+                        }
+                        channelStats[video.channelId].totalMinutes += durationMinutes;
+                        channelStats[video.channelId].videoCount += 1;
+                    }
+                });
+
+                const leaderboard = Object.values(channelStats)
+                    .sort((a, b) => b.totalMinutes - a.totalMinutes)
+                    .slice(0, 20); // 取前 20 名
+
+                // 3. 寫入快取
+                await redisClient.set(V12_LEADERBOARD_CACHE_KEY, JSON.stringify(leaderboard), { EX: LEADERBOARD_CACHE_TTL });
+
+                return response.status(200).json(leaderboard);
+
+            } catch (e) {
+                console.error(`[API /api/leaderboard] Error:`, e);
+                return response.status(500).json({ error: '處理排行榜請求時發生內部錯誤。', details: e.message });
+            }
+        }
+
         if (path === '/api/discover-jp-channels') {
             if (!authenticate()) return;
-            console.log('[v16.7] 開始執行日文頻道探索任務...');
+            console.log('[v16.8] 開始執行日文頻道探索任務...');
             const searchPromises = FOREIGN_SEARCH_KEYWORDS.map(q => fetchYouTube('search', { part: 'snippet', type: 'video', maxResults: 50, q }));
             const searchResults = await Promise.all(searchPromises);
 
@@ -450,7 +520,7 @@ export default async function handler(request, response) {
 
             if (newChannelsToAdd.length > 0) {
                 await redisClient.sAdd(V12_WHITELIST_PENDING_JP_KEY, newChannelsToAdd);
-                console.log(`[v16.7] 發現 ${newChannelsToAdd.length} 個新頻道，已加入待審核列表。`);
+                console.log(`[v16.8] 發現 ${newChannelsToAdd.length} 個新頻道，已加入待審核列表。`);
                 return response.status(200).json({ message: `探索完成，發現 ${newChannelsToAdd.length} 個新頻道，已加入待審核列表。` });
             }
 
@@ -685,7 +755,7 @@ export default async function handler(request, response) {
                             const lockAcquired = await redisClient.set(v12_UPDATE_LOCK_KEY, 'locked', { NX: true, EX: 600 });
                             if (lockAcquired) {
                                 try {
-                                    console.log(`[v16.7] 觸發中文影片同步更新...`);
+                                    console.log(`[v16.8] 觸發中文影片同步更新...`);
                                     await v12_logic.updateAndStoreYouTubeData(redisClient);
                                     await redisClient.set(v12_META_LAST_UPDATED_KEY, Date.now());
                                 } catch (e) {
@@ -702,7 +772,7 @@ export default async function handler(request, response) {
                             const lockAcquired = await redisClient.set(v12_FOREIGN_UPDATE_LOCK_KEY, 'locked', { NX: true, EX: 600 });
                             if (lockAcquired) {
                                 try {
-                                    console.log(`[v16.7] 觸發日文影片同步更新...`);
+                                    console.log(`[v16.8] 觸發日文影片同步更新...`);
                                     await v12_logic.updateForeignClips(redisClient);
                                     await redisClient.set(v12_FOREIGN_META_LAST_UPDATED_KEY, Date.now());
                                 } catch (e) {
