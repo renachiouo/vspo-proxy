@@ -207,6 +207,8 @@ async function incrementAndGetVisitorCount(redisClient) {
         return { totalVisits: 0, todayVisits: 0 };
     }
 }
+const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
 const fetchYouTube = async (endpoint, params) => {
     for (const apiKey of apiKeys) {
         const url = `https://www.googleapis.com/youtube/v3/${endpoint}?${new URLSearchParams(params)}&key=${apiKey}`;
@@ -214,13 +216,15 @@ const fetchYouTube = async (endpoint, params) => {
             const res = await fetch(url);
             const data = await res.json();
             if (data.error && (data.error.message.toLowerCase().includes('quota') || data.error.reason === 'quotaExceeded')) {
-                console.warn(`金鑰 ${apiKey.substring(0, 8)}... 配額錯誤，嘗試下一個。`);
+                console.warn(`金鑰 ${apiKey.substring(0, 8)}... 配額錯誤，重試中...`);
+                await sleep(1000); // 1s backoff
                 continue;
             }
             if (data.error) throw new Error(data.error.message);
             return data;
         } catch (e) {
             console.error(`金鑰 ${apiKey.substring(0, 8)}... 發生錯誤`, e);
+            await sleep(500); // 0.5s backoff on network error
         }
     }
     throw new Error('所有 API 金鑰都已失效。');
@@ -498,7 +502,28 @@ const v12_logic = {
             });
         }
 
-        for (const playlistId of uploadPlaylistIds) { const result = await fetchYouTube('playlistItems', { part: 'snippet', playlistId, maxResults: 50 }); result.items?.forEach(item => { if (new Date(item.snippet.publishedAt) > threeMonthsAgo) { newVideoCandidates.add(item.snippet.resourceId.videoId); } }); }
+        // [OPTIMIZATION] Batch processing for playlistItems to avoid Rate Limits (429) & Timeouts
+        const playlistBatches = batchArray(uploadPlaylistIds, 20); // Process 20 playlists per batch
+        for (const batch of playlistBatches) {
+            const batchPromises = batch.map(playlistId => fetchYouTube('playlistItems', { part: 'snippet', playlistId, maxResults: 50 }));
+            // Use Promise.allSettled to allow partial success
+            const results = await Promise.allSettled(batchPromises);
+
+            results.forEach(res => {
+                if (res.status === 'fulfilled' && res.value) {
+                    res.value.items?.forEach(item => {
+                        if (new Date(item.snippet.publishedAt) > threeMonthsAgo) {
+                            newVideoCandidates.add(item.snippet.resourceId.videoId);
+                        }
+                    });
+                } else if (res.status === 'rejected') {
+                    console.warn('[v16.8] Fetch playlist failed:', res.reason);
+                }
+            });
+
+            // Artificial delay between batches to respect rate limits
+            if (playlistBatches.length > 1) await sleep(1000);
+        }
 
         const storageKeys = { setKey: v12_FOREIGN_VIDEOS_SET_KEY, hashPrefix: v12_FOREIGN_VIDEO_HASH_PREFIX, type: 'foreign' };
         // [DOUBLE CHECK] Disable for JP
