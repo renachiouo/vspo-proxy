@@ -371,7 +371,9 @@ const v12_logic = {
             });
         }
 
-        for (const playlistId of uploadPlaylistIds) { const result = await fetchYouTube('playlistItems', { part: 'snippet', playlistId, maxResults: 50 }); result.items?.forEach(item => { if (new Date(item.snippet.publishedAt) > threeMonthsAgo) { newVideoCandidates.add(item.snippet.resourceId.videoId); } }); }
+        const playlistItemsPromises = uploadPlaylistIds.map(playlistId => fetchYouTube('playlistItems', { part: 'snippet', playlistId, maxResults: 50 }));
+        const playlistItemsResults = await Promise.all(playlistItemsPromises);
+        for (const result of playlistItemsResults) { result.items?.forEach(item => { if (new Date(item.snippet.publishedAt) > threeMonthsAgo) { newVideoCandidates.add(item.snippet.resourceId.videoId); } }); }
 
         const storageKeys = { setKey: v12_FOREIGN_VIDEOS_SET_KEY, hashPrefix: v12_FOREIGN_VIDEO_HASH_PREFIX, type: 'foreign' };
         // [DOUBLE CHECK] Disable for JP
