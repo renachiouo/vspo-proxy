@@ -535,29 +535,7 @@ const v12_logic = {
             });
         }
 
-        // [OPTIMIZATION] Batch processing for playlistItems to avoid Rate Limits (429) & Timeouts
-        // Reduce concurrency from 20 -> 5 to avoid "User Rate Limit Exceeded"
-        const playlistBatches = batchArray(uploadPlaylistIds, 5);
-        for (const batch of playlistBatches) {
-            const batchPromises = batch.map(playlistId => fetchYouTube('playlistItems', { part: 'snippet', playlistId, maxResults: 50 }));
-            // Use Promise.allSettled to allow partial success
-            const results = await Promise.allSettled(batchPromises);
-
-            results.forEach(res => {
-                if (res.status === 'fulfilled' && res.value) {
-                    res.value.items?.forEach(item => {
-                        if (new Date(item.snippet.publishedAt) > threeMonthsAgo) {
-                            newVideoCandidates.add(item.snippet.resourceId.videoId);
-                        }
-                    });
-                } else if (res.status === 'rejected') {
-                    console.warn('[v16.8] Fetch playlist failed:', res.reason);
-                }
-            });
-
-            // Artificial delay between batches to respect rate limits
-            if (playlistBatches.length > 1) await sleep(200);
-        }
+        for (const playlistId of uploadPlaylistIds) { const result = await fetchYouTube('playlistItems', { part: 'snippet', playlistId, maxResults: 50 }); result.items?.forEach(item => { if (new Date(item.snippet.publishedAt) > threeMonthsAgo) { newVideoCandidates.add(item.snippet.resourceId.videoId); } }); }
 
         const storageKeys = { setKey: v12_FOREIGN_VIDEOS_SET_KEY, hashPrefix: v12_FOREIGN_VIDEO_HASH_PREFIX, type: 'foreign' };
         // [DOUBLE CHECK] Disable for JP
