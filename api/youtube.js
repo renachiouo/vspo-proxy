@@ -302,6 +302,98 @@ const v12_logic = {
         const allChannelIds = [...new Set(Array.from(videoDetailsMap.values()).map(d => d.snippet.channelId))];
         if (allChannelIds.length > 0) { const channelDetailBatches = batchArray(allChannelIds, 50); for (const batch of channelDetailBatches) { const result = await fetchYouTube('channels', { part: 'statistics,snippet', id: batch.join(',') }); result.items?.forEach(item => channelStatsMap.set(item.id, item)); } }
 
+        const validVideoIds = new Set();
+        const pipeline = redisClient.multi();
+        const videosToClassify = [];
+
+        // Pre-fetch videoTypes to avoid re-classifying
+        const typeCheckPipeline = redisClient.multi();
+        videoIds.forEach(id => typeCheckPipeline.hGet(`${storageKeys.hashPrefix}${id}`, 'videoType'));
+        const existingVideoTypes = await typeCheckPipeline.exec();
+        const classifiedMap = new Map();
+        videoIds.forEach((id, index) => {
+            if (existingVideoTypes[index]) {
+                classifiedMap.set(id, true);
+            }
+        });
+
+        for (const videoId of videoIds) {
+            const detail = videoDetailsMap.get(videoId);
+            if (!detail) continue;
+
+            // Check Video Blacklist
+            if (videoBlacklist.includes(videoId)) {
+                console.log(`[Filter] 影片 ${videoId} 在影片黑名單中，跳過。`);
+                continue;
+            }
+
+            const channelId = detail.snippet.channelId;
+            const isChannelBlacklisted = blacklist.includes(channelId);
+            const isKeywordBlacklisted = containsBlacklistedKeyword(detail, KEYWORD_BLACKLIST);
+            const isExpired = new Date(detail.snippet.publishedAt) < retentionDate;
+            const isContentValid = isVideoValid(detail, validKeywords, useDoubleKeywordCheck);
+
+            if (!isChannelBlacklisted && !isKeywordBlacklisted && !isExpired && isContentValid) {
+                validVideoIds.add(videoId);
+                const channelDetails = channelStatsMap.get(channelId);
+                const { title, description } = detail.snippet;
+                const videoData = { id: videoId, title: title, searchableText: `${title || ''} ${description || ''}`.toLowerCase(), thumbnail: detail.snippet.thumbnails.high?.url || detail.snippet.thumbnails.default?.url, channelId: channelId, channelTitle: detail.snippet.channelTitle, channelAvatarUrl: channelDetails?.snippet?.thumbnails?.default?.url || '', publishedAt: detail.snippet.publishedAt, viewCount: detail.statistics?.viewCount || 0, subscriberCount: channelDetails?.statistics?.subscriberCount || 0, duration: detail.contentDetails?.duration || '' };
+
+                // Only add to pending classification if not already classified
+                if (!classifiedMap.has(videoId)) {
+                    videosToClassify.push(videoId);
+                }
+
+                // --- V12.4 Logic: Multiple Attribution ---
+                const streamLinks = parseOriginalStreamInfo(description); // Returns array
+                if (streamLinks && streamLinks.length > 0) {
+                    videoData.originalStreamInfo = JSON.stringify(streamLinks);
+
+                    // Resolve Channel IDs for all links
+                    const targetChannelIds = new Set();
+                    const ytVideoIds = streamLinks.filter(l => l.platform === 'youtube').map(l => l.id);
+                    const twitchVideoIds = streamLinks.filter(l => l.platform === 'twitch').map(l => l.id);
+
+                    // 1. YouTube Batch Lookup
+                    if (ytVideoIds.length > 0) {
+                        try {
+                            const ytBatches = batchArray(ytVideoIds, 50);
+                            for (const yBatch of ytBatches) {
+                                const ytRes = await fetchYouTube('videos', { part: 'snippet', id: yBatch.join(',') });
+                                ytRes.items?.forEach(item => targetChannelIds.add(item.snippet.channelId));
+                            }
+                        } catch (e) { console.error(`[Filter] YT Source Lookup Failed:`, e); }
+                    }
+
+                    // 2. Twitch Individual Lookup
+                    if (twitchVideoIds.length > 0) {
+                        try {
+                            const twBatches = batchArray(twitchVideoIds, 90);
+                            for (const twBatch of twBatches) {
+                                await Promise.all(twBatch.map(async (tid) => {
+                                    const tData = await fetchTwitch('videos', { id: tid });
+                                    if (tData && tData.data && tData.data.length > 0) {
+                                        targetChannelIds.add(tData.data[0].user_id);
+                                    }
+                                }));
+                            }
+                        } catch (e) { console.error(`[Filter] Twitch Source Lookup Failed:`, e); }
+                    }
+
+                    if (targetChannelIds.size > 0) {
+                        const targetIdsArray = Array.from(targetChannelIds);
+                        videoData.targetChannelIds = JSON.stringify(targetIdsArray);
+
+                        // Create Indexes for Reverse Lookup
+                        targetIdsArray.forEach(tid => {
+                            pipeline.sAdd(`${v12_KEY_PREFIX}channel_index:${tid}`, `${storageKeys.type}:${videoId}`);
+                        });
+                    }
+                }
+
+                pipeline.hSet(`${storageKeys.hashPrefix}${videoId}`, videoData);
+            }
+        }
 
         if (videosToClassify.length > 0) {
             console.log(`[Classify] ${videosToClassify.length} 部影片缺少 videoType，已加入待分類清單。`);
