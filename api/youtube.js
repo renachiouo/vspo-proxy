@@ -36,14 +36,14 @@ const V10_VIDEO_HASH_PREFIX = `vspo-db:v2:video:`;
 // --- 更新頻率設定 ---
 const UPDATE_INTERVAL_SECONDS = 1200; // 20 分鐘
 const FOREIGN_UPDATE_INTERVAL_SECONDS = 1200; // 20 分鐘 (白名單更新頻率)
-const FOREIGN_SEARCH_INTERVAL_SECONDS = 21600; // 360 分鐘 (關鍵字搜尋頻率)
+const FOREIGN_SEARCH_INTERVAL_SECONDS = 3600; // 60 分鐘 (關鍵字搜尋頻率)
 const LEADERBOARD_CACHE_TTL = 3600; // 1 小時 (排行榜快取時間)
 
 // --- YouTube API 設定 ---
 const SPECIAL_KEYWORDS = ["ぶいすぽっ！許諾番号"];
 const FOREIGN_SEARCH_KEYWORDS = ["ぶいすぽ 切り抜き"];
 const FOREIGN_SPECIAL_KEYWORDS = ["ぶいすぽっ！許諾番号"];
-const SEARCH_KEYWORDS = ["VSPO中文", "VSPO中文精華", "VSPO精華", "VSPO中文剪輯", "VSPO剪輯"];
+const SEARCH_KEYWORDS = ["VSPO中文", "VSPO精華", "VSPO剪輯"];
 const KEYWORD_BLACKLIST = ["MMD"];
 const VSPO_MEMBER_KEYWORDS = [
     "花芽すみれ", "花芽なずな", "小雀とと", "一ノ瀬うるは", "胡桃のあ", "兎咲ミミ", "空澄セナ", "橘ひなの", "英リサ", "如月れん", "神成きゅぴ", "八雲べに", "藍沢エマ", "紫宮るな", "猫汰つな", "白波らむね", "小森めと", "夢野あかり", "夜乃くろむ", "紡木こかげ", "千燈ゆうひ", "蝶屋はなび", "甘結もか",
