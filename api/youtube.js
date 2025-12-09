@@ -316,6 +316,120 @@ const v12_logic = {
         const existingVideoTypes = await typeCheckPipeline.exec();
         const classifiedMap = new Map();
         videoIds.forEach((id, index) => {
+            if (existingVideoTypes[index]) classifiedMap.set(id, true);
+        });
+
+        // --- PRE-CALCULATION START: Batch Resolve Stream Links ---
+        const videoStreamLinksMap = new Map(); // videoId -> [{platform, id}]
+        const allYtVideoIdsToResolve = new Set();
+        const allTwitchVideoIdsToResolve = new Set();
+        const resolvedChannelMap = new Map(); // platform:videoId -> channelId
+
+        // 1. Parse all descriptions first
+        for (const videoId of videoIds) {
+            const detail = videoDetailsMap.get(videoId);
+            if (!detail) continue;
+            const { description } = detail.snippet;
+            const links = parseOriginalStreamInfo(description);
+            if (links && links.length > 0) {
+                videoStreamLinksMap.set(videoId, links);
+                links.forEach(l => {
+                    if (l.platform === 'youtube') allYtVideoIdsToResolve.add(l.id);
+                    if (l.platform === 'twitch') allTwitchVideoIdsToResolve.add(l.id);
+                });
+            }
+        }
+
+        // 2. Batch Resolve YouTube IDs
+        if (allYtVideoIdsToResolve.size > 0) {
+            console.log(`[BatchResolve] Resolving ${allYtVideoIdsToResolve.size} YouTube Source Videos...`);
+            const ytBatches = batchArray(Array.from(allYtVideoIdsToResolve), 50);
+            for (const batch of ytBatches) {
+                try {
+                    const ytRes = await fetchYouTube('videos', { part: 'snippet', id: batch.join(',') });
+                    ytRes.items?.forEach(item => {
+                        resolvedChannelMap.set(`youtube:${item.id}`, item.snippet.channelId);
+                    });
+                } catch (e) {
+                    console.error(`[BatchResolve] YouTube Batch Failed:`, e);
+                }
+                await sleep(100); // Tiny backoff
+            }
+        }
+
+        // 3. Batch Resolve Twitch IDs
+        if (allTwitchVideoIdsToResolve.size > 0) {
+            console.log(`[BatchResolve] Resolving ${allTwitchVideoIdsToResolve.size} Twitch Source Videos...`);
+            const twBatches = batchArray(Array.from(allTwitchVideoIdsToResolve), 90); // Twitch limit ~100
+            for (const batch of twBatches) {
+                try {
+                    const promises = batch.map(async (tid) => {
+                        const tData = await fetchTwitch('videos', { id: tid });
+                        if (tData && tData.data && tData.data.length > 0) {
+                            resolvedChannelMap.set(`twitch:${tid}`, tData.data[0].user_id);
+                        }
+                    });
+                    await Promise.allSettled(promises);
+                } catch (e) {
+                    console.error(`[BatchResolve] Twitch Batch Failed:`, e);
+                }
+                await sleep(500); // Backoff for Twitch
+            }
+        }
+        // --- PRE-CALCULATION END ---
+
+        for (const videoId of videoIds) {
+            const detail = videoDetailsMap.get(videoId);
+            if (!detail) continue;
+
+            // Check Video Blacklist
+            if (videoBlacklist.includes(videoId)) {
+                console.log(`[Filter] 影片 ${videoId} 在影片黑名單中，跳過。`);
+                continue;
+            }
+
+            const channelId = detail.snippet.channelId;
+            const isChannelBlacklisted = blacklist.includes(channelId);
+            const isKeywordBlacklisted = containsBlacklistedKeyword(detail, KEYWORD_BLACKLIST);
+            const isExpired = new Date(detail.snippet.publishedAt) < retentionDate;
+            const isContentValid = isVideoValid(detail, validKeywords, useDoubleKeywordCheck);
+
+            if (!isChannelBlacklisted && !isKeywordBlacklisted && !isExpired && isContentValid) {
+                validVideoIds.add(videoId);
+                const channelDetails = channelStatsMap.get(channelId);
+                const { title, description } = detail.snippet;
+                const videoData = { id: videoId, title: title, searchableText: `${title || ''} ${description || ''}`.toLowerCase(), thumbnail: detail.snippet.thumbnails.high?.url || detail.snippet.thumbnails.default?.url, channelId: channelId, channelTitle: detail.snippet.channelTitle, channelAvatarUrl: channelDetails?.snippet?.thumbnails?.default?.url || '', publishedAt: detail.snippet.publishedAt, viewCount: detail.statistics?.viewCount || 0, subscriberCount: channelDetails?.statistics?.subscriberCount || 0, duration: detail.contentDetails?.duration || '' };
+
+                // Only add to pending classification if not already classified
+                if (!classifiedMap.has(videoId)) {
+                    videosToClassify.push(videoId);
+                }
+
+                // --- V12.4 Logic: Multiple Attribution (Optimized) ---
+                if (videoStreamLinksMap.has(videoId)) {
+                    const streamLinks = videoStreamLinksMap.get(videoId);
+                    videoData.originalStreamInfo = JSON.stringify(streamLinks);
+
+                    const targetChannelIds = new Set();
+                    streamLinks.forEach(link => {
+                        const key = `${link.platform}:${link.id}`;
+                        const resolvedId = resolvedChannelMap.get(key);
+                        if (resolvedId) targetChannelIds.add(resolvedId);
+                    });
+
+                    if (targetChannelIds.size > 0) {
+                        const targetIdsArray = Array.from(targetChannelIds);
+                        videoData.targetChannelIds = JSON.stringify(targetIdsArray);
+
+                        // Create Indexes for Reverse Lookup
+                        targetIdsArray.forEach(tid => {
+                            pipeline.sAdd(`${v12_KEY_PREFIX}channel_index:${tid}`, `${storageKeys.type}:${videoId}`);
+                        });
+                    }
+                }
+
+                pipeline.hSet(`${storageKeys.hashPrefix}${videoId}`, videoData);
+            }
         }
 
         if (videosToClassify.length > 0) {
@@ -497,6 +611,15 @@ const v12_logic = {
 
 // --- 主 Handler ---
 export default async function handler(request, response) {
+    // Enable CORS
+    response.setHeader('Access-Control-Allow-Credentials', true);
+    response.setHeader('Access-Control-Allow-Origin', '*');
+    response.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS,PATCH,DELETE,POST,PUT');
+    response.setHeader(
+        'Access-Control-Allow-Headers',
+        'X-CSRF-Token, X-Requested-With, Accept, Accept-Version, Content-Length, Content-MD5, Content-Type, Date, X-Api-Version, Authorization'
+    );
+
     if (request.method === 'OPTIONS') {
         return response.status(200).end();
     }
