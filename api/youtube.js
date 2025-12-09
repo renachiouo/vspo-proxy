@@ -838,6 +838,77 @@ export default async function handler(request, response) {
                     await redisClient.sRem(V12_VIDEO_BLACKLIST_KEY, videoId);
                     return response.status(200).json({ success: true, message: `影片 ${videoId} 已從黑名單移除。` });
                 }
+                case 'backfill_attribution_queue': {
+                    // [Feature] Backfill existing videos into the attribution queue
+                    console.log('[Backfill Queue] Starting scan for videos missing attribution...');
+
+                    const mainVideoIds = await redisClient.sMembers(V12_VIDEOS_SET_KEY);
+                    const foreignVideoIds = await redisClient.sMembers(V12_FOREIGN_VIDEOS_SET_KEY);
+                    const allVideoIds = [...new Set([...mainVideoIds, ...foreignVideoIds])];
+
+                    let queuedCount = 0;
+                    const pipeline = redisClient.multi();
+                    const CHUNK_SIZE = 100; // Process in chunks to avoid blocking too long
+
+                    // Note: In serverless, we might hit timeout if too many videos. 
+                    // But checking 2000-3000 keys with pipeline should be fast enough.
+                    // If it times out, user might need to run it multiple times or we need cursor.
+                    // For now, let's try a simple loop with pipeline checks.
+
+                    // Optimization: We need to check if they have 'originalStreamInfo' AND missing 'targetChannelIds'
+                    // Efficient way: Pipeline HGETALL or HMGET for all hashes? That's too heavy.
+                    // Better: We rely on the fact that if they are old and have originalStreamInfo, they *need* attribution.
+                    // We can just check existence of 'targetChannelIds' field?
+                    // Actually, let's just push ALL videos that have 'originalStreamInfo' to the queue. 
+                    // The worker handles duplications/already present data efficiently (it just updates).
+                    // Wait, the worker fetches APIs. We DON'T want to fetch 3000 videos if they are already done.
+
+                    // Strategy: 
+                    // 1. Fetch small batches of keys. 
+                    // 2. Check if they need update.
+                    // 3. Queue if needed.
+
+                    for (let i = 0; i < allVideoIds.length; i += CHUNK_SIZE) {
+                        const chunk = allVideoIds.slice(i, i + CHUNK_SIZE);
+                        const multi = redisClient.multi();
+
+                        chunk.forEach(vid => {
+                            // Ideally check both prefixes, but typically a vid is in one.
+                            // We can just try HGET for both potential keys for 'targetChannelIds' and 'originalStreamInfo'.
+                            // To be precise:
+                            const mainKey = `${v12_VIDEO_HASH_PREFIX}${vid}`;
+                            const foreignKey = `${v12_FOREIGN_VIDEO_HASH_PREFIX}${vid}`;
+
+                            multi.hmGet(mainKey, ['originalStreamInfo', 'targetChannelIds']);
+                            multi.hmGet(foreignKey, ['originalStreamInfo', 'targetChannelIds']);
+                        });
+
+                        const results = await multi.exec();
+                        // results layout: [ [orig, target], [orig, target] (foreign), ... ] for each video
+
+                        for (let j = 0; j < chunk.length; j++) {
+                            const mainRes = results[j * 2];
+                            const foreignRes = results[j * 2 + 1];
+                            const vid = chunk[j];
+
+                            let infoStr = mainRes?.[0] || foreignRes?.[0];
+                            let targetStr = mainRes?.[1] || foreignRes?.[1];
+
+                            if (infoStr && infoStr !== '[]' && (!targetStr || targetStr === '[]')) {
+                                pipeline.sAdd(V12_PENDING_ATTRIBUTION_QUEUE, vid);
+                                queuedCount++;
+                            }
+                        }
+                    }
+
+                    if (queuedCount > 0) {
+                        await pipeline.exec();
+                    }
+
+                    console.log(`[Backfill Queue] Queued ${queuedCount} videos for attribution.`);
+                    return response.status(200).json({ success: true, message: `已將 ${queuedCount} 部需要歸屬分析的影片加入佇列。`, count: queuedCount });
+                }
+
                 case 'get_video_blacklist': {
                     const blacklist = await redisClient.sMembers(V12_VIDEO_BLACKLIST_KEY);
                     return response.status(200).json({ success: true, blacklist });
