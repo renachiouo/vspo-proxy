@@ -51,7 +51,6 @@ const VSPO_MEMBER_KEYWORDS = [
     "小針彩", "白咲露理", "帕妃", "千郁郁",
     "ひなーの", "ひなの", "べに", "つな", "らむち", "らむね", "めと", "なずな", "なずぴ", "すみー", "すみれ", "ととち", "とと", "のせ", "うるは", "のあ", "ミミ", "たや", "セナ", "あしゅみ", "リサ", "れん", "きゅぴ", "エマたそ", "るな", "あかり", "あかりん", "くろむ", "こかげ", "つむお", "うひ", "ゆうひ", "はなび", "もか"
 ];
-
 const apiKeys = [
     process.env.YOUTUBE_API_KEY_1, process.env.YOUTUBE_API_KEY_2,
     process.env.YOUTUBE_API_KEY_3, process.env.YOUTUBE_API_KEY_4,
@@ -60,14 +59,80 @@ const apiKeys = [
     process.env.YOUTUBE_API_KEY_9,
 ].filter(key => key);
 
-// --- 輔助函式 (通用) ---
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'vspo123';
+const TWITCH_CLIENT_ID = process.env.TWITCH_CLIENT_ID;
+const TWITCH_CLIENT_SECRET = process.env.TWITCH_CLIENT_SECRET;
+
+// --- Helper Functions ---
 const batchArray = (arr, size) => Array.from({ length: Math.ceil(arr.length / size) }, (v, i) => arr.slice(i * size, i * size + size));
+
+// Twitch Token Cache
+let twitchAccessToken = null;
+let twitchTokenExpiry = 0;
+
+async function getTwitchToken() {
+    if (twitchAccessToken && Date.now() < twitchTokenExpiry) {
+        return twitchAccessToken;
+    }
+
+    if (!TWITCH_CLIENT_ID || !TWITCH_CLIENT_SECRET) {
+        console.warn('Twitch Credentials not found, skipping Twitch API calls.');
+        return null;
+    }
+
+    try {
+        const response = await fetch('https://id.twitch.tv/oauth2/token', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: new URLSearchParams({
+                client_id: TWITCH_CLIENT_ID,
+                client_secret: TWITCH_CLIENT_SECRET,
+                grant_type: 'client_credentials'
+            })
+        });
+
+        if (!response.ok) throw new Error(`Twitch Token Error: ${response.status}`);
+        const data = await response.json();
+        twitchAccessToken = data.access_token;
+        twitchTokenExpiry = Date.now() + (data.expires_in * 1000) - 60000; // Buffer 60s
+        console.log('[Twitch] Token refreshed.');
+        return twitchAccessToken;
+    } catch (e) {
+        console.error('[Twitch] Failed to get token:', e);
+        return null;
+    }
+}
+
+async function fetchTwitch(endpoint, params = {}) {
+    const token = await getTwitchToken();
+    if (!token) return null;
+
+    const queryString = new URLSearchParams(params).toString();
+    const url = `https://api.twitch.tv/helix/${endpoint}?${queryString}`;
+
+    try {
+        const response = await fetch(url, {
+            headers: {
+                'Client-Id': TWITCH_CLIENT_ID,
+                'Authorization': `Bearer ${token}`
+            }
+        });
+        if (!response.ok) {
+            const errText = await response.text();
+            console.error(`[Twitch] API Error ${response.status}: ${errText}`);
+            return null;
+        }
+        return await response.json();
+    } catch (e) {
+        console.error(`[Twitch] Network Error:`, e);
+        return null;
+    }
+}
+
 const isVideoValid = (videoDetail, keywords, useDoubleKeywordCheck = false) => {
     if (!videoDetail || !videoDetail.snippet) return false;
     const searchText = `${videoDetail.snippet.title} ${videoDetail.snippet.description}`.toLowerCase();
 
-    // 1. 檢查是否包含許諾番號 (keywords 通常是 SPECIAL_KEYWORDS)
-    const hasLicense = keywords.some(keyword => searchText.includes(keyword.toLowerCase()));
     if (!hasLicense) return false;
 
     // 2. 如果需要雙重驗證，檢查是否包含 VSPO 成員關鍵字
@@ -159,18 +224,29 @@ const fetchYouTube = async (endpoint, params) => {
     throw new Error('所有 API 金鑰都已失效。');
 };
 function parseOriginalStreamInfo(description) {
-    if (!description) return null;
-    const ytRegex = /(?:https?:\/\/)?(?:www\.)?(?:youtube\.com\/(?:watch\?v=|live\/)|youtu\.be\/)([a-zA-Z0-9_-]{11})/;
-    const ytMatch = description.match(ytRegex);
-    if (ytMatch && ytMatch[1]) {
-        return { platform: 'youtube', id: ytMatch[1] };
-    }
-    const twitchRegex = /(?:https?:\/\/)?(?:www\.)?twitch\.tv\/videos\/(\d+)/;
-    const twitchMatch = description.match(twitchRegex);
-    if (twitchMatch && twitchMatch[1]) {
-        return { platform: 'twitch', id: twitchMatch[1] };
-    }
-    return null;
+    if (!description) return [];
+
+    const results = [];
+
+    // YouTube
+    const ytRegex = /(?:https?:\/\/)?(?:www\.)?(?:youtube\.com\/(?:watch\?v=|live\/)|youtu\.be\/)([a-zA-Z0-9_-]{11})/g;
+    const ytMatches = [...description.matchAll(ytRegex)];
+    ytMatches.forEach(m => {
+        if (m[1] && !results.some(r => r.platform === 'youtube' && r.id === m[1])) {
+            results.push({ platform: 'youtube', id: m[1] });
+        }
+    });
+
+    // Twitch
+    const twitchRegex = /(?:https?:\/\/)?(?:www\.)?twitch\.tv\/videos\/(\d+)/g;
+    const twitchMatches = [...description.matchAll(twitchRegex)];
+    twitchMatches.forEach(m => {
+        if (m[1] && !results.some(r => r.platform === 'twitch' && r.id === m[1])) {
+            results.push({ platform: 'twitch', id: m[1] });
+        }
+    });
+
+    return results;
 }
 function v12_normalizeVideoData(videoData) {
     if (!videoData || Object.keys(videoData).length === 0) {
@@ -184,7 +260,15 @@ function v12_normalizeVideoData(videoData) {
         try {
             video.originalStreamInfo = JSON.parse(video.originalStreamInfo);
         } catch {
-            video.originalStreamInfo = null;
+            video.originalStreamInfo = [];
+        }
+    }
+    // Parse targetChannelIds
+    if (video.targetChannelIds && typeof video.targetChannelIds === 'string') {
+        try {
+            video.targetChannelIds = JSON.parse(video.targetChannelIds);
+        } catch {
+            video.targetChannelIds = [];
         }
     }
     return video;
@@ -258,12 +342,68 @@ const v12_logic = {
                     videosToClassify.push(videoId);
                 }
 
-                const originalStreamInfo = parseOriginalStreamInfo(description);
-                if (originalStreamInfo) {
-                    videoData.originalStreamInfo = JSON.stringify(originalStreamInfo);
-                    const indexKey = `${v12_STREAM_INDEX_PREFIX}${originalStreamInfo.platform}:${originalStreamInfo.id}`;
-                    pipeline.sAdd(indexKey, `${storageKeys.type}:${videoId}`);
+                // --- V12.4 Logic: Multiple Attribution ---
+                const streamLinks = parseOriginalStreamInfo(description); // Returns array
+                if (streamLinks && streamLinks.length > 0) {
+                    videoData.originalStreamInfo = JSON.stringify(streamLinks);
+
+                    // Resolve Channel IDs for all links
+                    const targetChannelIds = new Set();
+                    const ytVideoIds = streamLinks.filter(l => l.platform === 'youtube').map(l => l.id);
+                    const twitchVideoIds = streamLinks.filter(l => l.platform === 'twitch').map(l => l.id);
+
+                    // 1. YouTube Batch Lookup
+                    if (ytVideoIds.length > 0) {
+                        try {
+                            const ytBatches = batchArray(ytVideoIds, 50);
+                            for (const yBatch of ytBatches) {
+                                const ytRes = await fetchYouTube('videos', { part: 'snippet', id: yBatch.join(',') });
+                                ytRes.items?.forEach(item => targetChannelIds.add(item.snippet.channelId));
+                            }
+                        } catch (e) { console.error(`[Filter] YT Source Lookup Failed:`, e); }
+                    }
+
+                    // 2. Twitch Individual Lookup (Batched if needed, but we do parallel simple loop for now)
+                    if (twitchVideoIds.length > 0) {
+                        // Twitch videos API can take multiple IDs? Yes, "id" param repeatable.
+                        // Max 100 IDs per request.
+                        try {
+                            const twBatches = batchArray(twitchVideoIds, 90);
+                            for (const twBatch of twBatches) {
+                                // fetchTwitch helper handles token
+                                // endpoint: videos?id=123&id=456
+                                const params = new URLSearchParams();
+                                twBatch.forEach(tid => params.append('id', tid));
+                                // Manual construct because fetchTwitch takes obj
+                                // But URLSearchParams handles repeated keys.
+                                // Our fetchTwitch helper uses URLSearchParams constructor which MIGHT not handle repeats if passed as object.
+                                // Let's modify fetchTwitch call to pass string query? No, helper expects obj.
+                                // Actually URLSearchParams(obj) does NOT support array values for duplicated keys in standard node.
+                                // We will pass simple loop for safety if batching is complex, or fix fetchTwitch?
+                                // Let's do simple loop for now, usually just 1-2 links.
+
+                                // Actually, let's just do Promise.all for each ID to ensure correctness
+                                await Promise.all(twBatch.map(async (tid) => {
+                                    const tData = await fetchTwitch('videos', { id: tid });
+                                    if (tData && tData.data && tData.data.length > 0) {
+                                        targetChannelIds.add(tData.data[0].user_id);
+                                    }
+                                }));
+                            }
+                        } catch (e) { console.error(`[Filter] Twitch Source Lookup Failed:`, e); }
+                    }
+
+                    if (targetChannelIds.size > 0) {
+                        const targetIdsArray = Array.from(targetChannelIds);
+                        videoData.targetChannelIds = JSON.stringify(targetIdsArray);
+
+                        // Create Indexes for Reverse Lookup
+                        targetIdsArray.forEach(tid => {
+                            pipeline.sAdd(`${v12_KEY_PREFIX}channel_index:${tid}`, `${storageKeys.type}:${videoId}`);
+                        });
+                    }
                 }
+
                 pipeline.hSet(`${storageKeys.hashPrefix}${videoId}`, videoData);
             }
         }
