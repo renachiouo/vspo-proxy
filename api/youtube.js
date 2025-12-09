@@ -12,6 +12,7 @@ const V12_BLACKLIST_CN_KEY = 'vspo-db:v4:blacklist:cn';
 const V12_BLACKLIST_JP_KEY = 'vspo-db:v4:blacklist:jp';
 const V12_ANNOUNCEMENT_KEY = 'vspo-db:v4:announcement';
 const V12_VIDEO_BLACKLIST_KEY = 'vspo-db:v4:video-blacklist'; // New Video Blacklist Key
+const V12_PENDING_ATTRIBUTION_QUEUE = 'vspo-db:v4:attribution_queue'; // Async Attribution Queue
 const V12_LEADERBOARD_CACHE_KEY = 'vspo-db:v4:leaderboard:cache';
 
 // 影片資料仍沿用 v3 架構以保留舊資料，但邏輯層升級為 V12
@@ -43,7 +44,7 @@ const LEADERBOARD_CACHE_TTL = 3600; // 1 小時 (排行榜快取時間)
 const SPECIAL_KEYWORDS = ["ぶいすぽっ！許諾番号"];
 const FOREIGN_SEARCH_KEYWORDS = ["ぶいすぽ 切り抜き"];
 const FOREIGN_SPECIAL_KEYWORDS = ["ぶいすぽっ！許諾番号"];
-const SEARCH_KEYWORDS = ["VSPO中文", "VSPO中文精華", "VSPO精華", "VSPO中文剪輯", "VSPO剪輯"];
+const SEARCH_KEYWORDS = ["VSPO中文", "VSPO精華", "VSPO剪輯"];
 const KEYWORD_BLACKLIST = ["MMD"];
 const VSPO_MEMBER_KEYWORDS = [
     "花芽すみれ", "花芽なずな", "小雀とと", "一ノ瀬うるは", "胡桃のあ", "兎咲ミミ", "空澄セナ", "橘ひなの", "英リサ", "如月れん", "神成きゅぴ", "八雲べに", "藍沢エマ", "紫宮るな", "猫汰つな", "白波らむね", "小森めと", "夢野あかり", "夜乃くろむ", "紡木こかげ", "千燈ゆうひ", "蝶屋はなび", "甘結もか",
@@ -51,7 +52,6 @@ const VSPO_MEMBER_KEYWORDS = [
     "小針彩", "白咲露理", "帕妃", "千郁郁",
     "ひなーの", "ひなの", "べに", "つな", "らむち", "らむね", "めと", "なずな", "なずぴ", "すみー", "すみれ", "ととち", "とと", "のせ", "うるは", "のあ", "ミミ", "たや", "セナ", "あしゅみ", "リサ", "れん", "きゅぴ", "エマたそ", "るな", "あかり", "あかりん", "くろむ", "こかげ", "つむお", "うひ", "ゆうひ", "はなび", "もか"
 ];
-
 const apiKeys = [
     process.env.YOUTUBE_API_KEY_1, process.env.YOUTUBE_API_KEY_2,
     process.env.YOUTUBE_API_KEY_3, process.env.YOUTUBE_API_KEY_4,
@@ -60,13 +60,81 @@ const apiKeys = [
     process.env.YOUTUBE_API_KEY_9,
 ].filter(key => key);
 
-// --- 輔助函式 (通用) ---
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'vspo123';
+const TWITCH_CLIENT_ID = process.env.TWITCH_CLIENT_ID;
+const TWITCH_CLIENT_SECRET = process.env.TWITCH_CLIENT_SECRET;
+
+// --- Helper Functions ---
 const batchArray = (arr, size) => Array.from({ length: Math.ceil(arr.length / size) }, (v, i) => arr.slice(i * size, i * size + size));
+
+// Twitch Token Cache
+let twitchAccessToken = null;
+let twitchTokenExpiry = 0;
+
+async function getTwitchToken() {
+    if (twitchAccessToken && Date.now() < twitchTokenExpiry) {
+        return twitchAccessToken;
+    }
+
+    if (!TWITCH_CLIENT_ID || !TWITCH_CLIENT_SECRET) {
+        console.warn('Twitch Credentials not found, skipping Twitch API calls.');
+        return null;
+    }
+
+    try {
+        const response = await fetch('https://id.twitch.tv/oauth2/token', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: new URLSearchParams({
+                client_id: TWITCH_CLIENT_ID,
+                client_secret: TWITCH_CLIENT_SECRET,
+                grant_type: 'client_credentials'
+            })
+        });
+
+        if (!response.ok) throw new Error(`Twitch Token Error: ${response.status}`);
+        const data = await response.json();
+        twitchAccessToken = data.access_token;
+        twitchTokenExpiry = Date.now() + (data.expires_in * 1000) - 60000; // Buffer 60s
+        console.log('[Twitch] Token refreshed.');
+        return twitchAccessToken;
+    } catch (e) {
+        console.error('[Twitch] Failed to get token:', e);
+        return null;
+    }
+}
+
+async function fetchTwitch(endpoint, params = {}) {
+    const token = await getTwitchToken();
+    if (!token) return null;
+
+    const queryString = new URLSearchParams(params).toString();
+    const url = `https://api.twitch.tv/helix/${endpoint}?${queryString}`;
+
+    try {
+        const response = await fetch(url, {
+            headers: {
+                'Client-Id': TWITCH_CLIENT_ID,
+                'Authorization': `Bearer ${token}`
+            }
+        });
+        if (!response.ok) {
+            const errText = await response.text();
+            console.error(`[Twitch] API Error ${response.status}: ${errText}`);
+            return null;
+        }
+        return await response.json();
+    } catch (e) {
+        console.error(`[Twitch] Network Error:`, e);
+        return null;
+    }
+}
+
 const isVideoValid = (videoDetail, keywords, useDoubleKeywordCheck = false) => {
     if (!videoDetail || !videoDetail.snippet) return false;
     const searchText = `${videoDetail.snippet.title} ${videoDetail.snippet.description}`.toLowerCase();
 
-    // 1. 檢查是否包含許諾番號 (keywords 通常是 SPECIAL_KEYWORDS)
+    // 1. 檢查是否包含許諾番號 (License)
     const hasLicense = keywords.some(keyword => searchText.includes(keyword.toLowerCase()));
     if (!hasLicense) return false;
 
@@ -140,6 +208,8 @@ async function incrementAndGetVisitorCount(redisClient) {
         return { totalVisits: 0, todayVisits: 0 };
     }
 }
+const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
 const fetchYouTube = async (endpoint, params) => {
     for (const apiKey of apiKeys) {
         const url = `https://www.googleapis.com/youtube/v3/${endpoint}?${new URLSearchParams(params)}&key=${apiKey}`;
@@ -147,30 +217,43 @@ const fetchYouTube = async (endpoint, params) => {
             const res = await fetch(url);
             const data = await res.json();
             if (data.error && (data.error.message.toLowerCase().includes('quota') || data.error.reason === 'quotaExceeded')) {
-                console.warn(`金鑰 ${apiKey.substring(0, 8)}... 配額錯誤，嘗試下一個。`);
+                console.warn(`金鑰 ${apiKey.substring(0, 8)}... 配額/速率限制錯誤 (${data.error.reason}): ${data.error.message}, 重試中...`);
+                await sleep(1000); // 1s backoff
                 continue;
             }
             if (data.error) throw new Error(data.error.message);
             return data;
         } catch (e) {
             console.error(`金鑰 ${apiKey.substring(0, 8)}... 發生錯誤`, e);
+            await sleep(500); // 0.5s backoff on network error
         }
     }
     throw new Error('所有 API 金鑰都已失效。');
 };
 function parseOriginalStreamInfo(description) {
-    if (!description) return null;
-    const ytRegex = /(?:https?:\/\/)?(?:www\.)?(?:youtube\.com\/(?:watch\?v=|live\/)|youtu\.be\/)([a-zA-Z0-9_-]{11})/;
-    const ytMatch = description.match(ytRegex);
-    if (ytMatch && ytMatch[1]) {
-        return { platform: 'youtube', id: ytMatch[1] };
-    }
-    const twitchRegex = /(?:https?:\/\/)?(?:www\.)?twitch\.tv\/videos\/(\d+)/;
-    const twitchMatch = description.match(twitchRegex);
-    if (twitchMatch && twitchMatch[1]) {
-        return { platform: 'twitch', id: twitchMatch[1] };
-    }
-    return null;
+    if (!description) return [];
+
+    const results = [];
+
+    // YouTube
+    const ytRegex = /(?:https?:\/\/)?(?:www\.)?(?:youtube\.com\/(?:watch\?v=|live\/)|youtu\.be\/)([a-zA-Z0-9_-]{11})/g;
+    const ytMatches = [...description.matchAll(ytRegex)];
+    ytMatches.forEach(m => {
+        if (m[1] && !results.some(r => r.platform === 'youtube' && r.id === m[1])) {
+            results.push({ platform: 'youtube', id: m[1] });
+        }
+    });
+
+    // Twitch
+    const twitchRegex = /(?:https?:\/\/)?(?:www\.)?twitch\.tv\/videos\/(\d+)/g;
+    const twitchMatches = [...description.matchAll(twitchRegex)];
+    twitchMatches.forEach(m => {
+        if (m[1] && !results.some(r => r.platform === 'twitch' && r.id === m[1])) {
+            results.push({ platform: 'twitch', id: m[1] });
+        }
+    });
+
+    return results;
 }
 function v12_normalizeVideoData(videoData) {
     if (!videoData || Object.keys(videoData).length === 0) {
@@ -184,7 +267,15 @@ function v12_normalizeVideoData(videoData) {
         try {
             video.originalStreamInfo = JSON.parse(video.originalStreamInfo);
         } catch {
-            video.originalStreamInfo = null;
+            video.originalStreamInfo = [];
+        }
+    }
+    // Parse targetChannelIds
+    if (video.targetChannelIds && typeof video.targetChannelIds === 'string') {
+        try {
+            video.targetChannelIds = JSON.parse(video.targetChannelIds);
+        } catch {
+            video.targetChannelIds = [];
         }
     }
     return video;
@@ -259,10 +350,10 @@ const v12_logic = {
                 }
 
                 const originalStreamInfo = parseOriginalStreamInfo(description);
-                if (originalStreamInfo) {
+                if (originalStreamInfo && originalStreamInfo.length > 0) {
                     videoData.originalStreamInfo = JSON.stringify(originalStreamInfo);
-                    const indexKey = `${v12_STREAM_INDEX_PREFIX}${originalStreamInfo.platform}:${originalStreamInfo.id}`;
-                    pipeline.sAdd(indexKey, `${storageKeys.type}:${videoId}`);
+                    // Async Attribution: Push to Queue
+                    pipeline.sAdd(V12_PENDING_ATTRIBUTION_QUEUE, videoId);
                 }
                 pipeline.hSet(`${storageKeys.hashPrefix}${videoId}`, videoData);
             }
@@ -428,6 +519,15 @@ const v12_logic = {
 
 // --- 主 Handler ---
 export default async function handler(request, response) {
+    // Enable CORS
+    response.setHeader('Access-Control-Allow-Credentials', true);
+    response.setHeader('Access-Control-Allow-Origin', '*');
+    response.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS,PATCH,DELETE,POST,PUT');
+    response.setHeader(
+        'Access-Control-Allow-Headers',
+        'X-CSRF-Token, X-Requested-With, Accept, Accept-Version, Content-Length, Content-MD5, Content-Type, Date, X-Api-Version, Authorization'
+    );
+
     if (request.method === 'OPTIONS') {
         return response.status(200).end();
     }

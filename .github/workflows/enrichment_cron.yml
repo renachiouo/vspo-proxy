@@ -1,0 +1,15 @@
+name: Video Attribution Enrichment
+on:
+  schedule:
+    - cron: '*/30 * * * *' # Run every 30 minutes
+  workflow_dispatch: # Allow manual trigger
+
+jobs:
+  enrich:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Call Enrichment Endpoint
+        run: |
+          curl -X POST "${{ secrets.API_BASE_URL }}/api/enrich-attribution" \
+          -H "Authorization: Bearer ${{ secrets.ADMIN_PASSWORD }}" \
+          -H "Content-Type: application/json"
