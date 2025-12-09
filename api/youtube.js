@@ -216,7 +216,7 @@ const fetchYouTube = async (endpoint, params) => {
             const res = await fetch(url);
             const data = await res.json();
             if (data.error && (data.error.message.toLowerCase().includes('quota') || data.error.reason === 'quotaExceeded')) {
-                console.warn(`金鑰 ${apiKey.substring(0, 8)}... 配額錯誤，重試中...`);
+                console.warn(`金鑰 ${apiKey.substring(0, 8)}... 配額/速率限制錯誤 (${data.error.reason}): ${data.error.message}, 重試中...`);
                 await sleep(1000); // 1s backoff
                 continue;
             }
@@ -536,7 +536,8 @@ const v12_logic = {
         }
 
         // [OPTIMIZATION] Batch processing for playlistItems to avoid Rate Limits (429) & Timeouts
-        const playlistBatches = batchArray(uploadPlaylistIds, 20); // Process 20 playlists per batch
+        // Reduce concurrency from 20 -> 5 to avoid "User Rate Limit Exceeded"
+        const playlistBatches = batchArray(uploadPlaylistIds, 5);
         for (const batch of playlistBatches) {
             const batchPromises = batch.map(playlistId => fetchYouTube('playlistItems', { part: 'snippet', playlistId, maxResults: 50 }));
             // Use Promise.allSettled to allow partial success
@@ -555,7 +556,7 @@ const v12_logic = {
             });
 
             // Artificial delay between batches to respect rate limits
-            if (playlistBatches.length > 1) await sleep(1000);
+            if (playlistBatches.length > 1) await sleep(200);
         }
 
         const storageKeys = { setKey: v12_FOREIGN_VIDEOS_SET_KEY, hashPrefix: v12_FOREIGN_VIDEO_HASH_PREFIX, type: 'foreign' };
