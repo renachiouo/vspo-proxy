@@ -342,6 +342,8 @@ const v12_logic = {
         if (idsToDelete.length > 0) { pipeline.sRem(storageKeys.setKey, idsToDelete); idsToDelete.forEach(id => pipeline.del(`${storageKeys.hashPrefix}${id}`)); }
         if (validVideoIds.size > 0) { pipeline.sAdd(storageKeys.setKey, [...validVideoIds]); }
         await pipeline.exec();
+        // Clear response cache to show new videos immediately
+        await redisClient.del('vspo-db:v4:response_cache:cn');
         console.log(`[v16.8] 中文影片常規更新程序完成。`);
     },
     async updateForeignClips(redisClient) {
@@ -385,6 +387,8 @@ const v12_logic = {
         if (idsToDelete.length > 0) { pipeline.sRem(storageKeys.setKey, idsToDelete); idsToDelete.forEach(id => pipeline.del(`${storageKeys.hashPrefix}${id}`)); }
         if (validVideoIds.size > 0) { pipeline.sAdd(storageKeys.setKey, [...validVideoIds]); }
         await pipeline.exec();
+        // Clear response cache to show new videos immediately
+        await redisClient.del('vspo-db:v4:response_cache:jp');
         console.log('[v16.8] 外文影片常規更新程序 (白名單) 完成。');
 
         // --- START: 關鍵字搜尋 (每 60 分鐘執行一次) ---
@@ -652,6 +656,9 @@ export default async function handler(request, response) {
                         active: String(active),
                         timestamp: Date.now()
                     });
+                    // Clear response cache to show announcement immediately
+                    await redisClient.del('vspo-db:v4:response_cache:cn');
+                    await redisClient.del('vspo-db:v4:response_cache:jp');
                     break;
                 }
                 case 'backfill': {
@@ -842,9 +849,37 @@ export default async function handler(request, response) {
                         }
                     }
                     const storageKeys = isForeign ? { setKey: v12_FOREIGN_VIDEOS_SET_KEY, hashPrefix: v12_FOREIGN_VIDEO_HASH_PREFIX } : { setKey: v12_VIDEOS_SET_KEY, hashPrefix: v12_VIDEO_HASH_PREFIX };
-                    const videos = await v12_logic.getVideosFromDB(redisClient, storageKeys);
-                    const updatedTimestamp = await redisClient.get(isForeign ? v12_FOREIGN_META_LAST_UPDATED_KEY : v12_META_LAST_UPDATED_KEY);
 
+                    // --- API Response Caching Optimization ---
+                    const RESPONSE_CACHE_KEY = isForeign ? 'vspo-db:v4:response_cache:jp' : 'vspo-db:v4:response_cache:cn';
+                    let videos = [];
+                    let cacheHit = false;
+
+                    // Try to get from cache first
+                    if (!forceRefresh) {
+                        const cachedResponse = await redisClient.get(RESPONSE_CACHE_KEY);
+                        if (cachedResponse) {
+                            try {
+                                videos = JSON.parse(cachedResponse);
+                                cacheHit = true;
+                                // console.log(`[Cache] Serving ${videos.length} videos from ${RESPONSE_CACHE_KEY}`);
+                            } catch (e) {
+                                console.warn("Cache parse failed, falling back to DB");
+                            }
+                        }
+                    }
+
+                    if (!cacheHit) {
+                        // Fallback to rebuilding from DB (Heavy Operation)
+                        videos = await v12_logic.getVideosFromDB(redisClient, storageKeys);
+
+                        // Save to cache for next time
+                        if (videos.length > 0) {
+                            await redisClient.set(RESPONSE_CACHE_KEY, JSON.stringify(videos), { EX: 3600 }); // Cache for 1 hour (updates will clear/overwrite it)
+                        }
+                    }
+
+                    const updatedTimestamp = await redisClient.get(isForeign ? v12_FOREIGN_META_LAST_UPDATED_KEY : v12_META_LAST_UPDATED_KEY);
                     const announcement = await redisClient.hGetAll(V12_ANNOUNCEMENT_KEY);
 
                     return response.status(200).json({
