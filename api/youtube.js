@@ -731,8 +731,8 @@ export default async function handler(request, response) {
                     await redisClient.sAdd(V12_VIDEO_BLACKLIST_KEY, videoId);
 
                     // Also remove from existing sets if present
-                    await redisClient.sRem(V12_VIDEOS_SET_KEY, videoId);
-                    await redisClient.sRem(V12_FOREIGN_VIDEOS_SET_KEY, videoId);
+                    await redisClient.sRem(v12_VIDEOS_SET_KEY, videoId);
+                    await redisClient.sRem(v12_FOREIGN_VIDEOS_SET_KEY, videoId);
                     await redisClient.del(`${v12_VIDEO_HASH_PREFIX}${videoId}`);
                     await redisClient.del(`${v12_FOREIGN_VIDEO_HASH_PREFIX}${videoId}`);
 
