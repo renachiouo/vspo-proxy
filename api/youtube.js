@@ -606,7 +606,11 @@ export default async function handler(request, response) {
             if (request.method !== 'POST') return response.status(405).json({ error: '僅允許 POST 方法' });
 
             if (body.parseError) {
-                return response.status(400).json({ error: '無效的 JSON body' });
+                // Try to parse again if it's a string (sometimes framework differences)
+                if (typeof request.body === 'string') {
+                    try { body = JSON.parse(request.body); } catch (e) { }
+                }
+                if (!body.action && body.parseError) return response.status(400).json({ error: '無效的 JSON body' });
             }
             if (!authenticate()) return;
 
@@ -748,6 +752,23 @@ export default async function handler(request, response) {
                     const blacklist = await redisClient.sMembers(V12_VIDEO_BLACKLIST_KEY);
                     return response.status(200).json({ success: true, blacklist });
                 }
+                case 'cleanup_legacy': {
+                    // Cleanup V2 keys to free up memory
+                    const v2Keys = await redisClient.keys('vspo-db:v2:*');
+                    if (v2Keys.length === 0) {
+                        return response.status(200).json({ success: true, message: '沒有發現舊版 (V2) 資料。', count: 0 });
+                    }
+                    console.log(`[Cleanup] Found ${v2Keys.length} legacy keys. Deleting...`);
+                    // Delete in batches to avoid blocking
+                    let deletedCount = 0;
+                    const batchSize = 100;
+                    for (let i = 0; i < v2Keys.length; i += batchSize) {
+                        const batch = v2Keys.slice(i, i + batchSize);
+                        await redisClient.del(batch);
+                        deletedCount += batch.length;
+                    }
+                    return response.status(200).json({ success: true, message: `已清除 ${deletedCount} 筆舊版資料。`, count: deletedCount });
+                }
                 default:
                     return response.status(400).json({ error: '無效的 action' });
             }
@@ -769,7 +790,8 @@ export default async function handler(request, response) {
                     for (const videoId of videoIdsToClassify) {
                         const isShort = await checkIfShort(videoId);
                         const videoType = isShort ? 'short' : 'video';
-                        await redisClient.hSet(`${V10_VIDEO_HASH_PREFIX}${videoId}`, 'videoType', videoType);
+                        // Keep V12 only to save space
+                        // await redisClient.hSet(`${V10_VIDEO_HASH_PREFIX}${videoId}`, 'videoType', videoType); 
                         await redisClient.hSet(`${v12_VIDEO_HASH_PREFIX}${videoId}`, 'videoType', videoType);
                         await redisClient.hSet(`${v12_FOREIGN_VIDEO_HASH_PREFIX}${videoId}`, 'videoType', videoType);
                         await redisClient.sRem(V10_PENDING_CLASSIFICATION_SET_KEY, videoId);
@@ -875,7 +897,12 @@ export default async function handler(request, response) {
 
                         // Save to cache for next time
                         if (videos.length > 0) {
-                            await redisClient.set(RESPONSE_CACHE_KEY, JSON.stringify(videos), { EX: 3600 }); // Cache for 1 hour (updates will clear/overwrite it)
+                            try {
+                                await redisClient.set(RESPONSE_CACHE_KEY, JSON.stringify(videos), { EX: 3600 }); // Cache for 1 hour
+                            } catch (e) {
+                                console.warn(`[Cache] Write failed (likely OOM): ${e.message}`);
+                                // Swallow error so API still returns data
+                            }
                         }
                     }
 
