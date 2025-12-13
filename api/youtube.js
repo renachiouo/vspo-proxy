@@ -802,23 +802,34 @@ export default async function handler(request, response) {
                     return response.status(200).json({ success: true, message: `已清除 ${deletedCount} 筆舊版資料。`, count: deletedCount });
                 }
                 case 'cleanup_deep_scan': {
-                    let cursor = 0;
                     let keysToDelete = [];
                     const pattern = 'vspo-db:*';
 
-                    // SCAN all keys
-                    do {
-                        const reply = await redisClient.scan(cursor, { MATCH: pattern, COUNT: 100 });
-                        cursor = reply.cursor;
-                        const keys = reply.keys;
+                    // Use scanIterator for safer iteration in Redis v4/v5
+                    const iterator = redisClient.scanIterator({
+                        MATCH: pattern,
+                        COUNT: 100
+                    });
 
-                        keys.forEach(key => {
-                            // Identify Zombie Keys: Not V2, Not V3, Not V4
-                            if (!key.includes(':v2:') && !key.includes(':v3:') && !key.includes(':v4:')) {
-                                keysToDelete.push(key);
-                            }
-                        });
-                    } while (cursor !== 0);
+                    // Add a safety timeout (e.g. stop scanning after 8 seconds to ensure response)
+                    const startTime = Date.now();
+                    const TIME_LIMIT = 8000;
+
+                    for await (const key of iterator) {
+                        if (Date.now() - startTime > TIME_LIMIT) {
+                            console.warn('[DeepScan] Time limit reached, stopping scan.');
+                            break;
+                        }
+
+                        // Identify Zombie Keys: Not V2, Not V3, Not V4
+                        // V4: vspo-db:v4:...
+                        // V3: vspo-db:v3:...
+                        // V2: vspo-db:v2:...
+                        // Also preserve v4 admin logs explicitly if needed (covered by v4 check)
+                        if (!key.includes(':v2:') && !key.includes(':v3:') && !key.includes(':v4:')) {
+                            keysToDelete.push(key);
+                        }
+                    }
 
                     if (keysToDelete.length === 0) {
                         return response.status(200).json({ success: true, message: '深度掃描完成：未發現任何不明資料。', count: 0 });
