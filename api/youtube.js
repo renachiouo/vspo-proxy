@@ -13,6 +13,7 @@ const V12_BLACKLIST_JP_KEY = 'vspo-db:v4:blacklist:jp';
 const V12_ANNOUNCEMENT_KEY = 'vspo-db:v4:announcement';
 const V12_VIDEO_BLACKLIST_KEY = 'vspo-db:v4:video-blacklist'; // New Video Blacklist Key
 const V12_LEADERBOARD_CACHE_KEY = 'vspo-db:v4:leaderboard:cache';
+const V12_ADMIN_LOGS_KEY = 'vspo-db:v4:admin_logs';
 
 // 影片資料仍沿用 v3 架構以保留舊資料，但邏輯層升級為 V12
 const v12_KEY_PREFIX = 'vspo-db:v3:';
@@ -100,6 +101,21 @@ function parseISODuration(duration) {
     if (secondsMatch) minutes += Math.round(parseInt(secondsMatch[1]) / 60);
     return minutes;
 }
+
+const logAdminAction = async (redisClient, action, details) => {
+    try {
+        const logEntry = JSON.stringify({
+            timestamp: Date.now(),
+            action,
+            details
+        });
+        await redisClient.rPush(V12_ADMIN_LOGS_KEY, logEntry);
+        // Keep last 1000 logs
+        await redisClient.lTrim(V12_ADMIN_LOGS_KEY, -1000, -1);
+    } catch (e) {
+        console.error('[AdminLog] Failed to write log:', e);
+    }
+};
 
 async function checkIfShort(videoId) {
     try {
@@ -619,13 +635,18 @@ export default async function handler(request, response) {
 
             switch (action) {
                 case 'approve_jp':
+                case 'approve_jp': {
                     if (!channelId) return response.status(400).json({ error: '缺少 channelId' });
                     await redisClient.sMove(V12_WHITELIST_PENDING_JP_KEY, V12_WHITELIST_JP_KEY, channelId);
+                    await logAdminAction(redisClient, 'approve_jp', { channelId });
                     break;
-                case 'reject_jp':
+                }
+                case 'reject_jp': {
                     if (!channelId) return response.status(400).json({ error: '缺少 channelId' });
                     await redisClient.sMove(V12_WHITELIST_PENDING_JP_KEY, V12_BLACKLIST_JP_KEY, channelId);
+                    await logAdminAction(redisClient, 'reject_jp', { channelId });
                     break;
+                }
                 case 'delete': {
                     if (!channelId) return response.status(400).json({ error: '缺少 channelId' });
                     if (!listType) return response.status(400).json({ error: '刪除操作需要 listType 參數' });
@@ -637,6 +658,7 @@ export default async function handler(request, response) {
                     };
                     if (!keyMap[listType]) return response.status(400).json({ error: '無效的 listType' });
                     await redisClient.sRem(keyMap[listType], channelId);
+                    await logAdminAction(redisClient, 'delete', { listType, channelId });
                     break;
                 }
                 case 'add': {
@@ -650,6 +672,7 @@ export default async function handler(request, response) {
                     };
                     if (!keyMap[listType]) return response.status(400).json({ error: '無效的 listType' });
                     await redisClient.sAdd(keyMap[listType], channelId);
+                    await logAdminAction(redisClient, 'add', { listType, channelId });
                     break;
                 }
                 case 'update_announcement': {
@@ -663,6 +686,7 @@ export default async function handler(request, response) {
                     // Clear response cache to show announcement immediately
                     await redisClient.del('vspo-db:v4:response_cache:cn');
                     await redisClient.del('vspo-db:v4:response_cache:jp');
+                    await logAdminAction(redisClient, 'update_announcement', { active, type });
                     break;
                 }
                 case 'backfill': {
@@ -721,9 +745,11 @@ export default async function handler(request, response) {
                         await pipeline.exec();
 
                         console.log(`[Backfill] ${date} 回填完成，新增/更新了 ${validVideoIds.size} 部影片。`);
+                        await logAdminAction(redisClient, 'backfill', { date, lang, newVideos: validVideoIds.size });
                         return response.status(200).json({ success: true, message: `回填成功，處理了 ${validVideoIds.size} 部影片。`, count: validVideoIds.size });
                     } else {
                         console.log(`[Backfill] ${date} 未找到任何影片。`);
+                        await logAdminAction(redisClient, 'backfill', { date, lang, newVideos: 0 });
                         return response.status(200).json({ success: true, message: '未找到任何影片。', count: 0 });
                     }
                 }
@@ -739,18 +765,23 @@ export default async function handler(request, response) {
                     await redisClient.sRem(v12_FOREIGN_VIDEOS_SET_KEY, videoId);
                     await redisClient.del(`${v12_VIDEO_HASH_PREFIX}${videoId}`);
                     await redisClient.del(`${v12_FOREIGN_VIDEO_HASH_PREFIX}${videoId}`);
-
+                    await logAdminAction(redisClient, 'add_video_blacklist', { videoId });
                     return response.status(200).json({ success: true, message: `影片 ${videoId} 已加入黑名單並從資料庫移除。` });
                 }
                 case 'remove_video_blacklist': {
                     const { videoId } = body;
                     if (!videoId) return response.status(400).json({ error: '缺少 videoId' });
                     await redisClient.sRem(V12_VIDEO_BLACKLIST_KEY, videoId);
+                    await logAdminAction(redisClient, 'remove_video_blacklist', { videoId });
                     return response.status(200).json({ success: true, message: `影片 ${videoId} 已從黑名單移除。` });
                 }
                 case 'get_video_blacklist': {
                     const blacklist = await redisClient.sMembers(V12_VIDEO_BLACKLIST_KEY);
                     return response.status(200).json({ success: true, blacklist });
+                }
+                case 'get_admin_logs': {
+                    const logs = await redisClient.lRange(V12_ADMIN_LOGS_KEY, -100, -1);
+                    return response.status(200).json({ success: true, logs: logs.map(l => JSON.parse(l)).reverse() });
                 }
                 case 'cleanup_legacy': {
                     // Cleanup V2 keys to free up memory
@@ -767,7 +798,43 @@ export default async function handler(request, response) {
                         await redisClient.del(batch);
                         deletedCount += batch.length;
                     }
+                    await logAdminAction(redisClient, 'cleanup_legacy', { deletedCount });
                     return response.status(200).json({ success: true, message: `已清除 ${deletedCount} 筆舊版資料。`, count: deletedCount });
+                }
+                case 'cleanup_deep_scan': {
+                    let cursor = 0;
+                    let keysToDelete = [];
+                    const pattern = 'vspo-db:*';
+
+                    // SCAN all keys
+                    do {
+                        const reply = await redisClient.scan(cursor, { MATCH: pattern, COUNT: 100 });
+                        cursor = reply.cursor;
+                        const keys = reply.keys;
+
+                        keys.forEach(key => {
+                            // Identify Zombie Keys: Not V2, Not V3, Not V4
+                            if (!key.includes(':v2:') && !key.includes(':v3:') && !key.includes(':v4:')) {
+                                keysToDelete.push(key);
+                            }
+                        });
+                    } while (cursor !== 0);
+
+                    if (keysToDelete.length === 0) {
+                        return response.status(200).json({ success: true, message: '深度掃描完成：未發現任何不明資料。', count: 0 });
+                    }
+
+                    // Delete in batches
+                    let deletedCount = 0;
+                    const batchSize = 100;
+                    for (let i = 0; i < keysToDelete.length; i += batchSize) {
+                        const batch = keysToDelete.slice(i, i + batchSize);
+                        await redisClient.del(batch);
+                        deletedCount += batch.length;
+                    }
+
+                    await logAdminAction(redisClient, 'cleanup_deep_scan', { deletedCount });
+                    return response.status(200).json({ success: true, message: `深度掃描完成：已清除 ${deletedCount} 筆不明/殭屍資料。`, count: deletedCount });
                 }
                 default:
                     return response.status(400).json({ error: '無效的 action' });
@@ -796,6 +863,7 @@ export default async function handler(request, response) {
                         await redisClient.hSet(`${v12_FOREIGN_VIDEO_HASH_PREFIX}${videoId}`, 'videoType', videoType);
                         await redisClient.sRem(V10_PENDING_CLASSIFICATION_SET_KEY, videoId);
                     }
+                    await logAdminAction(redisClient, 'classify_videos', { classifiedCount: videoIdsToClassify.length });
                     return response.status(200).json({ message: "分類成功。" });
                 } finally {
                     await redisClient.del(V10_CLASSIFICATION_LOCK_KEY);
