@@ -795,7 +795,7 @@ export default async function handler(request, response) {
                     const batchSize = 100;
                     for (let i = 0; i < v2Keys.length; i += batchSize) {
                         const batch = v2Keys.slice(i, i + batchSize);
-                        await redisClient.del(batch);
+                        if (batch.length > 0) await redisClient.del(...batch);
                         deletedCount += batch.length;
                     }
                     await logAdminAction(redisClient, 'cleanup_legacy', { deletedCount });
@@ -840,7 +840,7 @@ export default async function handler(request, response) {
                     const batchSize = 100;
                     for (let i = 0; i < keysToDelete.length; i += batchSize) {
                         const batch = keysToDelete.slice(i, i + batchSize);
-                        await redisClient.del(batch);
+                        if (batch.length > 0) await redisClient.del(...batch);
                         deletedCount += batch.length;
                     }
 
