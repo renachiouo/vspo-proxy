@@ -358,9 +358,17 @@ const v12_logic = {
         if (idsToDelete.length > 0) { pipeline.sRem(storageKeys.setKey, idsToDelete); idsToDelete.forEach(id => pipeline.del(`${storageKeys.hashPrefix}${id}`)); }
         if (validVideoIds.size > 0) { pipeline.sAdd(storageKeys.setKey, [...validVideoIds]); }
         await pipeline.exec();
-        // Clear response cache to show new videos immediately
-        await redisClient.del('vspo-db:v4:response_cache:cn');
-        console.log(`[v16.8] 中文影片常規更新程序完成。`);
+
+        // [ATOMIC CACHE REFRESH]
+        // Instead of deleting the cache (causing a miss window), rebuild and overwrite it immediately.
+        // This ensures concurrent users always see data (either old or new, never empty).
+        const videos = await this.getVideosFromDB(redisClient, storageKeys);
+        if (videos.length > 0) {
+            await redisClient.set('vspo-db:v4:response_cache:cn', JSON.stringify(videos), { EX: 3600 });
+        } else {
+            await redisClient.del('vspo-db:v4:response_cache:cn'); // Only delete if empty
+        }
+        console.log(`[v16.8] 中文影片常規更新程序完成 (Cache Refreshed)。`);
     },
     async updateForeignClips(redisClient) {
         console.log('[v16.8] 開始執行外文影片常規更新程序...');
@@ -403,9 +411,15 @@ const v12_logic = {
         if (idsToDelete.length > 0) { pipeline.sRem(storageKeys.setKey, idsToDelete); idsToDelete.forEach(id => pipeline.del(`${storageKeys.hashPrefix}${id}`)); }
         if (validVideoIds.size > 0) { pipeline.sAdd(storageKeys.setKey, [...validVideoIds]); }
         await pipeline.exec();
-        // Clear response cache to show new videos immediately
-        await redisClient.del('vspo-db:v4:response_cache:jp');
-        console.log('[v16.8] 外文影片常規更新程序 (白名單) 完成。');
+
+        // [ATOMIC CACHE REFRESH]
+        const videos = await this.getVideosFromDB(redisClient, storageKeys);
+        if (videos.length > 0) {
+            await redisClient.set('vspo-db:v4:response_cache:jp', JSON.stringify(videos), { EX: 3600 });
+        } else {
+            await redisClient.del('vspo-db:v4:response_cache:jp');
+        }
+        console.log('[v16.8] 外文影片常規更新程序 (白名單) 完成 (Cache Refreshed)。');
 
         // --- START: 關鍵字搜尋 (每 60 分鐘執行一次) ---
         const lastSearchTime = await redisClient.get(v12_FOREIGN_META_LAST_SEARCH_KEY);
@@ -920,15 +934,19 @@ export default async function handler(request, response) {
                         if (needsUpdateCN) {
                             const lockAcquired = await redisClient.set(v12_UPDATE_LOCK_KEY, 'locked', { NX: true, EX: 600 });
                             if (lockAcquired) {
-                                try {
-                                    console.log(`[v16.8] 觸發中文影片同步更新...`);
-                                    await v12_logic.updateAndStoreYouTubeData(redisClient);
-                                    await redisClient.set(v12_META_LAST_UPDATED_KEY, Date.now());
-                                } catch (e) {
-                                    console.error("中文更新失敗:", e);
-                                } finally {
-                                    await redisClient.del(v12_UPDATE_LOCK_KEY);
-                                }
+                                // [NON-BLOCKING UPDATE]
+                                // Fire and forget. Catch errors to prevent crash.
+                                // The lock (600s) prevents other requests from firing update again.
+                                console.log(`[v16.8] 觸發中文影片背景更新 (Stale-While-Revalidate)...`);
+                                v12_logic.updateAndStoreYouTubeData(redisClient)
+                                    .then(async () => {
+                                        await redisClient.set(v12_META_LAST_UPDATED_KEY, Date.now());
+                                        await redisClient.del(v12_UPDATE_LOCK_KEY);
+                                    })
+                                    .catch(async (e) => {
+                                        console.error("中文更新失敗:", e);
+                                        await redisClient.del(v12_UPDATE_LOCK_KEY); // Release lock on error
+                                    });
                             }
                         }
 
@@ -937,15 +955,17 @@ export default async function handler(request, response) {
                         if (needsUpdateJP) {
                             const lockAcquired = await redisClient.set(v12_FOREIGN_UPDATE_LOCK_KEY, 'locked', { NX: true, EX: 600 });
                             if (lockAcquired) {
-                                try {
-                                    console.log(`[v16.8] 觸發日文影片同步更新...`);
-                                    await v12_logic.updateForeignClips(redisClient);
-                                    await redisClient.set(v12_FOREIGN_META_LAST_UPDATED_KEY, Date.now());
-                                } catch (e) {
-                                    console.error("日文更新失敗:", e);
-                                } finally {
-                                    await redisClient.del(v12_FOREIGN_UPDATE_LOCK_KEY);
-                                }
+                                // [NON-BLOCKING UPDATE]
+                                console.log(`[v16.8] 觸發日文影片背景更新 (Stale-While-Revalidate)...`);
+                                v12_logic.updateForeignClips(redisClient)
+                                    .then(async () => {
+                                        await redisClient.set(v12_FOREIGN_META_LAST_UPDATED_KEY, Date.now());
+                                        await redisClient.del(v12_FOREIGN_UPDATE_LOCK_KEY);
+                                    })
+                                    .catch(async (e) => {
+                                        console.error("日文更新失敗:", e);
+                                        await redisClient.del(v12_FOREIGN_UPDATE_LOCK_KEY);
+                                    });
                             }
                         }
                     }
