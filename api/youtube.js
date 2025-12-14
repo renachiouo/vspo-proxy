@@ -400,8 +400,13 @@ const v12_logic = {
             });
         }
 
-        const playlistItemsPromises = uploadPlaylistIds.map(playlistId => fetchYouTube('playlistItems', { part: 'snippet', playlistId, maxResults: 50 }));
-        const playlistItemsResults = await Promise.all(playlistItemsPromises);
+        const playlistBatches = batchArray(uploadPlaylistIds, 10); // Process 10 playlists at a time
+        const playlistItemsResults = [];
+        for (const batch of playlistBatches) {
+            const batchPromises = batch.map(playlistId => fetchYouTube('playlistItems', { part: 'snippet', playlistId, maxResults: 50 }));
+            const batchResults = await Promise.all(batchPromises);
+            playlistItemsResults.push(...batchResults);
+        }
         for (const result of playlistItemsResults) { result.items?.forEach(item => { if (new Date(item.snippet.publishedAt) > threeMonthsAgo) { newVideoCandidates.add(item.snippet.resourceId.videoId); } }); }
 
         const storageKeys = { setKey: v12_FOREIGN_VIDEOS_SET_KEY, hashPrefix: v12_FOREIGN_VIDEO_HASH_PREFIX, type: 'foreign' };
@@ -938,19 +943,25 @@ export default async function handler(request, response) {
                         if (needsUpdateCN) {
                             const lockAcquired = await redisClient.set(v12_UPDATE_LOCK_KEY, 'locked', { NX: true, EX: 600 });
                             if (lockAcquired) {
-                                // [NON-BLOCKING UPDATE]
-                                // Fire and forget. Catch errors to prevent crash.
-                                // The lock (600s) prevents other requests from firing update again.
-                                console.log(`[v16.8] 觸發中文影片背景更新 (Stale-While-Revalidate)...`);
-                                v12_logic.updateAndStoreYouTubeData(redisClient)
-                                    .then(async () => {
-                                        await redisClient.set(v12_META_LAST_UPDATED_KEY, String(Date.now()));
-                                        await redisClient.del(v12_UPDATE_LOCK_KEY);
-                                    })
-                                    .catch(async (e) => {
-                                        console.error("中文更新失敗:", e);
-                                        await redisClient.del(v12_UPDATE_LOCK_KEY); // Release lock on error
-                                    });
+                                // [NON-BLOCKING UPDATE WITH INDEPENDENT CLIENT]
+                                // Spawning a new client specifically for this background task.
+                                // This prevents "The client is closed" error when the main response cycle ends.
+                                console.log(`[v16.8] 觸發中文影片背景更新 (Independent Client)...`);
+                                (async () => {
+                                    const bgClient = createClient({ url: redisConnectionString });
+                                    try {
+                                        await bgClient.connect();
+                                        await v12_logic.updateAndStoreYouTubeData(bgClient);
+                                        await bgClient.set(v12_META_LAST_UPDATED_KEY, String(Date.now()));
+                                    } catch (bgError) {
+                                        console.error("中文更新失敗 (Background):", bgError);
+                                    } finally {
+                                        // Ensure we cleanup locks and connection
+                                        const lockOwner = await bgClient.get(v12_UPDATE_LOCK_KEY);
+                                        if (lockOwner === 'locked') await bgClient.del(v12_UPDATE_LOCK_KEY);
+                                        await bgClient.quit();
+                                    }
+                                })();
                             }
                         }
 
@@ -959,17 +970,22 @@ export default async function handler(request, response) {
                         if (needsUpdateJP) {
                             const lockAcquired = await redisClient.set(v12_FOREIGN_UPDATE_LOCK_KEY, 'locked', { NX: true, EX: 600 });
                             if (lockAcquired) {
-                                // [NON-BLOCKING UPDATE]
-                                console.log(`[v16.8] 觸發日文影片背景更新 (Stale-While-Revalidate)...`);
-                                v12_logic.updateForeignClips(redisClient)
-                                    .then(async () => {
-                                        await redisClient.set(v12_FOREIGN_META_LAST_UPDATED_KEY, String(Date.now()));
-                                        await redisClient.del(v12_FOREIGN_UPDATE_LOCK_KEY);
-                                    })
-                                    .catch(async (e) => {
-                                        console.error("日文更新失敗:", e);
-                                        await redisClient.del(v12_FOREIGN_UPDATE_LOCK_KEY);
-                                    });
+                                // [NON-BLOCKING UPDATE WITH INDEPENDENT CLIENT]
+                                console.log(`[v16.8] 觸發日文影片背景更新 (Independent Client)...`);
+                                (async () => {
+                                    const bgClient = createClient({ url: redisConnectionString });
+                                    try {
+                                        await bgClient.connect();
+                                        await v12_logic.updateForeignClips(bgClient);
+                                        await bgClient.set(v12_FOREIGN_META_LAST_UPDATED_KEY, String(Date.now()));
+                                    } catch (bgError) {
+                                        console.error("日文更新失敗 (Background):", bgError);
+                                    } finally {
+                                        const lockOwner = await bgClient.get(v12_FOREIGN_UPDATE_LOCK_KEY);
+                                        if (lockOwner === 'locked') await bgClient.del(v12_FOREIGN_UPDATE_LOCK_KEY);
+                                        await bgClient.quit();
+                                    }
+                                })();
                             }
                         }
                     }
