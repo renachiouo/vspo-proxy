@@ -68,8 +68,11 @@ const isVideoValid = (videoDetail, keywords, useDoubleKeywordCheck = false) => {
     const searchText = `${videoDetail.snippet.title} ${videoDetail.snippet.description}`.toLowerCase();
 
     // 1. 檢查是否包含許諾番號 (keywords 通常是 SPECIAL_KEYWORDS)
-    const hasLicense = keywords.some(keyword => searchText.includes(keyword.toLowerCase()));
-    if (!hasLicense) return false;
+    // 如果 keywords 為 null 或空陣列，代表信任來源 (白名單)，跳過檢查
+    if (keywords && keywords.length > 0) {
+        const hasLicense = keywords.some(keyword => searchText.includes(keyword.toLowerCase()));
+        if (!hasLicense) return false;
+    }
 
     // 2. 如果需要雙重驗證，檢查是否包含 VSPO 成員關鍵字
     if (useDoubleKeywordCheck) {
@@ -291,8 +294,11 @@ const v12_logic = {
         }
 
         await pipeline.exec();
-        const allIdsInDB = await redisClient.sMembers(storageKeys.setKey);
-        const idsToDelete = allIdsInDB.filter(id => !validVideoIds.has(id));
+
+        // [Fix] Do NOT delete missing IDs during incremental updates.
+        // Previously this logic wiped the DB because it compared full DB against partial input batch.
+        // Cleanup should be a separate task.
+        const idsToDelete = [];
         return { validVideoIds, idsToDelete };
     },
     async updateAndStoreYouTubeData(redisClient) {
@@ -410,8 +416,8 @@ const v12_logic = {
         for (const result of playlistItemsResults) { result.items?.forEach(item => { if (new Date(item.snippet.publishedAt) > threeMonthsAgo) { newVideoCandidates.add(item.snippet.resourceId.videoId); } }); }
 
         const storageKeys = { setKey: v12_FOREIGN_VIDEOS_SET_KEY, hashPrefix: v12_FOREIGN_VIDEO_HASH_PREFIX, type: 'foreign' };
-        // [DOUBLE CHECK] Disable for JP
-        const options = { retentionDate: threeMonthsAgo, validKeywords: FOREIGN_SPECIAL_KEYWORDS, blacklist, useDoubleKeywordCheck: false };
+        // [DOUBLE CHECK] Disable for JP, and set validKeywords to null to TRUST WHITELIST (bypass license check)
+        const options = { retentionDate: threeMonthsAgo, validKeywords: null, blacklist, useDoubleKeywordCheck: false };
 
         const { validVideoIds, idsToDelete } = await this.processAndStoreVideos([...newVideoCandidates], redisClient, storageKeys, options);
 
