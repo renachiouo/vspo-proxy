@@ -474,7 +474,7 @@ export default async function handler(request, response) {
     if (request.method === 'OPTIONS') {
         return response.status(200).end();
     }
-    const redisConnectionString = process.env.REDIS_URL;
+    const redisConnectionString = process.env.UPSTASH_URL || process.env.REDIS_URL;
     if (!redisConnectionString) {
         return response.status(500).json({ error: 'Redis 儲存庫未設定。' });
     }
@@ -1027,6 +1027,10 @@ export default async function handler(request, response) {
 
                     const updatedTimestamp = await redisClient.get(isForeign ? v12_FOREIGN_META_LAST_UPDATED_KEY : v12_META_LAST_UPDATED_KEY);
                     const announcement = await redisClient.hGetAll(V12_ANNOUNCEMENT_KEY);
+
+                    // [Quota Optimization] Cache response at Vercel Edge for 20s
+                    // User prefers faster updates based on high throughput limit
+                    response.setHeader('Cache-Control', 'public, s-maxage=20, stale-while-revalidate=300');
 
                     return response.status(200).json({
                         videos: videos,
