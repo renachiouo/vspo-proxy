@@ -318,7 +318,26 @@ const v12_logic = {
                 validVideoIds.add(videoId);
                 const channelDetails = channelStatsMap.get(channelId);
                 const { title, description } = detail.snippet;
-                const videoData = { id: videoId, title: title, searchableText: `${title || ''} ${description || ''}`.toLowerCase(), thumbnail: detail.snippet.thumbnails.high?.url || detail.snippet.thumbnails.default?.url, channelId: channelId, channelTitle: detail.snippet.channelTitle, channelAvatarUrl: channelDetails?.snippet?.thumbnails?.default?.url || '', publishedAt: detail.snippet.publishedAt, viewCount: detail.statistics?.viewCount || 0, subscriberCount: channelDetails?.statistics?.subscriberCount || 0, duration: detail.contentDetails?.duration || '' };
+
+                // [Fix] Sanitize videoData to ensure no undefined values break Redis hSet
+                const videoData = {
+                    id: String(videoId),
+                    title: String(title || ''),
+                    searchableText: String(`${title || ''} ${description || ''}`.toLowerCase()),
+                    thumbnail: String(detail.snippet.thumbnails.high?.url || detail.snippet.thumbnails.default?.url || ''),
+                    channelId: String(channelId),
+                    channelTitle: String(detail.snippet.channelTitle || ''),
+                    channelAvatarUrl: String(channelDetails?.snippet?.thumbnails?.default?.url || ''),
+                    publishedAt: String(detail.snippet.publishedAt || ''),
+                    viewCount: String(detail.statistics?.viewCount || '0'),
+                    subscriberCount: String(channelDetails?.statistics?.subscriberCount || '0'),
+                    duration: String(detail.contentDetails?.duration || '')
+                };
+
+                // [Deep Debug] Log data for first few videos to verify structure
+                if (validVideoIds.size < 3) {
+                    console.log(`[Update Debug] Preparing hSet for ${videoId}:`, JSON.stringify(videoData));
+                }
 
                 // Only add to pending classification if not already classified
                 if (!classifiedMap.has(videoId)) {
