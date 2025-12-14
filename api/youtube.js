@@ -281,6 +281,16 @@ const v12_logic = {
         videoIds.forEach(id => typeCheckPipeline.hGet(`${storageKeys.hashPrefix}${id}`, 'videoType'));
         const existingVideoTypes = await typeCheckPipeline.exec();
         const classifiedMap = new Map();
+
+        // [Deep Debug] Check first item result
+        if (existingVideoTypes.length > 0) {
+            console.log(`[Update Debug] Checked ${videoIds.length} videos. First Key: ${storageKeys.hashPrefix}${videoIds[0]} -> Type: ${existingVideoTypes[0]}`);
+            if (!existingVideoTypes[0] && videoIds.length > 0) {
+                // If null, verify with explicit command logging
+                console.log(`[Update Debug] FAILED to find videoType for ${videoIds[0]}. Is the key correct? Prefix: '${storageKeys.hashPrefix}'`);
+            }
+        }
+
         videoIds.forEach((id, index) => {
             if (existingVideoTypes[index]) {
                 classifiedMap.set(id, true);
