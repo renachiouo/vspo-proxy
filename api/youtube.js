@@ -274,7 +274,7 @@ const v12_logic = {
         if (allChannelIds.length > 0) { const channelDetailBatches = batchArray(allChannelIds, 50); for (const batch of channelDetailBatches) { const result = await fetchYouTube('channels', { part: 'statistics,snippet', id: batch.join(',') }); result.items?.forEach(item => channelStatsMap.set(item.id, item)); } }
 
         const validVideoIds = new Set();
-        const pipeline = redisClient.multi();
+        // const pipeline = redisClient.multi(); // [Removed global pipeline]
         const videosToClassify = [];
 
         // Pre-fetch videoTypes to avoid re-classifying
@@ -298,69 +298,67 @@ const v12_logic = {
             }
         });
 
-        for (const videoId of videoIds) {
-            const detail = videoDetailsMap.get(videoId);
-            if (!detail) continue;
+        // --- BATCH PROCESSING & WRITING ---
+        const processingBatches = batchArray(videoIds, 50);
 
-            // Check Video Blacklist
-            if (videoBlacklist.includes(videoId)) {
-                console.log(`[Filter] 影片 ${videoId} 在影片黑名單中，跳過。`);
-                continue;
+        for (const batch of processingBatches) {
+            const pipeline = redisClient.multi(); // New pipeline per batch
+
+            for (const videoId of batch) {
+                const detail = videoDetailsMap.get(videoId);
+                if (!detail) continue;
+
+                if (videoBlacklist.includes(videoId)) {
+                    continue;
+                }
+
+                const channelId = detail.snippet.channelId;
+                const isChannelBlacklisted = blacklist.includes(channelId);
+                const isKeywordBlacklisted = containsBlacklistedKeyword(detail, KEYWORD_BLACKLIST);
+                const isExpired = new Date(detail.snippet.publishedAt) < retentionDate;
+                const isContentValid = isVideoValid(detail, validKeywords, useDoubleKeywordCheck);
+
+                if (!isChannelBlacklisted && !isKeywordBlacklisted && !isExpired && isContentValid) {
+                    validVideoIds.add(videoId);
+                    const channelDetails = channelStatsMap.get(channelId);
+                    const { title, description } = detail.snippet;
+
+                    const videoData = {
+                        id: String(videoId),
+                        title: String(title || ''),
+                        searchableText: String(`${title || ''} ${description || ''}`.toLowerCase()),
+                        thumbnail: String(detail.snippet.thumbnails.high?.url || detail.snippet.thumbnails.default?.url || ''),
+                        channelId: String(channelId),
+                        channelTitle: String(detail.snippet.channelTitle || ''),
+                        channelAvatarUrl: String(channelDetails?.snippet?.thumbnails?.default?.url || ''),
+                        publishedAt: String(detail.snippet.publishedAt || ''),
+                        viewCount: String(detail.statistics?.viewCount || '0'),
+                        subscriberCount: String(channelDetails?.statistics?.subscriberCount || '0'),
+                        duration: String(detail.contentDetails?.duration || '')
+                    };
+
+                    if (!classifiedMap.has(videoId)) {
+                        videosToClassify.push(videoId);
+                        pipeline.sAdd(V10_PENDING_CLASSIFICATION_SET_KEY, videoId);
+                    }
+
+                    const originalStreamInfo = parseOriginalStreamInfo(description);
+                    if (originalStreamInfo) {
+                        videoData.originalStreamInfo = JSON.stringify(originalStreamInfo);
+                        const indexKey = `${v12_STREAM_INDEX_PREFIX}${originalStreamInfo.platform}:${originalStreamInfo.id}`;
+                        pipeline.sAdd(indexKey, `${storageKeys.type}:${videoId}`);
+                    }
+                    pipeline.hSet(`${storageKeys.hashPrefix}${videoId}`, videoData);
+                }
             }
 
-            const channelId = detail.snippet.channelId;
-            const isChannelBlacklisted = blacklist.includes(channelId);
-            const isKeywordBlacklisted = containsBlacklistedKeyword(detail, KEYWORD_BLACKLIST);
-            const isExpired = new Date(detail.snippet.publishedAt) < retentionDate;
-            const isContentValid = isVideoValid(detail, validKeywords, useDoubleKeywordCheck);
-
-            if (!isChannelBlacklisted && !isKeywordBlacklisted && !isExpired && isContentValid) {
-                validVideoIds.add(videoId);
-                const channelDetails = channelStatsMap.get(channelId);
-                const { title, description } = detail.snippet;
-
-                // [Fix] Sanitize videoData to ensure no undefined values break Redis hSet
-                const videoData = {
-                    id: String(videoId),
-                    title: String(title || ''),
-                    searchableText: String(`${title || ''} ${description || ''}`.toLowerCase()),
-                    thumbnail: String(detail.snippet.thumbnails.high?.url || detail.snippet.thumbnails.default?.url || ''),
-                    channelId: String(channelId),
-                    channelTitle: String(detail.snippet.channelTitle || ''),
-                    channelAvatarUrl: String(channelDetails?.snippet?.thumbnails?.default?.url || ''),
-                    publishedAt: String(detail.snippet.publishedAt || ''),
-                    viewCount: String(detail.statistics?.viewCount || '0'),
-                    subscriberCount: String(channelDetails?.statistics?.subscriberCount || '0'),
-                    duration: String(detail.contentDetails?.duration || '')
-                };
-
-                // [Deep Debug] Log data for first few videos to verify structure
-                if (validVideoIds.size < 3) {
-                    console.log(`[Update Debug] Preparing hSet for ${videoId}:`, JSON.stringify(videoData));
-                }
-
-                // Only add to pending classification if not already classified
-                if (!classifiedMap.has(videoId)) {
-                    videosToClassify.push(videoId);
-                }
-
-                const originalStreamInfo = parseOriginalStreamInfo(description);
-                if (originalStreamInfo) {
-                    videoData.originalStreamInfo = JSON.stringify(originalStreamInfo);
-                    const indexKey = `${v12_STREAM_INDEX_PREFIX}${originalStreamInfo.platform}:${originalStreamInfo.id}`;
-                    pipeline.sAdd(indexKey, `${storageKeys.type}:${videoId}`);
-                }
-                pipeline.hSet(`${storageKeys.hashPrefix}${videoId}`, videoData);
-            }
+            // Execute batch pipeline
+            await pipeline.exec();
         }
 
         if (videosToClassify.length > 0) {
-            console.log(`[Classify] ${videosToClassify.length} 部影片缺少 videoType，已加入待分類清單。`);
-            // Use spread to pass individual arguments
-            pipeline.sAdd(V10_PENDING_CLASSIFICATION_SET_KEY, ...videosToClassify);
+            console.log(`[Classify] ${videosToClassify.length} 部影片缺少 videoType，已加入待分類清單 (分批寫入完成)。`);
         }
-
-        await pipeline.exec();
 
         // [Fix] Do NOT delete missing IDs during incremental updates.
         // Previously this logic wiped the DB because it compared full DB against partial input batch.
