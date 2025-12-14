@@ -220,6 +220,43 @@ const v12_logic = {
         videos.sort((a, b) => new Date(b.publishedAt) - new Date(a.publishedAt));
         return videos;
     },
+    async cleanupExpiredVideos(redisClient, storageKeys, retentionDate, validVideoIds) {
+        console.log(`[Cleanup] 開始掃描過期影片... (Retention: ${retentionDate.toISOString()})`);
+        const allIds = await redisClient.sMembers(storageKeys.setKey);
+        const expiredIds = [];
+
+        // Batch processing to avoid blocking event loop
+        const batches = batchArray(allIds, 100);
+        for (const batch of batches) {
+            const pipeline = redisClient.multi();
+            batch.forEach(id => pipeline.hGetAll(`${storageKeys.hashPrefix}${id}`));
+            const results = await pipeline.exec();
+
+            results.forEach((videoData, index) => {
+                const id = batch[index];
+                if (!videoData || !videoData.publishedAt) {
+                    // Invalid data, safe to delete if not in current valid set
+                    if (!validVideoIds.has(id)) expiredIds.push(id);
+                } else {
+                    const publishDate = new Date(videoData.publishedAt);
+                    if (publishDate < retentionDate) {
+                        expiredIds.push(id);
+                    }
+                }
+            });
+        }
+
+        if (expiredIds.length > 0) {
+            console.log(`[Cleanup] 發現 ${expiredIds.length} 部過期影片，準備刪除。`);
+            const pipeline = redisClient.multi();
+            pipeline.sRem(storageKeys.setKey, expiredIds);
+            expiredIds.forEach(id => pipeline.del(`${storageKeys.hashPrefix}${id}`));
+            await pipeline.exec();
+            console.log(`[Cleanup] 刪除完成。`);
+        } else {
+            console.log(`[Cleanup] 沒有發現過期影片。`);
+        }
+    },
     async processAndStoreVideos(videoIds, redisClient, storageKeys, options = {}) {
         const { retentionDate, validKeywords, blacklist = [], useDoubleKeywordCheck = false } = options;
 
@@ -368,6 +405,11 @@ const v12_logic = {
         if (validVideoIds.size > 0) { pipeline.sAdd(storageKeys.setKey, ...validVideoIds); }
         await pipeline.exec();
 
+        // [SAFE CLEANUP] Separate cleanup process
+        await this.cleanupExpiredVideos(redisClient, storageKeys, oneMonthAgo, validVideoIds);
+
+        // [ATOMIC CACHE REFRESH]
+
         // [ATOMIC CACHE REFRESH]
         // Instead of deleting the cache (causing a miss window), rebuild and overwrite it immediately.
         // This ensures concurrent users always see data (either old or new, never empty).
@@ -416,8 +458,8 @@ const v12_logic = {
         for (const result of playlistItemsResults) { result.items?.forEach(item => { if (new Date(item.snippet.publishedAt) > threeMonthsAgo) { newVideoCandidates.add(item.snippet.resourceId.videoId); } }); }
 
         const storageKeys = { setKey: v12_FOREIGN_VIDEOS_SET_KEY, hashPrefix: v12_FOREIGN_VIDEO_HASH_PREFIX, type: 'foreign' };
-        // [DOUBLE CHECK] Disable for JP, and set validKeywords to null to TRUST WHITELIST (bypass license check)
-        const options = { retentionDate: threeMonthsAgo, validKeywords: null, blacklist, useDoubleKeywordCheck: false };
+        // [DOUBLE CHECK] Disable for JP, but RESTORE strict keyword check as requested by user.
+        const options = { retentionDate: threeMonthsAgo, validKeywords: FOREIGN_SPECIAL_KEYWORDS, blacklist, useDoubleKeywordCheck: false };
 
         const { validVideoIds, idsToDelete } = await this.processAndStoreVideos([...newVideoCandidates], redisClient, storageKeys, options);
 
@@ -425,6 +467,9 @@ const v12_logic = {
         if (idsToDelete.length > 0) { pipeline.sRem(storageKeys.setKey, idsToDelete); idsToDelete.forEach(id => pipeline.del(`${storageKeys.hashPrefix}${id}`)); }
         if (validVideoIds.size > 0) { pipeline.sAdd(storageKeys.setKey, ...validVideoIds); }
         await pipeline.exec();
+
+        // [SAFE CLEANUP] Separate cleanup process
+        await this.cleanupExpiredVideos(redisClient, storageKeys, threeMonthsAgo, validVideoIds);
 
         // [ATOMIC CACHE REFRESH]
         const videos = await this.getVideosFromDB(redisClient, storageKeys);
