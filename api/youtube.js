@@ -286,7 +286,8 @@ const v12_logic = {
 
         if (videosToClassify.length > 0) {
             console.log(`[Classify] ${videosToClassify.length} 部影片缺少 videoType，已加入待分類清單。`);
-            pipeline.sAdd(V10_PENDING_CLASSIFICATION_SET_KEY, videosToClassify);
+            // Use spread to pass individual arguments
+            pipeline.sAdd(V10_PENDING_CLASSIFICATION_SET_KEY, ...videosToClassify);
         }
 
         await pipeline.exec();
@@ -343,7 +344,8 @@ const v12_logic = {
                 });
             }
             if (newChannelsToAdd.size > 0) {
-                await redisClient.sAdd(V12_WHITELIST_CN_KEY, [...newChannelsToAdd]);
+                // Use spread operator
+                await redisClient.sAdd(V12_WHITELIST_CN_KEY, ...newChannelsToAdd);
                 console.log(`[v16.8] 自動新增 ${newChannelsToAdd.size} 個新頻道到中文白名單: ${[...newChannelsToAdd].join(', ')}`);
             }
         }
@@ -356,7 +358,8 @@ const v12_logic = {
 
         const pipeline = redisClient.multi();
         if (idsToDelete.length > 0) { pipeline.sRem(storageKeys.setKey, idsToDelete); idsToDelete.forEach(id => pipeline.del(`${storageKeys.hashPrefix}${id}`)); }
-        if (validVideoIds.size > 0) { pipeline.sAdd(storageKeys.setKey, [...validVideoIds]); }
+        // Use spread syntax for validVideoIds
+        if (validVideoIds.size > 0) { pipeline.sAdd(storageKeys.setKey, ...validVideoIds); }
         await pipeline.exec();
 
         // [ATOMIC CACHE REFRESH]
@@ -409,7 +412,7 @@ const v12_logic = {
 
         const pipeline = redisClient.multi();
         if (idsToDelete.length > 0) { pipeline.sRem(storageKeys.setKey, idsToDelete); idsToDelete.forEach(id => pipeline.del(`${storageKeys.hashPrefix}${id}`)); }
-        if (validVideoIds.size > 0) { pipeline.sAdd(storageKeys.setKey, [...validVideoIds]); }
+        if (validVideoIds.size > 0) { pipeline.sAdd(storageKeys.setKey, ...validVideoIds); }
         await pipeline.exec();
 
         // [ATOMIC CACHE REFRESH]
@@ -446,13 +449,14 @@ const v12_logic = {
                 const newChannelsToAdd = [...discoveredChannelIds].filter(id => !allExistingIds.has(id));
 
                 if (newChannelsToAdd.length > 0) {
-                    await redisClient.sAdd(V12_WHITELIST_PENDING_JP_KEY, newChannelsToAdd);
+                    // Use spread operator
+                    await redisClient.sAdd(V12_WHITELIST_PENDING_JP_KEY, ...newChannelsToAdd);
                     console.log(`[v16.8] 自動探索發現 ${newChannelsToAdd.length} 個新頻道，已加入待審核列表。`);
                 } else {
                     console.log('[v16.8] 自動探索完成，未發現新頻道。');
                 }
             }
-            await redisClient.set(v12_FOREIGN_META_LAST_SEARCH_KEY, Date.now());
+            await redisClient.set(v12_FOREIGN_META_LAST_SEARCH_KEY, String(Date.now()));
         } else {
             console.log('[v16.8] 距離上次搜尋未滿 60 分鐘，跳過關鍵字探索。');
         }
@@ -888,7 +892,7 @@ export default async function handler(request, response) {
                         await redisClient.hSet(`${v12_FOREIGN_VIDEO_HASH_PREFIX}${videoId}`, 'videoType', videoType);
                         await redisClient.sRem(V10_PENDING_CLASSIFICATION_SET_KEY, videoId);
                     }
-                    await logAdminAction(redisClient, 'classify_videos', { classifiedCount: videoIdsToClassify.length });
+
                     return response.status(200).json({ message: "分類成功。" });
                 } finally {
                     await redisClient.del(V10_CLASSIFICATION_LOCK_KEY);
@@ -923,10 +927,10 @@ export default async function handler(request, response) {
                         if (!authenticate()) return;
                         if (isForeign) {
                             await v12_logic.updateForeignClips(redisClient);
-                            await redisClient.set(v12_FOREIGN_META_LAST_UPDATED_KEY, Date.now());
+                            await redisClient.set(v12_FOREIGN_META_LAST_UPDATED_KEY, String(Date.now()));
                         } else {
                             await v12_logic.updateAndStoreYouTubeData(redisClient);
-                            await redisClient.set(v12_META_LAST_UPDATED_KEY, Date.now());
+                            await redisClient.set(v12_META_LAST_UPDATED_KEY, String(Date.now()));
                         }
                     } else {
                         const lastUpdateCN = await redisClient.get(v12_META_LAST_UPDATED_KEY);
@@ -940,7 +944,7 @@ export default async function handler(request, response) {
                                 console.log(`[v16.8] 觸發中文影片背景更新 (Stale-While-Revalidate)...`);
                                 v12_logic.updateAndStoreYouTubeData(redisClient)
                                     .then(async () => {
-                                        await redisClient.set(v12_META_LAST_UPDATED_KEY, Date.now());
+                                        await redisClient.set(v12_META_LAST_UPDATED_KEY, String(Date.now()));
                                         await redisClient.del(v12_UPDATE_LOCK_KEY);
                                     })
                                     .catch(async (e) => {
@@ -959,7 +963,7 @@ export default async function handler(request, response) {
                                 console.log(`[v16.8] 觸發日文影片背景更新 (Stale-While-Revalidate)...`);
                                 v12_logic.updateForeignClips(redisClient)
                                     .then(async () => {
-                                        await redisClient.set(v12_FOREIGN_META_LAST_UPDATED_KEY, Date.now());
+                                        await redisClient.set(v12_FOREIGN_META_LAST_UPDATED_KEY, String(Date.now()));
                                         await redisClient.del(v12_FOREIGN_UPDATE_LOCK_KEY);
                                     })
                                     .catch(async (e) => {
