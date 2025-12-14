@@ -934,12 +934,26 @@ export default async function handler(request, response) {
 
         if (path === '/api/classify-videos') {
             try {
-                const lockAcquired = await redisClient.set(V10_CLASSIFICATION_LOCK_KEY, 'locked', { NX: true, EX: 600 });
+                // [Optimization] Reduced lock time to 60s for rapid batch processing
+                const lockAcquired = await redisClient.set(V10_CLASSIFICATION_LOCK_KEY, 'locked', { NX: true, EX: 60 });
                 if (!lockAcquired) { return response.status(429).json({ message: "已有分類任務正在進行中。" }); }
                 try {
                     const videoIdsToClassify = await redisClient.sMembers(V10_PENDING_CLASSIFICATION_SET_KEY);
                     if (videoIdsToClassify.length === 0) { return response.status(200).json({ message: "沒有需要分類的影片。" }); }
+
+                    // [Optimization] Batch Processing Limits
+                    const BATCH_SIZE = 50;
+                    const TIME_LIMIT_MS = 8000; // 8 seconds safety limit for Vercel
+                    const startTime = Date.now();
+                    let processedCount = 0;
+
                     for (const videoId of videoIdsToClassify) {
+                        // Check limits
+                        if (processedCount >= BATCH_SIZE || (Date.now() - startTime) > TIME_LIMIT_MS) {
+                            console.log(`[Classify] Batch limit reached (${processedCount} videos). Stopping for now.`);
+                            break;
+                        }
+
                         const isShort = await checkIfShort(videoId);
                         const videoType = isShort ? 'short' : 'video';
                         // Keep V12 only to save space
@@ -947,9 +961,12 @@ export default async function handler(request, response) {
                         await redisClient.hSet(`${v12_VIDEO_HASH_PREFIX}${videoId}`, 'videoType', videoType);
                         await redisClient.hSet(`${v12_FOREIGN_VIDEO_HASH_PREFIX}${videoId}`, 'videoType', videoType);
                         await redisClient.sRem(V10_PENDING_CLASSIFICATION_SET_KEY, videoId);
+
+                        processedCount++;
                     }
 
-                    return response.status(200).json({ message: "分類成功。" });
+                    const remaining = videoIdsToClassify.length - processedCount;
+                    return response.status(200).json({ message: `分類批次完成。已處理: ${processedCount}，剩餘: ${remaining}。`, processedCount, remaining });
                 } finally {
                     await redisClient.del(V10_CLASSIFICATION_LOCK_KEY);
                 }
