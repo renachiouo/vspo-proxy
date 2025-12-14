@@ -958,6 +958,7 @@ export default async function handler(request, response) {
                         const videoType = isShort ? 'short' : 'video';
                         // Keep V12 only to save space
                         // await redisClient.hSet(`${V10_VIDEO_HASH_PREFIX}${videoId}`, 'videoType', videoType); 
+                        if (processedCount < 3) console.log(`[Classify Debug] Writing videoType=${videoType} for ${videoId} to ${v12_FOREIGN_VIDEO_HASH_PREFIX}${videoId}`);
                         await redisClient.hSet(`${v12_VIDEO_HASH_PREFIX}${videoId}`, 'videoType', videoType);
                         await redisClient.hSet(`${v12_FOREIGN_VIDEO_HASH_PREFIX}${videoId}`, 'videoType', videoType);
                         await redisClient.sRem(V10_PENDING_CLASSIFICATION_SET_KEY, videoId);
