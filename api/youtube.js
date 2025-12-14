@@ -998,6 +998,27 @@ export default async function handler(request, response) {
             }
         }
 
+        // [DEBUG ENDPOINT] Inspect DB Key
+        if (path === '/api/debug-key') {
+            const id = searchParams.get('id');
+            if (!id) return response.status(400).json({ error: 'Missing id' });
+            try {
+                const cnData = await redisClient.hGetAll(`${v12_VIDEO_HASH_PREFIX}${id}`);
+                const jpData = await redisClient.hGetAll(`${v12_FOREIGN_VIDEO_HASH_PREFIX}${id}`);
+                const cnPending = await redisClient.sIsMember(V10_PENDING_CLASSIFICATION_SET_KEY, id);
+                return response.status(200).json({
+                    id,
+                    cnKey: `${v12_VIDEO_HASH_PREFIX}${id}`,
+                    jpKey: `${v12_FOREIGN_VIDEO_HASH_PREFIX}${id}`,
+                    cnData,
+                    jpData,
+                    inPendingSet: cnPending
+                });
+            } catch (e) {
+                return response.status(500).json({ error: e.message });
+            }
+        }
+
         // --- START: 修改 (V12 版本檢查) ---
         // 允許版本 >= 11.0 的客戶端請求 (V11 客戶端將使用 V12 邏輯服務)
         if (clientVersion && parseFloat(clientVersion.replace('V', '')) >= 11.0) {
