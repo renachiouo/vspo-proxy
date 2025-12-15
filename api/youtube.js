@@ -298,6 +298,15 @@ async function handleAdminAction(req, res, db, body) {
             await logAdminAction(db, 'remove_video_blacklist', { videoId });
             return res.json({ success: true });
 
+        // Fix for 400 Bad Request
+        case 'get_video_blacklist':
+            const doc = await db.collection('lists').findOne({ _id: 'video_blacklist' });
+            return res.json({ success: true, blacklist: doc?.items || [] });
+
+        case 'get_admin_logs':
+            const logs = await db.collection('admin_logs').find().sort({ timestamp: -1 }).limit(100).toArray();
+            return res.status(200).json({ success: true, logs });
+
         // Mock Backfill
         case 'backfill':
             return res.json({ success: true, message: 'Backfill triggered (Mock)' });
@@ -339,6 +348,10 @@ export default async function handler(req, res) {
         const forceRefresh = searchParams.get('force_refresh') === 'true';
         const noIncrement = searchParams.get('no_increment') === 'true';
 
+        // Manual override for visitor count if requested (for restoration)
+        // Hidden feature to restore count: POST with action='set_visitor_count' (admin only)
+        // Implemented in handleAdminAction if needed, but here we just get.
+
         const visits = noIncrement ? await getVisitorCount(db) : await incrementAndGetVisitorCount(db);
         const metaId = isForeign ? 'last_update_jp' : 'last_update_cn';
         let didUpdate = false;
@@ -375,7 +388,15 @@ export default async function handler(req, res) {
         }
 
         const query = isForeign ? { type: 'foreign' } : { type: 'main' };
-        const videos = await db.collection('videos').find(query).sort({ publishedAt: -1 }).limit(1000).toArray();
+        const rawVideos = await db.collection('videos').find(query).sort({ publishedAt: -1 }).limit(1000).toArray();
+        // Fix for frontend: Ensure videoType and channel details are present
+        const videos = rawVideos.map(v => ({
+            ...v,
+            videoType: v.type, // Map 'type' to 'videoType' for frontend
+            channelTitle: v.channelTitle || '', // Fallback
+            channelAvatarUrl: v.channelAvatarUrl || '' // Fallback
+        }));
+
         const ann = await db.collection('metadata').findOne({ _id: 'announcement' });
 
         return res.status(200).json({
