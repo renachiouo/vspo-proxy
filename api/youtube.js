@@ -450,6 +450,39 @@ export default async function handler(req, res) {
         });
     }
 
+    // 6. Get Related Clips (Missing Route)
+    if (pathname === '/api/get-related-clips') {
+        const id = searchParams.get('id');
+        if (!id) return res.status(400).json({ error: 'Missing id' });
+
+        // Find the original video to get its stream info
+        const originalVideo = await db.collection('videos').findOne({ _id: id });
+        if (!originalVideo) return res.status(404).json({ error: 'Video not found' });
+
+        const osi = originalVideo.originalStreamInfo;
+        // If no original stream info, try searching by title title text match (fallback) 
+        // But mainly we rely on osi
+        let query = {};
+        if (osi) {
+            query = { "originalStreamInfo": { $regex: new RegExp(osi.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i') }, _id: { $ne: id } };
+        } else {
+            // Fallback: simple title word match? No, arguably returning empty is safer to avoid garbage.
+            return res.json([]);
+        }
+
+        const related = await db.collection('videos').find(query).sort({ publishedAt: -1 }).limit(20).toArray();
+
+        return res.status(200).json(related.map(v => ({
+            id: v._id,
+            title: v.title,
+            thumbnail: v.thumbnail,
+            channelTitle: v.channelTitle || '',
+            publishedAt: v.publishedAt,
+            videoType: v.type, // Ensure videoType is returned
+            source: v.source
+        })));
+    }
+
     // 6. Admin Manage Route
     if (pathname === '/api/admin/manage') {
         if (req.method !== 'POST') return res.status(405).json({ error: 'Method Not Allowed' });
