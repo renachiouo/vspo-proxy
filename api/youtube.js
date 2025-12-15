@@ -523,23 +523,41 @@ export default async function handler(req, res) {
         const id = searchParams.get('id');
         if (!id) return res.status(400).json({ error: 'Missing id' });
 
+        // Debug logging
+        console.log(`[RelatedClips] Request ID: ${id}`);
+
         // Find the original video to get its stream info
         const originalVideo = await db.collection('videos').findOne({ _id: id });
-        if (!originalVideo) return res.status(404).json({ error: 'Video not found' });
+        if (!originalVideo) {
+            console.log(`[RelatedClips] Video not found: ${id}`);
+            return res.status(404).json({ error: 'Video not found' });
+        }
 
         const osi = originalVideo.originalStreamInfo;
-        // If no original stream info, try searching by title title text match (fallback) 
-        // But mainly we rely on osi
+        console.log(`[RelatedClips] Found OSI:`, JSON.stringify(osi));
+
         let query = {};
+        let debugQuery = "none";
         if (osi && osi.id) {
             // Match by original stream ID
             query = { "originalStreamInfo.id": osi.id, _id: { $ne: id } };
+            debugQuery = JSON.stringify(query);
+            console.log(`[RelatedClips] Query:`, debugQuery);
         } else {
-            // Fallback: simple title word match? No, arguably returning empty is safer to avoid garbage.
+            console.log(`[RelatedClips] No OSI ID for ${id}`);
             return res.json([]);
         }
 
         const related = await db.collection('videos').find(query).sort({ publishedAt: -1 }).limit(20).toArray();
+        console.log(`[RelatedClips] Found ${related.length} items`);
+
+        // Set Debug Header
+        res.setHeader('X-Vspo-Debug', JSON.stringify({
+            reqId: id,
+            osi: osi,
+            query: query,
+            count: related.length
+        }));
 
         return res.status(200).json(related.map(v => ({
             id: v._id,
