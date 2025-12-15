@@ -297,15 +297,34 @@ const v12_logic = {
         // JP Keyword Strategy: 60 mins. Search -> Pending List.
         console.log('[Mongo] JP Keyword Update...');
         const retentionDate = new Date(); retentionDate.setDate(retentionDate.getDate() - 7); // Search recent 7 days
-        const blJp = await db.collection('lists').findOne({ _id: 'blacklist_jp' });
-        const blacklist = blJp?.items || [];
+
+        // Fetch ALL lists to ensure mutual exclusion
+        const [wlCn, blCn, wlJp, blJp, pendJp] = await Promise.all([
+            db.collection('lists').findOne({ _id: 'whitelist_cn' }),
+            db.collection('lists').findOne({ _id: 'blacklist_cn' }),
+            db.collection('lists').findOne({ _id: 'whitelist_jp' }),
+            db.collection('lists').findOne({ _id: 'blacklist_jp' }),
+            db.collection('lists').findOne({ _id: 'pending_jp' })
+        ]);
+
+        const allExistingChannels = new Set([
+            ...(wlCn?.items || []), ...(blCn?.items || []),
+            ...(wlJp?.items || []), ...(blJp?.items || []),
+            ...(pendJp?.items || [])
+        ]);
 
         const sResults = await Promise.all(FOREIGN_SEARCH_KEYWORDS.map(q => fetchYouTube('search', { part: 'snippet', type: 'video', maxResults: 50, q, publishedAfter: retentionDate.toISOString() })));
         const videoIds = new Set();
-        sResults.forEach(r => r.items?.forEach(i => { if (!blacklist.includes(i.snippet.channelId)) videoIds.add(i.id.videoId); }));
+        sResults.forEach(r => r.items?.forEach(i => {
+            const cid = i.snippet.channelId;
+            // Strict Exclusion: Check against ALL lists
+            if (!allExistingChannels.has(cid)) {
+                videoIds.add(i.id.videoId);
+            }
+        }));
 
         // Store channels to 'pending_jp' list, NOT videos to DB
-        await this.processAndStoreVideos([...videoIds], db, 'foreign', { retentionDate, blacklist, targetList: 'pending_jp' });
+        await this.processAndStoreVideos([...videoIds], db, 'foreign', { retentionDate, blacklist: [], targetList: 'pending_jp' });
     }
 };
 

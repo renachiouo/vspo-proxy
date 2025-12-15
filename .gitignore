@@ -31,3 +31,4 @@ check_osi_coverage.js
 check_osi_coverage_v2.js
 debug_related_query.js
 debug_OM8.js
+cleanup_pending.js
