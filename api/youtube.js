@@ -308,6 +308,9 @@ const v12_logic = {
             return;
         }
 
+        // [Optimistic Lock] Set key IMMEDIATELY to prevent repeat runs if this run times out
+        await redisClient.set(V12_META_LAST_CLEANUP_KEY, Date.now());
+
         console.log('[Cleanup] 開始執行每日過期影片清理 (Retention: 30 Days)...');
         const thirtyDaysAgo = new Date();
         thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
@@ -339,8 +342,6 @@ const v12_logic = {
         } else {
             console.log(`[Cleanup] 沒有發現過期影片。`);
         }
-
-        await redisClient.set(V12_META_LAST_CLEANUP_KEY, Date.now());
     },
     async updateAndStoreYouTubeData(redisClient) {
         console.log(`[v16.8] 開始執行中文影片常規更新程序...`);
