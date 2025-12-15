@@ -2,17 +2,17 @@
 import { MongoClient } from 'mongodb';
 
 // --- Configuration ---
-const SCRIPT_VERSION = '17.1-Mongo-Full';
-const UPDATE_INTERVAL_SECONDS = 1200;
-const FOREIGN_UPDATE_INTERVAL_SECONDS = 1200;
-const FOREIGN_SEARCH_INTERVAL_SECONDS = 3600;
+const SCRIPT_VERSION = '17.2-Mongo-Refined';
+const UPDATE_INTERVAL_SECONDS = 1200; // CN: 20 mins
+const FOREIGN_UPDATE_INTERVAL_SECONDS = 1200; // JP Whitelist: 20 mins
+const FOREIGN_SEARCH_INTERVAL_SECONDS = 3600; // JP Keywords: 60 mins
 const MONGODB_URI = process.env.MONGODB_URI || 'mongodb+srv://magirenaouo_db_user:LAS6RKXKK4AUv3UW@vspoproxy.pdjcq2p.mongodb.net/?appName=vspoproxy';
 const DB_NAME = 'vspoproxy';
 
 // --- Constants ---
 const SPECIAL_KEYWORDS = ["ぶいすぽっ！許諾番号"];
 const FOREIGN_SEARCH_KEYWORDS = ["ぶいすぽ 切り抜き"];
-const FOREIGN_SPECIAL_KEYWORDS = ["ぶいすぽっ！許諾番号"];
+// Removed FOREIGN_SPECIAL_KEYWORDS as requested, using SPECIAL_KEYWORDS universally
 const SEARCH_KEYWORDS = ["VSPO中文", "VSPO中文精華", "VSPO精華", "VSPO中文剪輯", "VSPO剪輯"];
 const KEYWORD_BLACKLIST = ["MMD"];
 const VSPO_MEMBER_KEYWORDS = [
@@ -59,22 +59,25 @@ function parseISODuration(duration) {
     return minutes;
 }
 
-const isVideoValid = (videoDetail, keywords, useDoubleKeywordCheck = false) => {
+const isVideoValid = (videoDetail, keywords = SPECIAL_KEYWORDS) => {
     if (!videoDetail || !videoDetail.snippet) return false;
-    const searchText = `${videoDetail.snippet.title} ${videoDetail.snippet.description}`.toLowerCase();
+    const searchText = `${videoDetail.snippet.title} ${videoDetail.snippet.description} `.toLowerCase();
+
+    // 1. Check Mandatory Keywords (e.g. License)
     const hasLicense = keywords.some(keyword => searchText.includes(keyword.toLowerCase()));
     if (!hasLicense) return false;
-    if (useDoubleKeywordCheck) {
-        const hasMemberKeyword = VSPO_MEMBER_KEYWORDS.some(keyword => searchText.includes(keyword.toLowerCase()));
-        if (!hasMemberKeyword) return false;
-    }
+
+    // 2. Check Member Keywords (Mandatory Double Check)
+    const hasMemberKeyword = VSPO_MEMBER_KEYWORDS.some(keyword => searchText.includes(keyword.toLowerCase()));
+    if (!hasMemberKeyword) return false;
+
     if (videoDetail.snippet.liveBroadcastContent === 'live' || videoDetail.snippet.liveBroadcastContent === 'upcoming') return false;
     return true;
 };
 
 const containsBlacklistedKeyword = (videoDetail, blacklist) => {
     if (!videoDetail || !videoDetail.snippet) return false;
-    const searchText = `${videoDetail.snippet.title} ${videoDetail.snippet.description}`.toLowerCase();
+    const searchText = `${videoDetail.snippet.title} ${videoDetail.snippet.description} `.toLowerCase();
     return blacklist.some(keyword => searchText.includes(keyword.toLowerCase()));
 };
 
@@ -87,7 +90,7 @@ const logAdminAction = async (db, action, details) => {
 async function getVisitorCount(db) {
     const total = await db.collection('analytics').findOne({ _id: 'total_visits' });
     const todayStr = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Taipei' }).format(new Date());
-    const today = await db.collection('analytics').findOne({ _id: `visits_${todayStr}` });
+    const today = await db.collection('analytics').findOne({ _id: `visits_${todayStr} ` });
     return { totalVisits: total?.count || 0, todayVisits: today?.count || 0 };
 }
 
@@ -97,7 +100,7 @@ async function incrementAndGetVisitorCount(db) {
         { _id: 'total_visits' }, { $inc: { count: 1 }, $set: { lastUpdated: new Date() } }, { upsert: true, returnDocument: 'after' }
     );
     const today = await db.collection('analytics').findOneAndUpdate(
-        { _id: `visits_${todayStr}` }, { $inc: { count: 1 }, $set: { date: todayStr, type: 'daily_visit' } }, { upsert: true, returnDocument: 'after' }
+        { _id: `visits_${todayStr} ` }, { $inc: { count: 1 }, $set: { date: todayStr, type: 'daily_visit' } }, { upsert: true, returnDocument: 'after' }
     );
     return { totalVisits: total?.count || 0, todayVisits: today?.count || 0 };
 }
@@ -128,7 +131,9 @@ function parseOriginalStreamInfo(description) {
 // --- Logic ---
 const v12_logic = {
     async processAndStoreVideos(videoIds, db, type, options = {}) {
-        const { retentionDate, validKeywords, blacklist = [], useDoubleKeywordCheck = false } = options;
+        const { retentionDate, blacklist = [], targetList = null } = options;
+        // targetList: If provided (e.g., 'pending_jp'), IDs go there instead of videos collection (for JP keywords)
+
         if (videoIds.length === 0) return { validVideoIds: new Set() };
 
         const videoDetailsMap = new Map();
@@ -150,6 +155,7 @@ const v12_logic = {
         const bulkOps = [];
         const vbDoc = await db.collection('lists').findOne({ _id: 'video_blacklist' });
         const videoBlacklist = vbDoc?.items || [];
+        const newPendingChannels = new Set();
 
         for (const videoId of videoIds) {
             const detail = videoDetailsMap.get(videoId);
@@ -159,14 +165,21 @@ const v12_logic = {
             if (blacklist.includes(channelId)) continue;
             if (containsBlacklistedKeyword(detail, KEYWORD_BLACKLIST)) continue;
             if (new Date(detail.snippet.publishedAt) < retentionDate) continue;
-            if (!isVideoValid(detail, validKeywords, useDoubleKeywordCheck)) continue;
+            // Strict Double Check is now built into isVideoValid
+            if (!isVideoValid(detail)) continue;
 
             validVideoIds.add(videoId);
+
+            // Special Case: JS Keyword Search -> Pending List
+            if (targetList) {
+                newPendingChannels.add(channelId);
+                continue; // Don't store video yet
+            }
+
             const channelDetails = channelStatsMap.get(channelId);
             const title = detail.snippet.title;
             const description = detail.snippet.description;
             const durationMinutes = parseISODuration(detail.contentDetails?.duration);
-
             const doc = {
                 _id: videoId, id: videoId, title,
                 searchableText: `${title} ${description}`.toLowerCase(),
@@ -178,31 +191,43 @@ const v12_logic = {
                 subscriberCount: parseInt(channelDetails?.statistics?.subscriberCount || 0),
                 duration: detail.contentDetails?.duration || '',
                 durationMinutes,
-                source: type, // Store 'main' or 'foreign' as source
-                type: durationMinutes <= 1.05 ? 'short' : 'video' // Correct video type
+                source: type,
+                type: durationMinutes <= 1.05 ? 'short' : 'video'
             };
             const osi = parseOriginalStreamInfo(description);
             if (osi) doc.originalStreamInfo = osi;
 
             bulkOps.push({ updateOne: { filter: { _id: videoId }, update: { $set: doc }, upsert: true } });
         }
-        if (bulkOps.length > 0) await db.collection('videos').bulkWrite(bulkOps);
+
+        if (targetList && newPendingChannels.size > 0) {
+            await db.collection('lists').updateOne({ _id: targetList }, { $addToSet: { items: { $each: [...newPendingChannels] } } }, { upsert: true });
+        } else if (bulkOps.length > 0) {
+            await db.collection('videos').bulkWrite(bulkOps);
+        }
         return { validVideoIds };
     },
 
     async cleanupExpiredVideos(db) {
         const last = await db.collection('metadata').findOne({ _id: 'last_cleanup' });
-        if (last && (Date.now() - last.timestamp < 86400000)) return;
+        if (last && (Date.now() - last.timestamp < 86400000)) return; // Run once daily
         await db.collection('metadata').updateOne({ _id: 'last_cleanup' }, { $set: { timestamp: Date.now() } }, { upsert: true });
 
+        // CN: 30 Days
         const thirtyDaysAgo = new Date(); thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
-        const res = await db.collection('videos').deleteMany({ publishedAt: { $lt: thirtyDaysAgo } });
-        console.log(`[Cleanup] Deleted ${res.deletedCount} videos.`);
+        const resCN = await db.collection('videos').deleteMany({ source: 'main', publishedAt: { $lt: thirtyDaysAgo } });
+
+        // JP: 90 Days
+        const ninetyDaysAgo = new Date(); ninetyDaysAgo.setDate(ninetyDaysAgo.getDate() - 90);
+        const resJP = await db.collection('videos').deleteMany({ source: 'foreign', publishedAt: { $lt: ninetyDaysAgo } });
+
+        console.log(`[Cleanup] Deleted ${resCN.deletedCount} CN videos and ${resJP.deletedCount} JP videos.`);
     },
 
     async updateAndStoreYouTubeData(db) {
+        // CN Strategy: 20 mins. Keyword + Whitelist. New channels -> Auto Whitelist.
         console.log('[Mongo] CN Update...');
-        const sevenDaysAgo = new Date(); sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+        const retentionDate = new Date(); retentionDate.setDate(retentionDate.getDate() - 30); // 30 days retention scan
         const [wlCn, blCn, wlJp] = await Promise.all([
             db.collection('lists').findOne({ _id: 'whitelist_cn' }), db.collection('lists').findOne({ _id: 'blacklist_cn' }), db.collection('lists').findOne({ _id: 'whitelist_jp' })
         ]);
@@ -211,49 +236,76 @@ const v12_logic = {
         const jpWhitelist = wlJp?.items || [];
         const newVideoCandidates = new Set();
 
+        // 1. Whitelist Scan
         if (whitelist.length > 0) {
             for (const batch of batchArray(whitelist, 50)) {
                 try {
                     const res = await fetchYouTube('channels', { part: 'contentDetails', id: batch.join(',') });
                     const uploads = res.items?.map(i => i.contentDetails?.relatedPlaylists?.uploads).filter(Boolean) || [];
                     const pResults = await Promise.all(uploads.map(pid => fetchYouTube('playlistItems', { part: 'snippet', playlistId: pid, maxResults: 10 })));
-                    pResults.forEach(r => r.items?.forEach(i => { if (new Date(i.snippet.publishedAt) > sevenDaysAgo) newVideoCandidates.add(i.snippet.resourceId.videoId); }));
+                    pResults.forEach(r => r.items?.forEach(i => { if (new Date(i.snippet.publishedAt) > retentionDate) newVideoCandidates.add(i.snippet.resourceId.videoId); }));
                 } catch { }
             }
         }
-        const sResults = await Promise.all(SEARCH_KEYWORDS.map(q => fetchYouTube('search', { part: 'snippet', type: 'video', maxResults: 50, q, publishedAfter: sevenDaysAgo.toISOString() })));
+
+        // 2. Keyword Search
+        const sResults = await Promise.all(SEARCH_KEYWORDS.map(q => fetchYouTube('search', { part: 'snippet', type: 'video', maxResults: 50, q, publishedAfter: retentionDate.toISOString() })));
         const searchResultIds = new Set();
         sResults.forEach(r => r.items?.forEach(i => { if (!blacklist.includes(i.snippet.channelId)) { newVideoCandidates.add(i.id.videoId); searchResultIds.add(i.id.videoId); } }));
 
+        // 3. Auto-add new channels from search results
         if (searchResultIds.size > 0) {
             const newChannels = new Set();
             for (const batch of batchArray([...searchResultIds], 50)) {
                 const res = await fetchYouTube('videos', { part: 'snippet', id: batch.join(',') });
                 res.items?.forEach(v => {
                     const cid = v.snippet.channelId;
-                    if (!whitelist.includes(cid) && !jpWhitelist.includes(cid) && (v.snippet.description || '').includes('ぶいすぽ')) newChannels.add(cid);
+                    // Strict Check: Only add channel if the video is fully valid (License + Member Name)
+                    if (!whitelist.includes(cid) && !jpWhitelist.includes(cid) && isVideoValid(v, SPECIAL_KEYWORDS, true)) {
+                        newChannels.add(cid);
+                    }
                 });
             }
             if (newChannels.size > 0) await db.collection('lists').updateOne({ _id: 'whitelist_cn' }, { $addToSet: { items: { $each: [...newChannels] } } }, { upsert: true });
         }
-        await this.processAndStoreVideos([...newVideoCandidates], db, 'main', { retentionDate: sevenDaysAgo, validKeywords: SPECIAL_KEYWORDS, blacklist, useDoubleKeywordCheck: true });
+
+        // Store
+        await this.processAndStoreVideos([...newVideoCandidates], db, 'main', { retentionDate, blacklist });
         await this.cleanupExpiredVideos(db);
     },
 
     async updateForeignClips(db) {
-        console.log('[Mongo] JP Update...');
-        const threeDaysAgo = new Date(); threeDaysAgo.setDate(threeDaysAgo.getDate() - 3);
+        // JP Strategy: 20 mins Whitelist Only. 
+        console.log('[Mongo] JP Whitelist Update...');
+        const retentionDate = new Date(); retentionDate.setDate(retentionDate.getDate() - 90); // 90 days
         const [wlJp, blJp] = await Promise.all([db.collection('lists').findOne({ _id: 'whitelist_jp' }), db.collection('lists').findOne({ _id: 'blacklist_jp' })]);
         const whitelist = wlJp?.items || [];
         if (whitelist.length === 0) return;
+
         const newVideoCandidates = new Set();
         for (const batch of batchArray(whitelist, 50)) {
             const res = await fetchYouTube('channels', { part: 'contentDetails', id: batch.join(',') });
             const uploads = res.items?.map(i => i.contentDetails?.relatedPlaylists?.uploads).filter(Boolean) || [];
             const pResults = await Promise.all(uploads.map(pid => fetchYouTube('playlistItems', { part: 'snippet', playlistId: pid, maxResults: 10 })));
-            pResults.forEach(r => r.items?.forEach(i => { if (new Date(i.snippet.publishedAt) > threeDaysAgo) newVideoCandidates.add(i.snippet.resourceId.videoId); }));
+            pResults.forEach(r => r.items?.forEach(i => { if (new Date(i.snippet.publishedAt) > retentionDate) newVideoCandidates.add(i.snippet.resourceId.videoId); }));
         }
-        await this.processAndStoreVideos([...newVideoCandidates], db, 'foreign', { retentionDate: threeDaysAgo, validKeywords: FOREIGN_SPECIAL_KEYWORDS, blacklist: blJp?.items || [], useDoubleKeywordCheck: false });
+
+        await this.processAndStoreVideos([...newVideoCandidates], db, 'foreign', { retentionDate, blacklist: blJp?.items || [] });
+    },
+
+    async updateForeignClipsKeywords(db) {
+        // JP Keyword Strategy: 60 mins. Search -> Pending List.
+        console.log('[Mongo] JP Keyword Update...');
+        const retentionDate = new Date(); retentionDate.setDate(retentionDate.getDate() - 7); // Search recent 7 days
+        const blJp = await db.collection('lists').findOne({ _id: 'blacklist_jp' });
+        const blacklist = blJp?.items || [];
+
+        const sResults = await Promise.all(FOREIGN_SEARCH_KEYWORDS.map(q => fetchYouTube('search', { part: 'snippet', type: 'video', maxResults: 50, q, publishedAfter: retentionDate.toISOString() })));
+        const videoIds = new Set();
+        sResults.forEach(r => r.items?.forEach(i => { if (!blacklist.includes(i.snippet.channelId)) videoIds.add(i.id.videoId); }));
+
+        // Store channels to 'pending_jp' list, NOT videos to DB
+        await this.processAndStoreVideos([...videoIds], db, 'foreign', { retentionDate, blacklist, targetList: 'pending_jp' });
     }
 };
 
@@ -272,14 +324,14 @@ async function handleAdminAction(req, res, db, body) {
     switch (action) {
         case 'add':
             if (!channelId || !listType) return res.status(400).json({ error: 'Missing params' });
-            const map = { cn: 'whitelist_cn', jp: 'whitelist_jp', blacklist_cn: 'blacklist_cn', blacklist_jp: 'blacklist_jp' };
+            const map = { cn: 'whitelist_cn', jp: 'whitelist_jp', blacklist_cn: 'blacklist_cn', blacklist_jp: 'blacklist_jp', pending_jp: 'pending_jp' };
             if (map[listType]) await db.collection('lists').updateOne({ _id: map[listType] }, { $addToSet: { items: channelId } }, { upsert: true });
             await logAdminAction(db, 'add', { listType, channelId });
             return res.json({ success: true });
 
         case 'delete':
             if (!channelId || !listType) return res.status(400).json({ error: 'Missing params' });
-            const mapDel = { cn: 'whitelist_cn', jp: 'whitelist_jp', blacklist_cn: 'blacklist_cn', blacklist_jp: 'blacklist_jp' };
+            const mapDel = { cn: 'whitelist_cn', jp: 'whitelist_jp', blacklist_cn: 'blacklist_cn', blacklist_jp: 'blacklist_jp', pending_jp: 'pending_jp' };
             if (mapDel[listType]) await db.collection('lists').updateOne({ _id: mapDel[listType] }, { $pull: { items: channelId } });
             await logAdminAction(db, 'delete', { listType, channelId });
             return res.json({ success: true });
@@ -331,7 +383,7 @@ export default async function handler(req, res) {
     if (pathname === '/api/leaderboard') {
         const d = new Date(); d.setDate(d.getDate() - 30);
         const lb = await db.collection('videos').aggregate([
-            { $match: { publishedAt: { $gte: d } } },
+            { $match: { source: 'main', publishedAt: { $gte: d } } }, // Only CN videos (source: main)
             { $group: { _id: "$channelId", channelTitle: { $first: "$channelTitle" }, channelAvatarUrl: { $first: "$channelAvatarUrl" }, totalMinutes: { $sum: "$durationMinutes" }, videoCount: { $sum: 1 } } },
             { $sort: { totalMinutes: -1 } }, { $limit: 20 }
         ]).toArray();
@@ -359,12 +411,16 @@ export default async function handler(req, res) {
 
         if (forceRefresh) {
             if (!authenticate()) return res.status(401).json({ error: 'Unauthorized' });
-            if (isForeign) await v12_logic.updateForeignClips(db);
+            if (isForeign) {
+                await v12_logic.updateForeignClips(db);
+                await v12_logic.updateForeignClipsKeywords(db); // Force refresh does both
+            }
             else await v12_logic.updateAndStoreYouTubeData(db);
             await db.collection('metadata').updateOne({ _id: metaId }, { $set: { timestamp: Date.now() } }, { upsert: true });
             didUpdate = true;
         } else {
             const meta = await db.collection('metadata').findOne({ _id: metaId });
+            // Standard Interval check (20 mins)
             if (Date.now() - (meta?.timestamp || 0) > (isForeign ? FOREIGN_UPDATE_INTERVAL_SECONDS : UPDATE_INTERVAL_SECONDS) * 1000) {
                 const lockId = metaId + '_lock';
                 const lock = await db.collection('metadata').findOne({ _id: lockId });
@@ -372,7 +428,15 @@ export default async function handler(req, res) {
                     await db.collection('metadata').updateOne({ _id: lockId }, { $set: { timestamp: Date.now() } }, { upsert: true });
                     (async () => {
                         try {
-                            if (isForeign) await v12_logic.updateForeignClips(db);
+                            if (isForeign) {
+                                await v12_logic.updateForeignClips(db);
+                                // Check if we need to run Keyword Search (60 mins)
+                                const kwMeta = await db.collection('metadata').findOne({ _id: 'last_jp_keyword_search' });
+                                if (!kwMeta || Date.now() - kwMeta.timestamp > FOREIGN_SEARCH_INTERVAL_SECONDS * 1000) {
+                                    await v12_logic.updateForeignClipsKeywords(db);
+                                    await db.collection('metadata').updateOne({ _id: 'last_jp_keyword_search' }, { $set: { timestamp: Date.now() } }, { upsert: true });
+                                }
+                            }
                             else await v12_logic.updateAndStoreYouTubeData(db);
                             await db.collection('metadata').updateOne({ _id: metaId }, { $set: { timestamp: Date.now() } }, { upsert: true });
                         } catch (e) { console.error('BG Update:', e); }
