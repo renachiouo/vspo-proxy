@@ -394,12 +394,13 @@ export default async function handler(req, res) {
         }));
 
         const ann = await db.collection('metadata').findOne({ _id: 'announcement' });
+        const updateMeta = await db.collection('metadata').findOne({ _id: metaId });
 
         return res.status(200).json({
             videos,
             totalVisits: visits.totalVisits || 0,
             todayVisits: visits.todayVisits || 0,
-            timestamp: Date.now(),
+            timestamp: updateMeta?.timestamp || Date.now(), // Use DB timestamp
             announcement: ann ? { content: ann.content, type: ann.type, active: ann.active === "true" } : null,
             meta: { didUpdate, timestamp: Date.now() }
         });
@@ -436,7 +437,7 @@ export default async function handler(req, res) {
             return ids.map(id => ({
                 id,
                 name: infoMap.get(id)?.name || 'Unknown Channel',
-                avatar: infoMap.get(id)?.avatar || 'https://via.placeholder.com/150'
+                avatar: infoMap.get(id)?.avatar || 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxNTAiIGhlaWdodD0iMTUwIj48cmVjdCB3aWR0aD0iMTUwIiBoZWlnaHQ9IjE1MCIgZmlsbD0iIzMzMyIvPjwvc3ZnPg=='
             }));
         };
 
