@@ -27,6 +27,7 @@ const v12_FOREIGN_META_LAST_SEARCH_KEY = `${v12_KEY_PREFIX}meta:foreign_last_sea
 const v12_UPDATE_LOCK_KEY = `${v12_KEY_PREFIX}meta:update_lock`;
 const v12_FOREIGN_UPDATE_LOCK_KEY = `${v12_KEY_PREFIX}meta:foreign_update_lock`;
 const v12_STREAM_INDEX_PREFIX = `${v12_KEY_PREFIX}index:`;
+const V12_META_LAST_CLEANUP_KEY = `${v12_KEY_PREFIX}meta:last_cleanup`;
 
 // 舊版 V10 分類 Key (保留以防萬一，或可考慮移除)
 const V10_PENDING_CLASSIFICATION_SET_KEY = `vspo-db:v2:pending_classification`;
@@ -291,13 +292,59 @@ const v12_logic = {
         }
 
         await pipeline.exec();
-        const allIdsInDB = await redisClient.sMembers(storageKeys.setKey);
-        const idsToDelete = allIdsInDB.filter(id => !validVideoIds.has(id));
+        await pipeline.exec();
+
+        // [Preservation Fix] Do NOT delete videos absent from this batch.
+        // Since we reduced the window to 7 days, we must NOT delete the 8-30 day videos in the DB.
+        // We simply stop returning 'idsToDelete' so existing data persists.
+        const idsToDelete = [];
         return { validVideoIds, idsToDelete };
+    },
+    async cleanupExpiredVideos(redisClient, storageKeys) {
+        // [QUOTA OPTIMIZATION] Run cleanup only once every 24 hours
+        const lastCleanup = await redisClient.get(V12_META_LAST_CLEANUP_KEY);
+        if (lastCleanup && (Date.now() - parseInt(lastCleanup, 10) < 86400000)) {
+            console.log('[Cleanup] 距離上次清理未滿 24 小時，跳過。');
+            return;
+        }
+
+        console.log('[Cleanup] 開始執行每日過期影片清理 (Retention: 30 Days)...');
+        const thirtyDaysAgo = new Date();
+        thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+
+        const allIds = await redisClient.sMembers(storageKeys.setKey);
+        const expiredIds = [];
+
+        // Check publishedAt for all videos
+        const batches = batchArray(allIds, 100);
+        for (const batch of batches) {
+            const pipeline = redisClient.multi();
+            batch.forEach(id => pipeline.hGet(`${storageKeys.hashPrefix}${id}`, 'publishedAt'));
+            const results = await pipeline.exec();
+
+            results.forEach((publishedAt, index) => {
+                if (publishedAt && new Date(publishedAt) < thirtyDaysAgo) {
+                    expiredIds.push(batch[index]);
+                }
+            });
+        }
+
+        if (expiredIds.length > 0) {
+            console.log(`[Cleanup] 發現 ${expiredIds.length} 部超過 30 天的過期影片，準備刪除。`);
+            const pipeline = redisClient.multi();
+            pipeline.sRem(storageKeys.setKey, expiredIds);
+            expiredIds.forEach(id => pipeline.del(`${storageKeys.hashPrefix}${id}`));
+            await pipeline.exec();
+            console.log(`[Cleanup] 刪除完成。`);
+        } else {
+            console.log(`[Cleanup] 沒有發現過期影片。`);
+        }
+
+        await redisClient.set(V12_META_LAST_CLEANUP_KEY, Date.now());
     },
     async updateAndStoreYouTubeData(redisClient) {
         console.log(`[v16.8] 開始執行中文影片常規更新程序...`);
-        const oneMonthAgo = new Date(); oneMonthAgo.setMonth(oneMonthAgo.getMonth() - 1); const publishedAfter = oneMonthAgo.toISOString();
+        const sevenDaysAgo = new Date(); sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7); const publishedAfter = sevenDaysAgo.toISOString();
 
         // [MUTUAL EXCLUSION] Fetch JP Whitelist as well
         const [currentWhitelist, blacklist, jpWhitelist] = await Promise.all([
@@ -322,7 +369,7 @@ const v12_logic = {
             }
             const playlistItemsPromises = uploadPlaylistIds.map(playlistId => fetchYouTube('playlistItems', { part: 'snippet', playlistId, maxResults: 50 }));
             const playlistItemsResults = await Promise.all(playlistItemsPromises);
-            for (const result of playlistItemsResults) { result.items?.forEach(item => { if (new Date(item.snippet.publishedAt) > oneMonthAgo) { newVideoCandidates.add(item.snippet.resourceId.videoId); } }); }
+            for (const result of playlistItemsResults) { result.items?.forEach(item => { if (new Date(item.snippet.publishedAt) > sevenDaysAgo) { newVideoCandidates.add(item.snippet.resourceId.videoId); } }); }
         }
 
         const searchPromises = SEARCH_KEYWORDS.map(q => fetchYouTube('search', { part: 'snippet', type: 'video', maxResults: 50, q, publishedAfter }));
@@ -351,19 +398,28 @@ const v12_logic = {
 
         const storageKeys = { setKey: v12_VIDEOS_SET_KEY, hashPrefix: v12_VIDEO_HASH_PREFIX, type: 'main' };
         // [DOUBLE CHECK] Enable for CN
-        const options = { retentionDate: oneMonthAgo, validKeywords: SPECIAL_KEYWORDS, blacklist, useDoubleKeywordCheck: true };
+        // [OPTIMIZATION] Changed retention from oneMonthAgo to sevenDaysAgo
+        const options = { retentionDate: sevenDaysAgo, validKeywords: SPECIAL_KEYWORDS, blacklist, useDoubleKeywordCheck: true };
 
         const { validVideoIds, idsToDelete } = await this.processAndStoreVideos([...newVideoCandidates], redisClient, storageKeys, options);
 
         const pipeline = redisClient.multi();
         if (idsToDelete.length > 0) { pipeline.sRem(storageKeys.setKey, idsToDelete); idsToDelete.forEach(id => pipeline.del(`${storageKeys.hashPrefix}${id}`)); }
         if (validVideoIds.size > 0) { pipeline.sAdd(storageKeys.setKey, [...validVideoIds]); }
+        if (validVideoIds.size > 0) { pipeline.sAdd(storageKeys.setKey, [...validVideoIds]); }
         await pipeline.exec();
+
+        // [Cleanup] Run daily cleanup for CN videos
+        await this.cleanupExpiredVideos(redisClient, storageKeys);
+
         // Clear response cache to show new videos immediately
         await redisClient.del('vspo-db:v4:response_cache:cn');
         console.log(`[v16.8] 中文影片常規更新程序完成。`);
     },
     async updateForeignClips(redisClient) {
+        console.log('[v16.8] (已暫停) 跳過外文影片更新程序以節省額度。');
+        return;
+
         console.log('[v16.8] 開始執行外文影片常規更新程序...');
         const threeMonthsAgo = new Date(); threeMonthsAgo.setMonth(threeMonthsAgo.getMonth() - 3);
 
