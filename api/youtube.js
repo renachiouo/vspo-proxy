@@ -90,7 +90,7 @@ const logAdminAction = async (db, action, details) => {
 async function getVisitorCount(db) {
     const total = await db.collection('analytics').findOne({ _id: 'total_visits' });
     const todayStr = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Taipei' }).format(new Date());
-    const today = await db.collection('analytics').findOne({ _id: `visits_${todayStr} ` });
+    const today = await db.collection('analytics').findOne({ _id: `visits_${todayStr}` });
     return { totalVisits: total?.count || 0, todayVisits: today?.count || 0 };
 }
 
@@ -100,7 +100,7 @@ async function incrementAndGetVisitorCount(db) {
         { _id: 'total_visits' }, { $inc: { count: 1 }, $set: { lastUpdated: new Date() } }, { upsert: true, returnDocument: 'after' }
     );
     const today = await db.collection('analytics').findOneAndUpdate(
-        { _id: `visits_${todayStr} ` }, { $inc: { count: 1 }, $set: { date: todayStr, type: 'daily_visit' } }, { upsert: true, returnDocument: 'after' }
+        { _id: `visits_${todayStr}` }, { $inc: { count: 1 }, $set: { date: todayStr, type: 'daily_visit' } }, { upsert: true, returnDocument: 'after' }
     );
     return { totalVisits: total?.count || 0, todayVisits: today?.count || 0 };
 }
@@ -528,8 +528,9 @@ export default async function handler(req, res) {
         // If no original stream info, try searching by title title text match (fallback) 
         // But mainly we rely on osi
         let query = {};
-        if (osi) {
-            query = { "originalStreamInfo": { $regex: new RegExp(osi.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i') }, _id: { $ne: id } };
+        if (osi && osi.id) {
+            // Match by original stream ID
+            query = { "originalStreamInfo.id": osi.id, _id: { $ne: id } };
         } else {
             // Fallback: simple title word match? No, arguably returning empty is safer to avoid garbage.
             return res.json([]);
