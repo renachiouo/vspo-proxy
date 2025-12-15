@@ -525,6 +525,7 @@ export default async function handler(req, res) {
 
         // Debug logging
         console.log(`[RelatedClips] Request ID: ${id}`);
+        res.setHeader('Cache-Control', 'no-store, max-age=0');
 
         // Find the original video to get its stream info
         const originalVideo = await db.collection('videos').findOne({ _id: id });
