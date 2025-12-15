@@ -20,4 +20,5 @@ Thumbs.db
 
 # One-off scripts
 restore_visits.js
+repair_types_and_lists.js
 verify-temp.js

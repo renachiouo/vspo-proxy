@@ -177,7 +177,9 @@ const v12_logic = {
                 viewCount: parseInt(detail.statistics?.viewCount || 0),
                 subscriberCount: parseInt(channelDetails?.statistics?.subscriberCount || 0),
                 duration: detail.contentDetails?.duration || '',
-                durationMinutes, type
+                durationMinutes,
+                source: type, // Store 'main' or 'foreign' as source
+                type: durationMinutes <= 1.05 ? 'short' : 'video' // Correct video type
             };
             const osi = parseOriginalStreamInfo(description);
             if (osi) doc.originalStreamInfo = osi;
@@ -298,7 +300,6 @@ async function handleAdminAction(req, res, db, body) {
             await logAdminAction(db, 'remove_video_blacklist', { videoId });
             return res.json({ success: true });
 
-        // Fix for 400 Bad Request
         case 'get_video_blacklist':
             const doc = await db.collection('lists').findOne({ _id: 'video_blacklist' });
             return res.json({ success: true, blacklist: doc?.items || [] });
@@ -338,7 +339,6 @@ export default async function handler(req, res) {
     }
 
     if (pathname === '/api/youtube') {
-        // Admin Action Handling (Legacy Path)
         if (req.method === 'POST' && body.action) {
             return await handleAdminAction(req, res, db, body);
         }
@@ -348,15 +348,11 @@ export default async function handler(req, res) {
         const forceRefresh = searchParams.get('force_refresh') === 'true';
         const noIncrement = searchParams.get('no_increment') === 'true';
 
-        // Manual override for visitor count if requested (for restoration)
-        // Hidden feature to restore count: POST with action='set_visitor_count' (admin only)
-        // Implemented in handleAdminAction if needed, but here we just get.
-
         const visits = noIncrement ? await getVisitorCount(db) : await incrementAndGetVisitorCount(db);
         const metaId = isForeign ? 'last_update_jp' : 'last_update_cn';
         let didUpdate = false;
 
-        const authenticate = () => { // Helper for force refresh auth
+        const authenticate = () => {
             const pass = req.headers.authorization?.split(' ')[1] || searchParams.get('password');
             return process.env.ADMIN_PASSWORD && pass === process.env.ADMIN_PASSWORD;
         };
@@ -387,14 +383,14 @@ export default async function handler(req, res) {
             }
         }
 
-        const query = isForeign ? { type: 'foreign' } : { type: 'main' };
+        // Fix: Use 'source' to query, so 'type' can be 'video'/'short'
+        const query = isForeign ? { source: 'foreign' } : { source: 'main' };
         const rawVideos = await db.collection('videos').find(query).sort({ publishedAt: -1 }).limit(1000).toArray();
-        // Fix for frontend: Ensure videoType and channel details are present
         const videos = rawVideos.map(v => ({
             ...v,
             videoType: v.type, // Map 'type' to 'videoType' for frontend
-            channelTitle: v.channelTitle || '', // Fallback
-            channelAvatarUrl: v.channelAvatarUrl || '' // Fallback
+            channelTitle: v.channelTitle || '',
+            channelAvatarUrl: v.channelAvatarUrl || ''
         }));
 
         const ann = await db.collection('metadata').findOne({ _id: 'announcement' });
@@ -403,19 +399,17 @@ export default async function handler(req, res) {
             videos,
             totalVisits: visits.totalVisits || 0,
             todayVisits: visits.todayVisits || 0,
-            timestamp: Date.now(), // Fix for "Invalid Date" on frontend
+            timestamp: Date.now(),
             announcement: ann ? { content: ann.content, type: ann.type, active: ann.active === "true" } : null,
             meta: { didUpdate, timestamp: Date.now() }
         });
     }
 
-    // 4. Admin Logs
     if (pathname === '/api/admin/logs' || pathname === '/api/youtube/get_admin_logs') {
         const logs = await db.collection('admin_logs').find().sort({ timestamp: -1 }).limit(100).toArray();
         return res.status(200).json({ success: true, logs });
     }
 
-    // 5. Admin Lists
     if (pathname === '/api/admin/lists') {
         const password = searchParams.get('password');
         if (password !== process.env.ADMIN_PASSWORD) return res.status(401).json({ error: 'Unauthorized' });
@@ -429,12 +423,29 @@ export default async function handler(req, res) {
             db.collection('metadata').findOne({ _id: 'announcement' })
         ]);
 
+        const hydrate = async (ids) => {
+            if (!ids || ids.length === 0) return [];
+            // Try to finding info from local videos first
+            const pipeline = [
+                { $match: { channelId: { $in: ids } } },
+                { $sort: { publishedAt: -1 } },
+                { $group: { _id: "$channelId", name: { $first: "$channelTitle" }, avatar: { $first: "$channelAvatarUrl" } } }
+            ];
+            const infos = await db.collection('videos').aggregate(pipeline).toArray();
+            const infoMap = new Map(infos.map(i => [i._id, i]));
+            return ids.map(id => ({
+                id,
+                name: infoMap.get(id)?.name || 'Unknown Channel',
+                avatar: infoMap.get(id)?.avatar || 'https://via.placeholder.com/150'
+            }));
+        };
+
         return res.status(200).json({
-            whitelist_cn: wl_cn?.items || [],
-            whitelist_jp: wl_jp?.items || [],
-            blacklist_cn: bl_cn?.items || [],
-            blacklist_jp: bl_jp?.items || [],
-            pending_jp: p_jp?.items || [],
+            whitelist_cn: await hydrate(wl_cn?.items),
+            whitelist_jp: await hydrate(wl_jp?.items),
+            blacklist_cn: await hydrate(bl_cn?.items),
+            blacklist_jp: await hydrate(bl_jp?.items),
+            pending_jp: await hydrate(p_jp?.items),
             announcement: ann ? { content: ann.content, type: ann.type, active: ann.active === "true" } : null
         });
     }
