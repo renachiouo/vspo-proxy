@@ -344,14 +344,73 @@ async function handleAdminAction(req, res, db, body) {
         case 'add':
             if (!channelId || !listType) return res.status(400).json({ error: 'Missing params' });
             const map = { cn: 'whitelist_cn', jp: 'whitelist_jp', blacklist_cn: 'blacklist_cn', blacklist_jp: 'blacklist_jp', pending_jp: 'pending_jp' };
-            if (map[listType]) await db.collection('lists').updateOne({ _id: map[listType] }, { $addToSet: { items: channelId } }, { upsert: true });
+
+            // Mutual Exclusion: Check other lists
+            const allLists = ['whitelist_cn', 'blacklist_cn', 'whitelist_jp', 'blacklist_jp', 'pending_jp'];
+            const targetListId = map[listType];
+            const otherLists = allLists.filter(l => l !== targetListId);
+            const otherDocs = await db.collection('lists').find({ _id: { $in: otherLists } }).toArray();
+            const otherItems = new Set();
+            otherDocs.forEach(doc => doc.items?.forEach(i => otherItems.add(i)));
+
+            if (otherItems.has(channelId)) return res.status(409).json({ error: 'Channel exists in another list.' });
+
+            if (targetListId) await db.collection('lists').updateOne({ _id: targetListId }, { $addToSet: { items: channelId } }, { upsert: true });
+
+            // Persistent Storage: Fetch & Store Channel Info
+            try {
+                const resYt = await fetchYouTube('channels', { part: 'snippet', id: channelId });
+                if (resYt.items?.[0]) {
+                    const snip = resYt.items[0].snippet;
+                    await db.collection('channels').updateOne(
+                        { _id: channelId },
+                        { $set: { title: snip.title, thumbnail: snip.thumbnails.default?.url || '' } },
+                        { upsert: true }
+                    );
+                }
+            } catch (e) { console.error('Failed to fetch channel info:', e); }
+
             await logAdminAction(db, 'add', { listType, channelId });
+            return res.json({ success: true });
+
+        case 'approve_jp':
+            if (!channelId) return res.status(400).json({ error: 'Missing channelId' });
+            // Move from pending_jp -> whitelist_jp
+            await db.collection('lists').updateOne({ _id: 'pending_jp' }, { $pull: { items: channelId } });
+            await db.collection('lists').updateOne({ _id: 'whitelist_jp' }, { $addToSet: { items: channelId } }, { upsert: true });
+
+            // Store Channel Info
+            try {
+                const resYt = await fetchYouTube('channels', { part: 'snippet', id: channelId });
+                if (resYt.items?.[0]) {
+                    const snip = resYt.items[0].snippet;
+                    await db.collection('channels').updateOne(
+                        { _id: channelId },
+                        { $set: { title: snip.title, thumbnail: snip.thumbnails.default?.url || '' } },
+                        { upsert: true }
+                    );
+                }
+            } catch (e) { console.error('Failed to fetch channel info:', e); }
+
+            await logAdminAction(db, 'approve_jp', { channelId });
+            return res.json({ success: true });
+
+        case 'reject_jp':
+            if (!channelId) return res.status(400).json({ error: 'Missing channelId' });
+            // Move from pending_jp -> blacklist_jp
+            await db.collection('lists').updateOne({ _id: 'pending_jp' }, { $pull: { items: channelId } });
+            await db.collection('lists').updateOne({ _id: 'blacklist_jp' }, { $addToSet: { items: channelId } }, { upsert: true });
+            await logAdminAction(db, 'reject_jp', { channelId });
             return res.json({ success: true });
 
         case 'delete':
             if (!channelId || !listType) return res.status(400).json({ error: 'Missing params' });
             const mapDel = { cn: 'whitelist_cn', jp: 'whitelist_jp', blacklist_cn: 'blacklist_cn', blacklist_jp: 'blacklist_jp', pending_jp: 'pending_jp' };
             if (mapDel[listType]) await db.collection('lists').updateOne({ _id: mapDel[listType] }, { $pull: { items: channelId } });
+
+            // Remove from persistent storage
+            await db.collection('channels').deleteOne({ _id: channelId });
+
             await logAdminAction(db, 'delete', { listType, channelId });
             return res.json({ success: true });
 
