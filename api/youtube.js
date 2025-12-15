@@ -560,15 +560,17 @@ export default async function handler(req, res) {
             count: related.length
         }));
 
-        return res.status(200).json(related.map(v => ({
-            id: v._id,
-            title: v.title,
-            thumbnail: v.thumbnail,
-            channelTitle: v.channelTitle || '',
-            publishedAt: v.publishedAt,
-            videoType: v.type, // Ensure videoType is returned
-            source: v.source
-        })));
+        return res.status(200).json({
+            videos: related.map(v => ({
+                id: v._id,
+                title: v.title,
+                thumbnail: v.thumbnail,
+                channelTitle: v.channelTitle || '',
+                publishedAt: v.publishedAt,
+                videoType: v.type, // Ensure videoType is returned
+                source: v.source
+            }))
+        });
     }
 
     // 6. Admin Manage Route
