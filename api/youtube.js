@@ -382,8 +382,11 @@ export default async function handler(req, res) {
 
     if (pathname === '/api/leaderboard') {
         const d = new Date(); d.setDate(d.getDate() - 30);
+        const wl = await db.collection('lists').findOne({ _id: 'whitelist_cn' });
+        const allowedChannels = wl?.items || [];
+
         const lb = await db.collection('videos').aggregate([
-            { $match: { source: 'main', publishedAt: { $gte: d } } }, // Only CN videos (source: main)
+            { $match: { channelId: { $in: allowedChannels }, publishedAt: { $gte: d } } }, // Strict: Only Whitelist CN items
             { $group: { _id: "$channelId", channelTitle: { $first: "$channelTitle" }, channelAvatarUrl: { $first: "$channelAvatarUrl" }, totalMinutes: { $sum: "$durationMinutes" }, videoCount: { $sum: 1 } } },
             { $sort: { totalMinutes: -1 } }, { $limit: 20 }
         ]).toArray();
