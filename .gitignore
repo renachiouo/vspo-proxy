@@ -17,3 +17,7 @@ scripts/
 # OS miscellaneous
 .DS_Store
 Thumbs.db
+
+# One-off scripts
+restore_visits.js
+verify-temp.js
