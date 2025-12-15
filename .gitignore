@@ -24,3 +24,7 @@ verify-temp.js
 repair_types_and_lists.js
 check_video_debug.js
 verify-temp.js
+
+# Recent temp debug scripts
+repair_stream_info_schema.js
+check_osi_coverage.js
