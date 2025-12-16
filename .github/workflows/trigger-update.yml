@@ -10,5 +10,8 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Ping Vercel to trigger data update
+      - name: Trigger CN Update
         run: curl -X GET "https://vspo-proxy-git-main-renas-projects-c8ce958b.vercel.app/api/youtube?force_refresh=true&password=${{ secrets.CRON_SECRET }}"
+      
+      - name: Trigger JP Update
+        run: curl -X GET "https://vspo-proxy-git-main-renas-projects-c8ce958b.vercel.app/api/youtube?force_refresh=true&lang=jp&password=${{ secrets.CRON_SECRET }}"
