@@ -286,8 +286,13 @@ const v12_logic = {
         for (const batch of batchArray(whitelist, 50)) {
             const res = await fetchYouTube('channels', { part: 'contentDetails', id: batch.join(',') });
             const uploads = res.items?.map(i => i.contentDetails?.relatedPlaylists?.uploads).filter(Boolean) || [];
-            const pResults = await Promise.all(uploads.map(pid => fetchYouTube('playlistItems', { part: 'snippet', playlistId: pid, maxResults: 10 })));
-            pResults.forEach(r => r.items?.forEach(i => { if (new Date(i.snippet.publishedAt) > retentionDate) newVideoCandidates.add(i.snippet.resourceId.videoId); }));
+
+            // Fix: Batch playlist fetching to avoid 429 Too Many Requests
+            for (const uploadBatch of batchArray(uploads, 20)) {
+                const pResults = await Promise.all(uploadBatch.map(pid => fetchYouTube('playlistItems', { part: 'snippet', playlistId: pid, maxResults: 10 })));
+                pResults.forEach(r => r.items?.forEach(i => { if (new Date(i.snippet.publishedAt) > retentionDate) newVideoCandidates.add(i.snippet.resourceId.videoId); }));
+                await new Promise(r => setTimeout(r, 200)); // Small delay between batches
+            }
         }
 
         await this.processAndStoreVideos([...newVideoCandidates], db, 'foreign', { retentionDate, blacklist: blJp?.items || [] });
