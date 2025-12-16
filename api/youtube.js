@@ -535,7 +535,14 @@ export default async function handler(req, res) {
 
         // Fix: Use 'source' to query, so 'type' can be 'video'/'short'
         const query = isForeign ? { source: 'foreign' } : { source: 'main' };
-        const rawVideos = await db.collection('videos').find(query).sort({ publishedAt: -1 }).limit(1000).toArray();
+        // Limit 1000 for CN (as requested), 7000 for JP (to cover 90 days)
+        // Project to exclude large fields (description) to stay within Vercel payload limits
+        const rawVideos = await db.collection('videos')
+            .find(query)
+            .project({ description: 0, tags: 0 })
+            .sort({ publishedAt: -1 })
+            .limit(isForeign ? 7000 : 1000)
+            .toArray();
         const videos = rawVideos.map(v => ({
             ...v,
             videoType: v.type, // Map 'type' to 'videoType' for frontend
