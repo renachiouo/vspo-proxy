@@ -583,19 +583,36 @@ export default async function handler(req, res) {
 
         const hydrate = async (ids) => {
             if (!ids || ids.length === 0) return [];
-            // Try to finding info from local videos first
-            const pipeline = [
-                { $match: { channelId: { $in: ids } } },
-                { $sort: { publishedAt: -1 } },
-                { $group: { _id: "$channelId", name: { $first: "$channelTitle" }, avatar: { $first: "$channelAvatarUrl" } } }
-            ];
-            const infos = await db.collection('videos').aggregate(pipeline).toArray();
-            const infoMap = new Map(infos.map(i => [i._id, i]));
-            return ids.map(id => ({
-                id,
-                name: infoMap.get(id)?.name || 'Unknown Channel',
-                avatar: infoMap.get(id)?.avatar || 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxNTAiIGhlaWdodD0iMTUwIj48cmVjdCB3aWR0aD0iMTUwIiBoZWlnaHQ9IjE1MCIgZmlsbD0iIzMzMyIvPjwvc3ZnPg=='
-            }));
+
+            // 1. Fetch from persistent 'channels' collection first
+            const storedChannels = await db.collection('channels').find({ _id: { $in: ids } }).toArray();
+            const storedMap = new Map(storedChannels.map(c => [c._id, c]));
+
+            // 2. Identify missing IDs to fallback to 'videos' aggregation (Legacy)
+            const missingIds = ids.filter(id => !storedMap.has(id));
+            let fallbackMap = new Map();
+
+            if (missingIds.length > 0) {
+                const pipeline = [
+                    { $match: { channelId: { $in: missingIds } } },
+                    { $sort: { publishedAt: -1 } },
+                    { $group: { _id: "$channelId", name: { $first: "$channelTitle" }, avatar: { $first: "$channelAvatarUrl" } } }
+                ];
+                const infos = await db.collection('videos').aggregate(pipeline).toArray();
+                fallbackMap = new Map(infos.map(i => [i._id, i]));
+            }
+
+            const defaultAvatar = 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxNTAiIGhlaWdodD0iMTUwIj48cmVjdCB3aWR0aD0iMTUwIiBoZWlnaHQ9IjE1MCIgZmlsbD0iIzMzMyIvPjwvc3ZnPg==';
+
+            return ids.map(id => {
+                const stored = storedMap.get(id);
+                const fallback = fallbackMap.get(id);
+                return {
+                    id,
+                    name: stored?.title || fallback?.name || 'Unknown Channel',
+                    avatar: stored?.thumbnail || fallback?.avatar || defaultAvatar
+                };
+            });
         };
 
         return res.status(200).json({
