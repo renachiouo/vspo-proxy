@@ -22,6 +22,7 @@ const VSPO_MEMBER_KEYWORDS = [
     "ひなーの", "ひなの", "べに", "つな", "らむち", "らむね", "めと", "なずな", "なずぴ", "すみー", "すみれ", "ととち", "とと", "のせ", "うるは", "のあ", "ミミ", "たや", "セナ", "あしゅみ", "リサ", "れん", "きゅぴ", "エマたそ", "るな", "あかり", "あかりん", "くろむ", "こかげ", "つむお", "うひ", "ゆうひ", "はなび", "もか"
 ];
 
+
 const apiKeys = [
     process.env.YOUTUBE_API_KEY_1, process.env.YOUTUBE_API_KEY_2,
     process.env.YOUTUBE_API_KEY_3, process.env.YOUTUBE_API_KEY_4,
