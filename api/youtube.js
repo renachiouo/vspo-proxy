@@ -638,6 +638,9 @@ export default async function handler(req, res) {
                 title: v.title,
                 thumbnail: v.thumbnail,
                 channelTitle: v.channelTitle || '',
+                channelAvatarUrl: v.channelAvatarUrl || '',
+                viewCount: v.viewCount || 0,
+                duration: v.duration || '',
                 publishedAt: v.publishedAt,
                 videoType: v.type, // Ensure videoType is returned
                 source: v.source
