@@ -193,7 +193,7 @@ const v12_logic = {
                 duration: detail.contentDetails?.duration || '',
                 durationMinutes,
                 source: type,
-                type: durationMinutes <= 1.05 ? 'short' : 'video'
+                videoType: durationMinutes <= 1.05 ? 'short' : 'video'
             };
             const osi = parseOriginalStreamInfo(description);
             if (osi) doc.originalStreamInfo = osi;
