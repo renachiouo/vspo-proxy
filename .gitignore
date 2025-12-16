@@ -6,29 +6,19 @@ node_modules/
 .env.local
 
 # Logs
+# One-off scripts and debug tools
+debug_*.js
+cleanup_*.js
+restore_*.js
+check_*.js
+dump_*.js
+test_*.js
+repair_*.js
+sync_*.js
+verify-temp.js
+
+# Logs
+*.log
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
-migration_debug.log
-
-# Scripts (Local utilities with credentials)
-scripts/
-
-# OS miscellaneous
-.DS_Store
-Thumbs.db
-
-# One-off scripts
-restore_visits.js
-verify-temp.js
-repair_types_and_lists.js
-check_video_debug.js
-verify-temp.js
-
-# Recent temp debug scripts
-repair_stream_info_schema.js
-check_osi_coverage.js
-check_osi_coverage_v2.js
-debug_related_query.js
-debug_video_sources.js
-check_metadata.js
