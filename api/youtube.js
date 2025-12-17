@@ -634,7 +634,7 @@ export default async function handler(req, res) {
         });
     }
 
-    // 6. Get Related Clips (Missing Route)
+    // 6. Get Related Clips 
     if (pathname === '/api/get-related-clips') {
         const id = searchParams.get('id');
         if (!id) return res.status(400).json({ error: 'Missing id' });
