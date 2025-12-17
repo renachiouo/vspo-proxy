@@ -443,58 +443,6 @@ const v12_logic = {
         const members = VSPO_MEMBERS;
         const liveStreams = [];
 
-        // 1. YouTube Live Check
-        const ytIds = members.map(m => m.ytId).filter(Boolean);
-        for (const batch of batchArray(ytIds, 50)) {
-            try {
-                // Check 'snippet' for liveBroadcastContent
-                console.log(`[Debug] Checking YT Live batch of ${batch.length} channels...`);
-                // Attempt to force liveBroadcastContent by requesting more parts
-                const res = await fetchYouTube('channels', { part: 'snippet,contentDetails,statistics', id: batch.join(',') });
-                if (res.items) {
-                    // Optimization: Bulk write to DB to cache avatars for all members (used by Twitch check)
-                    const bulkOps = res.items.map(c => ({
-                        updateOne: {
-                            filter: { _id: c.id },
-                            update: { $set: { title: c.snippet.title, thumbnail: c.snippet.thumbnails.default?.url || '' } },
-                            upsert: true
-                        }
-                    }));
-                    if (bulkOps.length > 0) await db.collection('channels').bulkWrite(bulkOps);
-
-                    res.items.forEach((c, index) => {
-                        // Debug log for first item to inspect structure
-                        if (index === 0) {
-                            console.log(`[Debug] First Channel Snippet Inspect:`, JSON.stringify(c.snippet));
-                        }
-
-                        // Debug log for specific status
-                        if (c.snippet.liveBroadcastContent !== 'none') {
-                            console.log(`[Debug] Channel ${c.snippet.title} (${c.id}) status: ${c.snippet.liveBroadcastContent}`);
-                        }
-
-                        if (c.snippet.liveBroadcastContent === 'live') {
-                            // Find member
-                            const member = members.find(m => m.ytId === c.id);
-                            if (member) {
-                                console.log(`[Debug] FOUND LIVE: ${member.name}`);
-                                liveStreams.push({
-                                    memberName: member.name,
-                                    platform: 'youtube',
-                                    channelId: c.id,
-                                    avatarUrl: c.snippet.thumbnails.default?.url,
-                                    title: c.snippet.title,
-                                    url: `https://www.youtube.com/channel/${c.id}/live`
-                                });
-                            }
-                        }
-                    });
-                } else {
-                    console.warn(`[Debug] YT API returned no items for batch. Response:`, JSON.stringify(res).slice(0, 200));
-                }
-            } catch (e) { console.error('YT Live Check Error:', e); }
-        }
-
         // 2. Twitch Live Check
         const twitchIds = members.map(m => m.twitchId).filter(Boolean);
         // Twitch allows up to 100 IDs
@@ -520,6 +468,86 @@ const v12_logic = {
                 }
             }
         } catch (e) { console.error('Twitch Check Error:', e); }
+
+        // --- NEW STRATEGY: RSS + Video Check (Bypass Channels API bug) ---
+        // 1. Fetch RSS for all channels to get latest video ID
+        // 2. Check video status via API
+
+        const ytMembers = members.filter(m => m.ytId);
+        try {
+            // 1. Fetch RSS in parallel
+            const rssPromises = ytMembers.map(async m => {
+                try {
+                    const ctrl = new AbortController();
+                    const timeout = setTimeout(() => ctrl.abort(), 3000); // 3s timeout
+                    const rssRes = await fetch(`https://www.youtube.com/feeds/videos.xml?channel_id=${m.ytId}`, { signal: ctrl.signal });
+                    clearTimeout(timeout);
+                    if (!rssRes.ok) return null;
+                    const text = await rssRes.text();
+                    // Simple Regex Extract
+                    const match = text.match(/<yt:videoId>(.*?)<\/yt:videoId>/);
+                    return match ? { mid: m.ytId, vid: match[1] } : null;
+                } catch (e) { return null; }
+            });
+
+            const results = await Promise.all(rssPromises);
+            const candidates = results.filter(r => r);
+
+            // 2. Batch Check Videos
+            const videoIds = candidates.map(c => c.vid);
+            // Deduplicate
+            const uniqueVideoIds = [...new Set(videoIds)];
+
+            if (uniqueVideoIds.length > 0) {
+                for (const batch of batchArray(uniqueVideoIds, 50)) {
+                    try {
+                        console.log(`[Debug] Checking YT Video Status Batch: ${batch.length}`);
+                        const vRes = await fetchYouTube('videos', { part: 'snippet,liveStreamingDetails', id: batch.join(',') });
+
+                        // Populate Avatar Cache if we missed it (optional, but good for completeness)
+                        // Actually we can't easily get channel avatar from videos endpoint part=snippet (it doesn't have avatar url)
+                        // But we can assume DB has it or use placeholder.
+
+                        vRes.items?.forEach(v => {
+                            // Check if Live
+                            const isLive = v.snippet.liveBroadcastContent === 'live';
+                            // Also checking liveStreamingDetails to be sure it's not finished
+                            const isActive = isLive || (v.snippet.liveBroadcastContent === 'upcoming' && false); // We only want LIVE
+
+                            if (isLive) {
+                                const member = ytMembers.find(m => m.ytId === v.snippet.channelId);
+                                if (member) {
+                                    // Get Avatar from DB 
+                                    // We need to fetch from DB because 'videos' endpoint doesn't give channel avatar
+                                    // We can try to fetch simple channel info if missing? 
+                                    // For now let's hope it's in DB or use PLACEHOLDER
+
+                                    liveStreams.push({
+                                        memberName: member.name,
+                                        platform: 'youtube',
+                                        channelId: v.snippet.channelId,
+                                        avatarUrl: '', // Will be filled by DB later or Frontend fallback
+                                        title: v.snippet.title,
+                                        url: `https://www.youtube.com/watch?v=${v.id}`
+                                    });
+                                }
+                            }
+                        });
+
+                    } catch (e) { console.error('YT Video Check Error:', e); }
+                }
+            }
+
+            // Fill Avatars from DB
+            for (const stream of liveStreams) {
+                if (!stream.avatarUrl && stream.platform === 'youtube') {
+                    const dbCh = await db.collection('channels').findOne({ _id: stream.channelId });
+                    if (dbCh) stream.avatarUrl = dbCh.thumbnail;
+                }
+            }
+
+        } catch (e) { console.error('RSS Check Error:', e); }
+
 
         // Store result
         await db.collection('metadata').updateOne({ _id: 'live_status' }, { $set: { streams: liveStreams, timestamp: Date.now() } }, { upsert: true });
