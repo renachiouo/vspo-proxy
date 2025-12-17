@@ -22,6 +22,39 @@ const VSPO_MEMBER_KEYWORDS = [
     "ひなーの", "ひなの", "べに", "つな", "らむち", "らむね", "めと", "なずな", "なずぴ", "すみー", "すみれ", "ととち", "とと", "のせ", "うるは", "のあ", "ミミ", "たや", "セナ", "あしゅみ", "リサ", "れん", "きゅぴ", "エマたそ", "るな", "あかり", "あかりん", "くろむ", "こかげ", "つむお", "うひ", "ゆうひ", "はなび", "もか"
 ];
 
+const VSPO_MEMBERS = [
+    { name: "花芽すみれ", ytId: "UCyLGcqYs7RsBb3L0SJfzGYA", twitchId: "695556933" },
+    { name: "花芽なずな", ytId: "UCiMG6VdScBabPhJ1ZtaVmbw", twitchId: "790167759" },
+    { name: "小雀とと", ytId: "UCgTzsBI0DIRopMylJEDqnog", twitchId: "" },
+    { name: "一ノ瀬うるは", ytId: "UC5LyYg6cCA4yHEYvtUsir3g", twitchId: "582689327" },
+    { name: "胡桃のあ", ytId: "UCIcAj6WkJ8vZ7DeJVgmeqKw", twitchId: "600770697" },
+    { name: "兎咲ミミ", ytId: "UCnvVG9RbOW3J6Ifqo-zKLiw", twitchId: "" },
+    { name: "空澄セナ", ytId: "UCF_U2GCKHvDz52jWdizppIA", twitchId: "776751504" },
+    { name: "橘ひなの", ytId: "UCvUc0m317LWTTPZoBQV479A", twitchId: "568682215" },
+    { name: "英リサ", ytId: "UCurEA8YoqFwimJcAuSHU0MQ", twitchId: "777700650" },
+    { name: "如月れん", ytId: "UCGWa1dMU_sDCaRQjdabsVgg", twitchId: "722162135" },
+    { name: "神成きゅぴ", ytId: "UCMp55EbT_ZlqiMS3lCj01BQ", twitchId: "550676410" },
+    { name: "八雲べに", ytId: "UCjXBuHmWkieBApgBhDuJMMQ", twitchId: "700465409" },
+    { name: "藍沢エマ", ytId: "UCPkKpOHxEDcwmUAnRpIu-Ng", twitchId: "848822715" },
+    { name: "紫宮るな", ytId: "UCD5W21JqNMv_tV9nfjvF9sw", twitchId: "773185713" },
+    { name: "猫汰つな", ytId: "UCIjdfjcSaEgdjwbgjxC3ZWg", twitchId: "858359105" },
+    { name: "白波らむね", ytId: "UC61OwuYOVuKkpKnid-43Twg", twitchId: "858359149" },
+    { name: "小森めと", ytId: "UCzUNASdzI4PV5SlqtYwAkKQ", twitchId: "801682194" },
+    { name: "夢野あかり", ytId: "UCS5l_Y0oMVTjEos2LuyeSZQ", twitchId: "584184005" },
+    { name: "夜乃くろむ", ytId: "UCX4WL24YEOUYd7qDsFSLDOw", twitchId: "1250148772" },
+    { name: "紡木こかげ", ytId: "UC-WX1CXssCtCtc2TNIRnJzg", twitchId: "1184405770" },
+    { name: "千燈ゆうひ", ytId: "UCuDY3ibSP2MFRgf7eo3cojg", twitchId: "1097252496" },
+    { name: "蝶屋はなび", ytId: "UCL9hJsdk9eQa0IlWbFB2oRg", twitchId: "1361841459" },
+    { name: "甘結もか", ytId: "UC8vKBjGY2HVfbW9GAmgikWw", twitchId: "" },
+    { name: "ぶいすぽっ!【公式】", ytId: "UCuI5XaO-6VkOEhHao6ij7JA", twitchId: "" },
+    { name: "Remia Aotsuki", ytId: "UCCra1t-eIlO3ULyXQQMD9Xw", twitchId: "1102206195" },
+    { name: "Arya Kuroha", ytId: "UCLlJpxXt6L5d-XQ0cDdIyDQ", twitchId: "1102211983" },
+    { name: "Jira Jisaki", ytId: "UCeCWj-SiJG9SWN6wGORiLmw", twitchId: "1102212264" },
+    { name: "Narin Mikure", ytId: "UCKSpM183c85d5V2cW5qaUjA", twitchId: "1125214436" },
+    { name: "Riko Solari", ytId: "UC7Xglp1fske9zmRe7Oj8YyA", twitchId: "1125216387" },
+    { name: "Eris Suzukami", ytId: "UCp_3ej2br9l9L1DSoHVDZGw", twitchId: "" }
+];
+
 
 const apiKeys = [
     process.env.YOUTUBE_API_KEY_1, process.env.YOUTUBE_API_KEY_2,
@@ -31,6 +64,9 @@ const apiKeys = [
     process.env.YOUTUBE_API_KEY_9, process.env.YOUTUBE_API_KEY_10,
     process.env.YOUTUBE_API_KEY_11,
 ].filter(key => key);
+
+// Constants
+const LIVE_UPDATE_INTERVAL_SECONDS = 300; // 5 mins for Live Status
 
 // --- DB Connection ---
 let cachedClient = null;
@@ -127,6 +163,41 @@ function parseOriginalStreamInfo(description) {
     const tw = description.match(/(?:https?:\/\/)?(?:www\.)?twitch\.tv\/videos\/(\d+)/);
     if (tw?.[1]) return { platform: 'twitch', id: tw[1] };
     return null;
+}
+
+// Twitch Helpers
+let twitchToken = null;
+let twitchTokenExpiry = 0;
+
+async function getTwitchToken() {
+    if (twitchToken && Date.now() < twitchTokenExpiry) return twitchToken;
+    const clientId = process.env.TWITCH_CLIENT_ID;
+    const clientSecret = process.env.TWITCH_CLIENT_SECRET;
+    if (!clientId || !clientSecret) return null;
+
+    try {
+        const res = await fetch(`https://id.twitch.tv/oauth2/token?client_id=${clientId}&client_secret=${clientSecret}&grant_type=client_credentials`, { method: 'POST' });
+        const data = await res.json();
+        if (data.access_token) {
+            twitchToken = data.access_token;
+            twitchTokenExpiry = Date.now() + (data.expires_in * 1000) - 60000;
+            return twitchToken;
+        }
+    } catch (e) { console.error('Twitch Token Error:', e); }
+    return null;
+}
+
+async function fetchTwitchStreams(userIds) {
+    const token = await getTwitchToken();
+    if (!token) return [];
+    try {
+        const query = userIds.map(id => `user_id=${id}`).join('&');
+        const res = await fetch(`https://api.twitch.tv/helix/streams?${query}`, {
+            headers: { 'Client-ID': process.env.TWITCH_CLIENT_ID, 'Authorization': `Bearer ${token}` }
+        });
+        const data = await res.json();
+        return data.data || [];
+    } catch (e) { console.error('Twitch Stream Error:', e); return []; }
 }
 
 // --- Logic ---
@@ -365,6 +436,67 @@ const v12_logic = {
         } else {
             console.log(`[Verify] All ${ids.length} recent videos are valid.`);
         }
+    },
+
+    async updateLiveStatus(db) {
+        console.log('[Mongo] Updating Live Status...');
+        const members = VSPO_MEMBERS;
+        const liveStreams = [];
+
+        // 1. YouTube Live Check
+        const ytIds = members.map(m => m.ytId).filter(Boolean);
+        for (const batch of batchArray(ytIds, 50)) {
+            try {
+                // Check 'snippet' for liveBroadcastContent
+                const res = await fetchYouTube('channels', { part: 'snippet', id: batch.join(',') });
+                res.items?.forEach(c => {
+                    if (c.snippet.liveBroadcastContent === 'live') {
+                        // Find member
+                        const member = members.find(m => m.ytId === c.id);
+                        if (member) {
+                            liveStreams.push({
+                                memberName: member.name,
+                                platform: 'youtube',
+                                channelId: c.id,
+                                avatarUrl: c.snippet.thumbnails.default?.url,
+                                title: c.snippet.title,
+                                url: `https://www.youtube.com/channel/${c.id}/live`
+                            });
+                        }
+                    }
+                });
+            } catch (e) { console.error('YT Live Check Error:', e); }
+        }
+
+        // 2. Twitch Live Check
+        const twitchIds = members.map(m => m.twitchId).filter(Boolean);
+        // Twitch allows up to 100 IDs
+        try {
+            const streams = await fetchTwitchStreams(twitchIds);
+            for (const s of streams) {
+                if (s.type === 'live') {
+                    const member = members.find(m => m.twitchId === s.user_id);
+                    if (member) {
+                        // Get Avatar from DB (Best effort)
+                        const dbChannel = await db.collection('channels').findOne({ _id: member.ytId });
+                        const avatarUrl = dbChannel?.thumbnail || '';
+
+                        liveStreams.push({
+                            memberName: member.name,
+                            platform: 'twitch',
+                            channelId: s.user_name,
+                            avatarUrl,
+                            title: s.title,
+                            url: `https://www.twitch.tv/${s.user_name}`
+                        });
+                    }
+                }
+            }
+        } catch (e) { console.error('Twitch Check Error:', e); }
+
+        // Store result
+        await db.collection('metadata').updateOne({ _id: 'live_status' }, { $set: { streams: liveStreams, timestamp: Date.now() } }, { upsert: true });
+        console.log(`[Mongo] Live Status Updated: ${liveStreams.length} active streams.`);
     }
 };
 
@@ -536,7 +668,10 @@ export default async function handler(req, res) {
                 await v12_logic.updateForeignClips(db);
                 await v12_logic.updateForeignClipsKeywords(db); // Force refresh does both
             }
-            else await v12_logic.updateAndStoreYouTubeData(db);
+            else {
+                await v12_logic.updateAndStoreYouTubeData(db);
+                await v12_logic.updateLiveStatus(db); // Force refresh also updates live status
+            }
             await db.collection('metadata').updateOne({ _id: metaId }, { $set: { timestamp: Date.now() } }, { upsert: true });
             didUpdate = true;
         } else {
@@ -557,13 +692,33 @@ export default async function handler(req, res) {
                                     await v12_logic.updateForeignClipsKeywords(db);
                                     await db.collection('metadata').updateOne({ _id: 'last_jp_keyword_search' }, { $set: { timestamp: Date.now() } }, { upsert: true });
                                 }
+                            } else {
+                                await v12_logic.updateAndStoreYouTubeData(db);
                             }
-                            else await v12_logic.updateAndStoreYouTubeData(db);
                             await db.collection('metadata').updateOne({ _id: metaId }, { $set: { timestamp: Date.now() } }, { upsert: true });
-                        } catch (e) { console.error('BG Update:', e); }
-                        finally { await db.collection('metadata').updateOne({ _id: lockId }, { $set: { timestamp: 0 } }); }
+                        } catch (e) {
+                            console.error('BG Update:', e);
+                        } finally {
+                            await db.collection('metadata').updateOne({ _id: lockId }, { $set: { timestamp: 0 } });
+                        }
                     })();
                     didUpdate = true;
+                }
+            }
+
+            // Independent Live Status Check (5 mins)
+            const liveMeta = await db.collection('metadata').findOne({ _id: 'last_live_check' });
+            if (Date.now() - (liveMeta?.timestamp || 0) > LIVE_UPDATE_INTERVAL_SECONDS * 1000) {
+                const liveLock = await db.collection('metadata').findOne({ _id: 'live_check_lock' });
+                if (!liveLock || Date.now() - liveLock.timestamp > 300000) {
+                    await db.collection('metadata').updateOne({ _id: 'live_check_lock' }, { $set: { timestamp: Date.now() } }, { upsert: true });
+                    (async () => {
+                        try {
+                            await v12_logic.updateLiveStatus(db);
+                            await db.collection('metadata').updateOne({ _id: 'last_live_check' }, { $set: { timestamp: Date.now() } }, { upsert: true });
+                        } catch (e) { console.error('BG Live Update:', e); }
+                        finally { await db.collection('metadata').updateOne({ _id: 'live_check_lock' }, { $set: { timestamp: 0 } }); }
+                    })();
                 }
             }
         }
@@ -668,7 +823,7 @@ export default async function handler(req, res) {
         });
     }
 
-    // 6. Get Related Clips 
+    // 6. Get Related Clips
     if (pathname === '/api/get-related-clips') {
         const id = searchParams.get('id');
         if (!id) return res.status(400).json({ error: 'Missing id' });
@@ -728,6 +883,12 @@ export default async function handler(req, res) {
     if (pathname === '/api/youtube/get_video_blacklist') {
         const doc = await db.collection('lists').findOne({ _id: 'video_blacklist' });
         return res.status(200).json({ success: true, blacklist: doc?.items || [] });
+    }
+
+    // 10. Get Live Status
+    if (pathname === '/api/live') {
+        const doc = await db.collection('metadata').findOne({ _id: 'live_status' });
+        return res.status(200).json({ success: true, streams: doc?.streams || [] });
     }
 
     return res.status(404).json({ error: 'Not Found', path: pathname });
