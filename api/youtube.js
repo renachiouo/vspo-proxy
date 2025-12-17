@@ -580,6 +580,19 @@ const v12_logic = {
             } catch (e) { console.error('RSS Check Error:', e); }
 
 
+            // Sort liveStreams: Official FIRST, then by Member Order (Seniority)
+            const memberIndexMap = new Map(VSPO_MEMBERS.map((m, i) => [m.name, i]));
+            const OFFICIAL_NAME = "ぶいすぽっ!【公式】";
+
+            liveStreams.sort((a, b) => {
+                if (a.memberName === OFFICIAL_NAME) return -1;
+                if (b.memberName === OFFICIAL_NAME) return 1;
+
+                const idxA = memberIndexMap.get(a.memberName) ?? 999;
+                const idxB = memberIndexMap.get(b.memberName) ?? 999;
+                return idxA - idxB;
+            });
+
             // Store result
             await db.collection('metadata').updateOne(
                 { _id: 'live_status' },
