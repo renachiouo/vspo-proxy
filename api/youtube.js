@@ -351,7 +351,7 @@ const v12_logic = {
 
         for (const batch of batchArray(ids, 50)) {
             try {
-                // If video is deleted/private, it won't appear in items
+                // If video is deleted/private, won't appear in items
                 const res = await fetchYouTube('videos', { part: 'id', id: batch.join(',') });
                 res.items?.forEach(i => validIds.add(i.id));
             } catch (e) { console.error('Verify Fetch Error:', e); }
