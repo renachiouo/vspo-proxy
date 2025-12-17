@@ -444,10 +444,12 @@ const v12_logic = {
         const liveStreams = [];
 
         // 2. Twitch Live Check
+        console.log('[Debug] Starting Twitch Live Check...');
         const twitchIds = members.map(m => m.twitchId).filter(Boolean);
         // Twitch allows up to 100 IDs
         try {
             const streams = await fetchTwitchStreams(twitchIds);
+            console.log(`[Debug] Twitch Check Done. Found ${streams.length} streams.`);
             for (const s of streams) {
                 if (s.type === 'live') {
                     const member = members.find(m => m.twitchId === s.user_id);
@@ -470,10 +472,12 @@ const v12_logic = {
         } catch (e) { console.error('Twitch Check Error:', e); }
 
         // --- NEW STRATEGY: RSS + Video Check (Bypass Channels API bug) ---
+        console.log('[Debug] Starting RSS Live Check...');
         // 1. Fetch RSS for all channels to get latest video ID
         // 2. Check video status via API
 
         const ytMembers = members.filter(m => m.ytId);
+        console.log(`[Debug] Fetching RSS for ${ytMembers.length} channels...`);
         try {
             // 1. Fetch RSS in parallel
             const rssPromises = ytMembers.map(async m => {
