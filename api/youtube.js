@@ -496,21 +496,29 @@ const v12_logic = {
             console.log(`[Debug] Fetching RSS for ${ytMembers.length} channels...`);
             try {
                 // 1. Fetch RSS in parallel
-                const rssPromises = ytMembers.map(async m => {
-                    try {
-                        const ctrl = new AbortController();
-                        const timeout = setTimeout(() => ctrl.abort(), 3000); // 3s timeout
-                        const rssRes = await fetch(`https://www.youtube.com/feeds/videos.xml?channel_id=${m.ytId}`, { signal: ctrl.signal });
-                        clearTimeout(timeout);
-                        if (!rssRes.ok) return null;
-                        const text = await rssRes.text();
-                        // Simple Regex Extract
-                        const match = text.match(/<yt:videoId>(.*?)<\/yt:videoId>/);
-                        return match ? { mid: m.ytId, vid: match[1] } : null;
-                    } catch (e) { return null; }
-                });
+                // 1. Fetch RSS in Batches (to avoid rate limits/timeouts)
+                const results = [];
+                for (const batch of batchArray(ytMembers, 10)) { // Batch size 10
+                    const batchPromises = batch.map(async m => {
+                        try {
+                            const ctrl = new AbortController();
+                            const timeout = setTimeout(() => ctrl.abort(), 3000); // 3s timeout
+                            const rssRes = await fetch(`https://www.youtube.com/feeds/videos.xml?channel_id=${m.ytId}`, { signal: ctrl.signal });
+                            clearTimeout(timeout);
+                            if (!rssRes.ok) return null;
+                            const text = await rssRes.text();
+                            // Simple Regex Extract
+                            const match = text.match(/<yt:videoId>(.*?)<\/yt:videoId>/);
+                            return match ? { mid: m.ytId, vid: match[1] } : null;
+                        } catch (e) { return null; }
+                    });
 
-                const results = await Promise.all(rssPromises);
+                    const batchResults = await Promise.all(batchPromises);
+                    results.push(...batchResults);
+
+                    // Small delay between batches
+                    await new Promise(r => setTimeout(r, 200));
+                }
                 const candidates = results.filter(r => r);
 
                 // --- SAFETY LOCK ---
