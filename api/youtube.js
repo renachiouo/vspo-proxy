@@ -448,6 +448,7 @@ const v12_logic = {
         for (const batch of batchArray(ytIds, 50)) {
             try {
                 // Check 'snippet' for liveBroadcastContent
+                console.log(`[Debug] Checking YT Live batch of ${batch.length} channels...`);
                 const res = await fetchYouTube('channels', { part: 'snippet', id: batch.join(',') });
                 if (res.items) {
                     // Optimization: Bulk write to DB to cache avatars for all members (used by Twitch check)
@@ -461,10 +462,16 @@ const v12_logic = {
                     if (bulkOps.length > 0) await db.collection('channels').bulkWrite(bulkOps);
 
                     res.items.forEach(c => {
+                        // Debug log for specific status
+                        if (c.snippet.liveBroadcastContent !== 'none') {
+                            console.log(`[Debug] Channel ${c.snippet.title} (${c.id}) status: ${c.snippet.liveBroadcastContent}`);
+                        }
+
                         if (c.snippet.liveBroadcastContent === 'live') {
                             // Find member
                             const member = members.find(m => m.ytId === c.id);
                             if (member) {
+                                console.log(`[Debug] FOUND LIVE: ${member.name}`);
                                 liveStreams.push({
                                     memberName: member.name,
                                     platform: 'youtube',
@@ -476,6 +483,8 @@ const v12_logic = {
                             }
                         }
                     });
+                } else {
+                    console.warn(`[Debug] YT API returned no items for batch. Response:`, JSON.stringify(res).slice(0, 200));
                 }
             } catch (e) { console.error('YT Live Check Error:', e); }
         }
