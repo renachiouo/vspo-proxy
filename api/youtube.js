@@ -497,6 +497,17 @@ const v12_logic = {
             const results = await Promise.all(rssPromises);
             const candidates = results.filter(r => r);
 
+            // --- SAFETY LOCK ---
+            // If we have YouTube members but found 0 RSS candidates, it implies network failure or blocking.
+            // In this case, we ABORT the update to prevent clearing the active stream list (Preserve old data).
+            if (ytMembers.length > 0 && candidates.length === 0) {
+                console.warn('[Warning] RSS Check returned 0 candidates. Potential network issue/blocking. Aborting update to preserve old data.');
+                // We still want to save Twitch streams if they exist?
+                // Complex decision. If we overwrite, we lose YT streams.
+                // Better to skip the entire update if YT check fails catastrophically.
+                return;
+            }
+
             // 2. Batch Check Videos
             const videoIds = candidates.map(c => c.vid);
             // Deduplicate
