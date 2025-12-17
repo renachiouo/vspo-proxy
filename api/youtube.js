@@ -534,8 +534,16 @@ export default async function handler(req, res) {
             }
         }
 
+
         // Fix: Use 'source' to query, so 'type' can be 'video'/'short'
+        const blacklistDoc = await db.collection('lists').findOne({ _id: isForeign ? 'blacklist_jp' : 'blacklist_cn' });
+        const blacklist = blacklistDoc?.items || [];
+
         const query = isForeign ? { source: 'foreign' } : { source: 'main' };
+        if (blacklist.length > 0) {
+            query.channelId = { $nin: blacklist };
+        }
+
         // Limit 1000 for CN (as requested), 7000 for JP (to cover 90 days)
         // Project to exclude large fields (description) to stay within Vercel payload limits
         const rawVideos = await db.collection('videos')
