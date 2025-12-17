@@ -461,7 +461,12 @@ const v12_logic = {
                     }));
                     if (bulkOps.length > 0) await db.collection('channels').bulkWrite(bulkOps);
 
-                    res.items.forEach(c => {
+                    res.items.forEach((c, index) => {
+                        // Debug log for first item to inspect structure
+                        if (index === 0) {
+                            console.log(`[Debug] First Channel Snippet Inspect:`, JSON.stringify(c.snippet));
+                        }
+
                         // Debug log for specific status
                         if (c.snippet.liveBroadcastContent !== 'none') {
                             console.log(`[Debug] Channel ${c.snippet.title} (${c.id}) status: ${c.snippet.liveBroadcastContent}`);
@@ -594,6 +599,11 @@ async function handleAdminAction(req, res, db, body) {
             await db.collection('lists').updateOne({ _id: 'pending_jp' }, { $pull: { items: channelId } });
             await db.collection('lists').updateOne({ _id: 'blacklist_jp' }, { $addToSet: { items: channelId } }, { upsert: true });
             await logAdminAction(db, 'reject_jp', { channelId });
+            return res.json({ success: true });
+
+        case 'trigger_live_check':
+            console.log('[Admin] Manually triggering Live Status Check...');
+            await v12_logic.updateLiveStatus(db);
             return res.json({ success: true });
 
         case 'delete':
