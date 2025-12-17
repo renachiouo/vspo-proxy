@@ -273,6 +273,7 @@ const v12_logic = {
         // Store
         await this.processAndStoreVideos([...newVideoCandidates], db, 'main', { retentionDate, blacklist });
         await this.cleanupExpiredVideos(db);
+        await this.verifyActiveVideos(db, 'main');
     },
 
     async updateForeignClips(db) {
@@ -297,6 +298,7 @@ const v12_logic = {
         }
 
         await this.processAndStoreVideos([...newVideoCandidates], db, 'foreign', { retentionDate, blacklist: blJp?.items || [] });
+        await this.verifyActiveVideos(db, 'foreign');
     },
 
     async updateForeignClipsKeywords(db) {
@@ -331,6 +333,38 @@ const v12_logic = {
 
         // Store channels to 'pending_jp' list, NOT videos to DB
         await this.processAndStoreVideos([...videoIds], db, 'foreign', { retentionDate, blacklist: [], targetList: 'pending_jp' });
+    },
+
+    async verifyActiveVideos(db, source) {
+        console.log(`[Mongo] Verifying ${source} videos availability...`);
+        const checkDate = new Date(); checkDate.setDate(checkDate.getDate() - 7); // Check recent 7 days
+        const videos = await db.collection('videos').find(
+            { source, publishedAt: { $gt: checkDate } },
+            { projection: { _id: 1 } }
+        ).toArray();
+
+        if (videos.length === 0) return;
+        console.log(`[Verify] Checking ${videos.length} videos...`);
+
+        const ids = videos.map(v => v._id);
+        const validIds = new Set();
+
+        for (const batch of batchArray(ids, 50)) {
+            try {
+                // If video is deleted/private, it won't appear in items
+                const res = await fetchYouTube('videos', { part: 'id', id: batch.join(',') });
+                res.items?.forEach(i => validIds.add(i.id));
+            } catch (e) { console.error('Verify Fetch Error:', e); }
+        }
+
+        const deletedIds = ids.filter(id => !validIds.has(id));
+
+        if (deletedIds.length > 0) {
+            console.log(`[Verify] Found ${deletedIds.length} invalid/deleted videos. Removing...`);
+            await db.collection('videos').deleteMany({ _id: { $in: deletedIds } });
+        } else {
+            console.log(`[Verify] All ${ids.length} recent videos are valid.`);
+        }
     }
 };
 
