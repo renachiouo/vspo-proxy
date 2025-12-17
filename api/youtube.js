@@ -449,7 +449,8 @@ const v12_logic = {
             try {
                 // Check 'snippet' for liveBroadcastContent
                 console.log(`[Debug] Checking YT Live batch of ${batch.length} channels...`);
-                const res = await fetchYouTube('channels', { part: 'snippet', id: batch.join(',') });
+                // Attempt to force liveBroadcastContent by requesting more parts
+                const res = await fetchYouTube('channels', { part: 'snippet,contentDetails,statistics', id: batch.join(',') });
                 if (res.items) {
                     // Optimization: Bulk write to DB to cache avatars for all members (used by Twitch check)
                     const bulkOps = res.items.map(c => ({
