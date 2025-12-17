@@ -23,31 +23,32 @@ JP_YT
 千燈ゆうひ, UCuDY3ibSP2MFRgf7eo3cojg, UCNfxcLBvnwT9nCDy7OR-i_Q
 蝶屋はなび, UCL9hJsdk9eQa0IlWbFB2oRg
 甘結もか, UC8vKBjGY2HVfbW9GAmgikWw
-
 JP_TWITCH
-花芽すみれ, 695556933
-花芽なずな, 790167759
+花芽すみれ, 695556933, https://www.twitch.tv/kagasumire
+花芽なずな, 790167759, https://www.twitch.tv/nazunakaga
 小雀とと, 
-一ノ瀬うるは, 582689327
-胡桃のあ, 600770697
+一ノ瀬うるは, 582689327, https://www.twitch.tv/uruhaichinose
+胡桃のあ, 600770697, https://www.twitch.tv/963noah
 兎咲ミミ, 
-空澄セナ, 776751504
-橘ひなの, 568682215
-英リサ, 777700650
-如月れん, 722162135
-神成きゅぴ, 550676410
-八雲べに, 700465409
-藍沢エマ, 848822715
-紫宮るな, 773185713
-猫汰つな, 858359105
-白波らむね, 858359149
-小森めと, 801682194
-夢野あかり, 584184005
-夜乃くろむ, 1250148772
-紡木こかげ, 1184405770
-千燈ゆうひ, 1097252496
-蝶屋はなび, 1361841459
+空澄セナ, 776751504, https://www.twitch.tv/asumisena
+橘ひなの, 568682215, https://www.twitch.tv/hinanotachiba7
+英リサ, 777700650, https://www.twitch.tv/lisahanabusa
+如月れん, 722162135, https://www.twitch.tv/ren_kisaragi__
+神成きゅぴ, 550676410, https://www.twitch.tv/kaminariqpi
+八雲べに, 700465409, https://www.twitch.tv/yakumobeni
+藍沢エマ, 848822715, https://www.twitch.tv/emtsmaru
+紫宮るな, 773185713, https://www.twitch.tv/shinomiya_runa
+猫汰つな, 858359105, https://www.twitch.tv/tsuna_nekota
+白波らむね, 858359149, https://www.twitch.tv/ramuneshiranami
+小森めと, 801682194, https://www.twitch.tv/met_komori
+夢野あかり, 584184005, https://www.twitch.tv/akarindao
+夜乃くろむ, 1250148772, https://www.twitch.tv/kuromuyano
+紡木こかげ, 1184405770, https://www.twitch.tv/kokagetsumugi
+千燈ゆうひ, 1097252496, https://www.twitch.tv/sendo_yuuhi
+蝶屋はなび, 1361841459, https://www.twitch.tv/choyahanabi
 甘結もか, 
+
+
 
 EN_YT
 Remia Aotsuki, UCCra1t-eIlO3ULyXQQMD9Xw
@@ -57,10 +58,11 @@ Narin Mikure, UCKSpM183c85d5V2cW5qaUjA
 Riko Solari, UC7Xglp1fske9zmRe7Oj8YyA
 Eris Suzukami, UCp_3ej2br9l9L1DSoHVDZGw
 
+
 EN_TWITCH
-Remia Aotsuki, 1102206195
-Arya Kuroha, 1102211983
-Jira Jisaki, 1102212264
-Narin Mikure, 1125214436
-Riko Solari, 1125216387
+Remia Aotsuki, 1102206195, https://www.twitch.tv/remiaaotsuki
+Arya Kuroha, 1102211983, https://www.twitch.tv/aryakuroha
+Jira Jisaki, 1102212264, https://www.twitch.tv/jirajisaki
+Narin Mikure, 1125214436, https://www.twitch.tv/narinmikure
+Riko Solari, 1125216387, https://www.twitch.tv/rikosolari
 Eris Suzukami, 

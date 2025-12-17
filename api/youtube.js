@@ -449,22 +449,34 @@ const v12_logic = {
             try {
                 // Check 'snippet' for liveBroadcastContent
                 const res = await fetchYouTube('channels', { part: 'snippet', id: batch.join(',') });
-                res.items?.forEach(c => {
-                    if (c.snippet.liveBroadcastContent === 'live') {
-                        // Find member
-                        const member = members.find(m => m.ytId === c.id);
-                        if (member) {
-                            liveStreams.push({
-                                memberName: member.name,
-                                platform: 'youtube',
-                                channelId: c.id,
-                                avatarUrl: c.snippet.thumbnails.default?.url,
-                                title: c.snippet.title,
-                                url: `https://www.youtube.com/channel/${c.id}/live`
-                            });
+                if (res.items) {
+                    // Optimization: Bulk write to DB to cache avatars for all members (used by Twitch check)
+                    const bulkOps = res.items.map(c => ({
+                        updateOne: {
+                            filter: { _id: c.id },
+                            update: { $set: { title: c.snippet.title, thumbnail: c.snippet.thumbnails.default?.url || '' } },
+                            upsert: true
                         }
-                    }
-                });
+                    }));
+                    if (bulkOps.length > 0) await db.collection('channels').bulkWrite(bulkOps);
+
+                    res.items.forEach(c => {
+                        if (c.snippet.liveBroadcastContent === 'live') {
+                            // Find member
+                            const member = members.find(m => m.ytId === c.id);
+                            if (member) {
+                                liveStreams.push({
+                                    memberName: member.name,
+                                    platform: 'youtube',
+                                    channelId: c.id,
+                                    avatarUrl: c.snippet.thumbnails.default?.url,
+                                    title: c.snippet.title,
+                                    url: `https://www.youtube.com/channel/${c.id}/live`
+                                });
+                            }
+                        }
+                    });
+                }
             } catch (e) { console.error('YT Live Check Error:', e); }
         }
 
@@ -484,10 +496,10 @@ const v12_logic = {
                         liveStreams.push({
                             memberName: member.name,
                             platform: 'twitch',
-                            channelId: s.user_name,
+                            channelId: s.user_login, // Use login handle
                             avatarUrl,
                             title: s.title,
-                            url: `https://www.twitch.tv/${s.user_name}`
+                            url: `https://www.twitch.tv/${s.user_login}` // Correct URL using login
                         });
                     }
                 }
