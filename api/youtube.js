@@ -147,7 +147,7 @@ const fetchYouTube = async (endpoint, params) => {
         const url = `https://www.googleapis.com/youtube/v3/${endpoint}?${new URLSearchParams(params)}&key=${apiKey}`;
         try {
             const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 5000); // 5s timeout
+            const timeoutId = setTimeout(() => controller.abort(), 2500); // 2.5s timeout
             const res = await fetch(url, { signal: controller.signal });
             clearTimeout(timeoutId);
 
