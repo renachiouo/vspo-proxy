@@ -142,9 +142,17 @@ async function incrementAndGetVisitorCount(db) {
     return { totalVisits: total?.count || 0, todayVisits: today?.count || 0 };
 }
 
+let currentKeyIndex = 0;
+
 const fetchYouTube = async (endpoint, params) => {
-    for (const apiKey of apiKeys) {
+    const totalKeys = apiKeys.length;
+    const startIndex = currentKeyIndex;
+
+    for (let i = 0; i < totalKeys; i++) {
+        const index = (startIndex + i) % totalKeys;
+        const apiKey = apiKeys[index];
         const url = `https://www.googleapis.com/youtube/v3/${endpoint}?${new URLSearchParams(params)}&key=${apiKey}`;
+
         try {
             const controller = new AbortController();
             const timeoutId = setTimeout(() => controller.abort(), 2500); // 2.5s timeout
@@ -152,8 +160,17 @@ const fetchYouTube = async (endpoint, params) => {
             clearTimeout(timeoutId);
 
             const data = await res.json();
-            if (data.error && (data.error.message.toLowerCase().includes('quota') || data.error.reason === 'quotaExceeded')) continue;
+            if (data.error && (data.error.message.toLowerCase().includes('quota') || data.error.reason === 'quotaExceeded')) {
+                console.warn(`[YouTube API] Key ${index} Quota Exceeded. Rotating...`);
+                currentKeyIndex = (currentKeyIndex + 1) % totalKeys; // Rotate globally
+                continue;
+            }
             if (data.error) throw new Error(data.error.message);
+
+            // On success, we arguably keep currentKeyIndex where it is.
+            // If we started at index 5 and it worked, currentKeyIndex is already 5 (if logic above holds).
+            // Actually, if we loop: i=0 (index=startIndex). If success, currentKeyIndex remains startIndex.
+            // If i=1 (startIndex fail), currentKeyIndex was incremented. So next call starts at index+1. Correct.
             return data;
         } catch (e) {
             // Log error (optional) but continue to next key
