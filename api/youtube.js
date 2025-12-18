@@ -607,8 +607,11 @@ const v12_logic = {
                                         const userData = await userRes.json();
                                         if (userData.code === 0 && userData.data) {
                                             avatarUrl = userData.data.face;
-                                            // console.log(`[Bilibili Debug] Got Avatar for ${member.name}: ${avatarUrl}`);
+                                        } else {
+                                            console.warn(`[Bilibili Avatar Fail] ${member.name}: Code ${userData.code}`);
                                         }
+                                    } else {
+                                        console.warn(`[Bilibili Avatar Fail] HTTP ${userRes.status}`);
                                     }
                                 } catch (err) { console.error(`[Bilibili Avatar Error] ${member.name}:`, err); }
                             }
