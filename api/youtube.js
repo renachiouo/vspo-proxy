@@ -587,14 +587,18 @@ const v12_logic = {
                             clearTimeout(timeout);
                             if (!rssRes.ok) return null;
                             const text = await rssRes.text();
-                            // Simple Regex Extract
-                            const match = text.match(/<yt:videoId>(.*?)<\/yt:videoId>/);
-                            return match ? { mid: m.ytId, vid: match[1] } : null;
+                            // Capture ALL video IDs (up to 3 to be safe) in the feed
+                            const matches = [...text.matchAll(/<yt:videoId>(.*?)<\/yt:videoId>/g)];
+                            if (!matches || matches.length === 0) return null;
+                            // Return array of candidates
+                            return matches.slice(0, 3).map(m => ({ mid: m.ytId, vid: m[1] }));
                         } catch (e) { return null; }
                     });
 
                     const batchResults = await Promise.all(batchPromises);
-                    results.push(...batchResults);
+                    // batchResults is now [ [{mid, vid}, {mid, vid}], null, ... ]
+                    // Flatten it
+                    batchResults.forEach(r => { if (Array.isArray(r)) results.push(...r); });
 
                     // Small delay between batches
                     await new Promise(r => setTimeout(r, 200));
