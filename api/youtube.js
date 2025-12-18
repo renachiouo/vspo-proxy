@@ -616,167 +616,162 @@ const v12_logic = {
                     } else {
                         console.warn(`[Bilibili Fail] Status ${res.status}`);
                     }
-                    console.log(`[Bilibili] Found Live: ${member.name}`);
+                } catch (e) {
+                    console.error(`[Bilibili Error] ${member.name}:`, e);
                 }
-                    } else {
-        console.warn(`[Bilibili Fail] Status ${res.status}`);
-    }
-} catch (e) {
-    console.error(`[Bilibili Error] ${member.name}:`, e);
-}
             }
 
-// --- NEW STRATEGY: RSS + Video Check (Bypass Channels API bug) ---
-console.log('[Debug] Starting RSS Live Check...');
-// 1. Fetch RSS for all channels to get latest video ID
-// 2. Check video status via API
+            // --- NEW STRATEGY: RSS + Video Check (Bypass Channels API bug) ---
+            console.log('[Debug] Starting RSS Live Check...');
+            // 1. Fetch RSS for all channels to get latest video ID
+            // 2. Check video status via API
 
-const ytMembers = members.filter(m => m.ytId);
-console.log(`[Debug] Fetching RSS for ${ytMembers.length} channels...`);
-try {
-    // 1. Fetch RSS in Batches (to avoid rate limits/timeouts)
-    const results = [];
-
-    // [Smart Retention] Load currently persistent live streams to prevent flickering
-    const currentStatusDoc = await db.collection('metadata').findOne({ _id: 'live_status' });
-    const currentActiveVideoIds = (currentStatusDoc?.streams || [])
-        .filter(s => s.platform === 'youtube' && s.vid) // Ensure it has vid
-        .map(s => s.vid);
-    console.log(`[Debug] Retaining ${currentActiveVideoIds.length} active streams for verification.`);
-
-    let rssBatchCount = 0;
-    for (const batch of batchArray(ytMembers, 5)) { // Batch size 5
-        rssBatchCount++;
-        console.log(`[Debug] Processing RSS Batch ${rssBatchCount}...`);
-        const batchPromises = batch.map(async m => {
+            const ytMembers = members.filter(m => m.ytId);
+            console.log(`[Debug] Fetching RSS for ${ytMembers.length} channels...`);
             try {
-                const ctrl = new AbortController();
-                const timeout = setTimeout(() => ctrl.abort(), 3000); // 3s timeout
-                const rssRes = await fetch(`https://www.youtube.com/feeds/videos.xml?channel_id=${m.ytId}`, { signal: ctrl.signal });
-                clearTimeout(timeout);
-                if (!rssRes.ok) return null;
-                const text = await rssRes.text();
-                // Capture ALL video IDs (up to 3 to be safe) in the feed
-                const matches = [...text.matchAll(/<yt:videoId>(.*?)<\/yt:videoId>/g)];
-                if (!matches || matches.length === 0) return null;
-                // Return array of candidates
-                return matches.slice(0, 3).map(m => ({ mid: m.ytId, vid: m[1] }));
-            } catch (e) { return null; }
-        });
+                // 1. Fetch RSS in Batches (to avoid rate limits/timeouts)
+                const results = [];
 
-        const batchResults = await Promise.all(batchPromises);
-        // batchResults is now [ [{mid, vid}, {mid, vid}], null, ... ]
-        // Flatten it
-        batchResults.forEach(r => { if (Array.isArray(r)) results.push(...r); });
+                // [Smart Retention] Load currently persistent live streams to prevent flickering
+                const currentStatusDoc = await db.collection('metadata').findOne({ _id: 'live_status' });
+                const currentActiveVideoIds = (currentStatusDoc?.streams || [])
+                    .filter(s => s.platform === 'youtube' && s.vid) // Ensure it has vid
+                    .map(s => s.vid);
+                console.log(`[Debug] Retaining ${currentActiveVideoIds.length} active streams for verification.`);
 
-        // Small delay between batches
-        await new Promise(r => setTimeout(r, 200));
-    }
-    const candidates = results.filter(r => r);
+                let rssBatchCount = 0;
+                for (const batch of batchArray(ytMembers, 5)) { // Batch size 5
+                    rssBatchCount++;
+                    console.log(`[Debug] Processing RSS Batch ${rssBatchCount}...`);
+                    const batchPromises = batch.map(async m => {
+                        try {
+                            const ctrl = new AbortController();
+                            const timeout = setTimeout(() => ctrl.abort(), 3000); // 3s timeout
+                            const rssRes = await fetch(`https://www.youtube.com/feeds/videos.xml?channel_id=${m.ytId}`, { signal: ctrl.signal });
+                            clearTimeout(timeout);
+                            if (!rssRes.ok) return null;
+                            const text = await rssRes.text();
+                            // Capture ALL video IDs (up to 3 to be safe) in the feed
+                            const matches = [...text.matchAll(/<yt:videoId>(.*?)<\/yt:videoId>/g)];
+                            if (!matches || matches.length === 0) return null;
+                            // Return array of candidates
+                            return matches.slice(0, 3).map(m => ({ mid: m.ytId, vid: m[1] }));
+                        } catch (e) { return null; }
+                    });
 
-    // --- SAFETY LOCK ---
-    // If we have YouTube members but found 0 RSS candidates, it implies network failure or blocking.
-    // In this case, we ABORT the update to prevent clearing the active stream list (Preserve old data).
-    if (ytMembers.length > 0 && candidates.length === 0) {
-        console.warn('[Warning] RSS Check returned 0 candidates. Potential network issue/blocking. Aborting update to preserve old data.');
-        // We still want to save Twitch streams if they exist?
-        // Complex decision. If we overwrite, we lose YT streams.
-        // Better to skip the entire update if YT check fails catastrophically.
-        return;
-    }
+                    const batchResults = await Promise.all(batchPromises);
+                    // batchResults is now [ [{mid, vid}, {mid, vid}], null, ... ]
+                    // Flatten it
+                    batchResults.forEach(r => { if (Array.isArray(r)) results.push(...r); });
 
-    // 2. Batch Check Videos
-    const videoIds = candidates.map(c => c.vid);
+                    // Small delay between batches
+                    await new Promise(r => setTimeout(r, 200));
+                }
+                const candidates = results.filter(r => r);
 
-    // [Smart Retention] Merge known active IDs into the check list
-    if (currentActiveVideoIds.length > 0) {
-        videoIds.push(...currentActiveVideoIds);
-    }
+                // --- SAFETY LOCK ---
+                // If we have YouTube members but found 0 RSS candidates, it implies network failure or blocking.
+                // In this case, we ABORT the update to prevent clearing the active stream list (Preserve old data).
+                if (ytMembers.length > 0 && candidates.length === 0) {
+                    console.warn('[Warning] RSS Check returned 0 candidates. Potential network issue/blocking. Aborting update to preserve old data.');
+                    // We still want to save Twitch streams if they exist?
+                    // Complex decision. If we overwrite, we lose YT streams.
+                    // Better to skip the entire update if YT check fails catastrophically.
+                    return;
+                }
 
-    // Deduplicate
-    const uniqueVideoIds = [...new Set(videoIds)];
+                // 2. Batch Check Videos
+                const videoIds = candidates.map(c => c.vid);
 
-    if (uniqueVideoIds.length > 0) {
-        for (const batch of batchArray(uniqueVideoIds, 50)) {
-            try {
-                console.log(`[Debug] Checking YT Video Status Batch: ${batch.length}`);
-                const vRes = await fetchYouTube('videos', { part: 'snippet,liveStreamingDetails', id: batch.join(',') });
+                // [Smart Retention] Merge known active IDs into the check list
+                if (currentActiveVideoIds.length > 0) {
+                    videoIds.push(...currentActiveVideoIds);
+                }
 
-                // Populate Avatar Cache if we missed it (optional, but good for completeness)
-                // Actually we can't easily get channel avatar from videos endpoint part=snippet (it doesn't have avatar url)
-                // But we can assume DB has it or use placeholder.
+                // Deduplicate
+                const uniqueVideoIds = [...new Set(videoIds)];
 
-                vRes.items?.forEach(v => {
-                    // Check if Live
-                    console.log(`[Debug] Video Status: ${v.id} | ${v.snippet.liveBroadcastContent} | ${v.snippet.title}`); // Trace Log
-                    const isLive = v.snippet.liveBroadcastContent === 'live';
-                    // Also checking liveStreamingDetails to be sure it's not finished
-                    const isActive = isLive || (v.snippet.liveBroadcastContent === 'upcoming' && false); // We only want LIVE
+                if (uniqueVideoIds.length > 0) {
+                    for (const batch of batchArray(uniqueVideoIds, 50)) {
+                        try {
+                            console.log(`[Debug] Checking YT Video Status Batch: ${batch.length}`);
+                            const vRes = await fetchYouTube('videos', { part: 'snippet,liveStreamingDetails', id: batch.join(',') });
 
-                    if (isLive) {
-                        const member = ytMembers.find(m => m.ytId === v.snippet.channelId);
-                        if (member) {
-                            // Get Avatar from DB 
-                            // We need to fetch from DB because 'videos' endpoint doesn't give channel avatar
-                            // We can try to fetch simple channel info if missing? 
-                            // For now let's hope it's in DB or use PLACEHOLDER
+                            // Populate Avatar Cache if we missed it (optional, but good for completeness)
+                            // Actually we can't easily get channel avatar from videos endpoint part=snippet (it doesn't have avatar url)
+                            // But we can assume DB has it or use placeholder.
 
-                            liveStreams.push({
-                                memberName: member.name,
-                                platform: 'youtube',
-                                channelId: v.snippet.channelId,
-                                avatarUrl: '', // Will be filled by DB later or Frontend fallback
-                                title: v.snippet.title,
-                                url: `https://www.youtube.com/watch?v=${v.id}`
+                            vRes.items?.forEach(v => {
+                                // Check if Live
+                                console.log(`[Debug] Video Status: ${v.id} | ${v.snippet.liveBroadcastContent} | ${v.snippet.title}`); // Trace Log
+                                const isLive = v.snippet.liveBroadcastContent === 'live';
+                                // Also checking liveStreamingDetails to be sure it's not finished
+                                const isActive = isLive || (v.snippet.liveBroadcastContent === 'upcoming' && false); // We only want LIVE
+
+                                if (isLive) {
+                                    const member = ytMembers.find(m => m.ytId === v.snippet.channelId);
+                                    if (member) {
+                                        // Get Avatar from DB 
+                                        // We need to fetch from DB because 'videos' endpoint doesn't give channel avatar
+                                        // We can try to fetch simple channel info if missing? 
+                                        // For now let's hope it's in DB or use PLACEHOLDER
+
+                                        liveStreams.push({
+                                            memberName: member.name,
+                                            platform: 'youtube',
+                                            channelId: v.snippet.channelId,
+                                            avatarUrl: '', // Will be filled by DB later or Frontend fallback
+                                            title: v.snippet.title,
+                                            url: `https://www.youtube.com/watch?v=${v.id}`
+                                        });
+                                    }
+                                }
                             });
-                        }
+
+                        } catch (e) { console.error('YT Video Check Error:', e); }
                     }
-                });
+                }
 
-            } catch (e) { console.error('YT Video Check Error:', e); }
-        }
-    }
+                // Fill Avatars from DB
+                for (const stream of liveStreams) {
+                    if (!stream.avatarUrl && stream.platform === 'youtube') {
+                        const dbCh = await db.collection('channels').findOne({ _id: stream.channelId });
+                        if (dbCh) stream.avatarUrl = dbCh.thumbnail;
+                    }
+                }
 
-    // Fill Avatars from DB
-    for (const stream of liveStreams) {
-        if (!stream.avatarUrl && stream.platform === 'youtube') {
-            const dbCh = await db.collection('channels').findOne({ _id: stream.channelId });
-            if (dbCh) stream.avatarUrl = dbCh.thumbnail;
-        }
-    }
-
-} catch (e) { console.error('RSS Check Error:', e); }
+            } catch (e) { console.error('RSS Check Error:', e); }
 
 
-// Sort liveStreams: Official FIRST, then by Member Order (Seniority)
-const memberIndexMap = new Map(VSPO_MEMBERS.map((m, i) => [m.name, i]));
-const OFFICIAL_NAME = "ぶいすぽっ!【公式】";
+            // Sort liveStreams: Official FIRST, then by Member Order (Seniority)
+            const memberIndexMap = new Map(VSPO_MEMBERS.map((m, i) => [m.name, i]));
+            const OFFICIAL_NAME = "ぶいすぽっ!【公式】";
 
-liveStreams.sort((a, b) => {
-    if (a.memberName === OFFICIAL_NAME) return -1;
-    if (b.memberName === OFFICIAL_NAME) return 1;
+            liveStreams.sort((a, b) => {
+                if (a.memberName === OFFICIAL_NAME) return -1;
+                if (b.memberName === OFFICIAL_NAME) return 1;
 
-    const idxA = memberIndexMap.get(a.memberName) ?? 999;
-    const idxB = memberIndexMap.get(b.memberName) ?? 999;
-    return idxA - idxB;
-});
+                const idxA = memberIndexMap.get(a.memberName) ?? 999;
+                const idxB = memberIndexMap.get(b.memberName) ?? 999;
+                return idxA - idxB;
+            });
 
-// Store result
-await db.collection('metadata').updateOne(
-    { _id: 'live_status' },
-    { $set: { streams: liveStreams, timestamp: Date.now(), isUpdating: false } },
-    { upsert: true }
-);
-console.log(`[Mongo] Live Status Updated: ${liveStreams.length} active streams.`);
+            // Store result
+            await db.collection('metadata').updateOne(
+                { _id: 'live_status' },
+                { $set: { streams: liveStreams, timestamp: Date.now(), isUpdating: false } },
+                { upsert: true }
+            );
+            console.log(`[Mongo] Live Status Updated: ${liveStreams.length} active streams.`);
 
         } catch (fatalError) {
-    console.error('[Fatal] Live Status Update Failed:', fatalError);
-    // Ensure lock is released even on fatal error
-    await db.collection('metadata').updateOne(
-        { _id: 'live_status' },
-        { $set: { isUpdating: false } }
-    );
-}
+            console.error('[Fatal] Live Status Update Failed:', fatalError);
+            // Ensure lock is released even on fatal error
+            await db.collection('metadata').updateOne(
+                { _id: 'live_status' },
+                { $set: { isUpdating: false } }
+            );
+        }
     }
 };
 
