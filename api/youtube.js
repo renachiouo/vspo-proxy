@@ -576,41 +576,57 @@ const v12_logic = {
             for (const member of biliMembers) {
                 try {
                     console.log(`[Bilibili Debug] Checking ${member.name} (${member.bilibiliId})`);
-                    // Use new API to get both room info (status) and anchor info (avatar)
-                    const url = `https://api.live.bilibili.com/xlive/web-room/v1/index/getInfoByRoom?room_id=${member.bilibiliId}`;
-                    // Spoof User-Agent to bypass basic WAF
+
+                    // 1. Status Check (Using reliable legacy API)
+                    const statusUrl = `https://api.live.bilibili.com/room/v1/Room/get_info?room_id=${member.bilibiliId}`;
                     const headers = {
                         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
                         'Referer': `https://live.bilibili.com/${member.bilibiliId}`
                     };
-                    const res = await fetch(url, { headers });
+
+                    const res = await fetch(statusUrl, { headers });
                     if (res.ok) {
                         const json = await res.json();
-                        console.log(`[Bilibili Debug] ${member.name}: Code ${json.code} Status ${json.data?.room_info?.live_status}`); // Trace
-                        // Checks: Code 0, Data exists, Room Info exists, Status 1
-                        if (json.code === 0 && json.data && json.data.room_info && json.data.room_info.live_status === 1) {
-                            const roomInfo = json.data.room_info;
-                            const anchorInfo = json.data.anchor_info?.base_info;
+                        console.log(`[Bilibili Debug] ${member.name}: Code ${json.code} Status ${json.data?.live_status}`);
 
-                            // LIVE!
+                        if (json.code === 0 && json.data && json.data.live_status === 1) {
+                            const roomData = json.data;
+                            const uid = roomData.uid;
+
+                            // 2. Avatar Fetch (Only if Live) - Fetch User Profile
                             let avatarUrl = '';
+                            // Check DB first (unlikely for new members)
                             if (member.ytId) {
                                 const dbChannel = await db.collection('channels').findOne({ _id: member.ytId });
                                 avatarUrl = dbChannel?.thumbnail || '';
                             }
-                            // Fallback to Bilibili Face (Avatar)
-                            if (!avatarUrl && anchorInfo?.face) {
-                                avatarUrl = anchorInfo.face;
+
+                            // Fetch real avatar from Bilibili User API
+                            if (!avatarUrl && uid) {
+                                try {
+                                    const userUrl = `https://api.bilibili.com/x/space/acc/info?mid=${uid}`;
+                                    const userRes = await fetch(userUrl, { headers });
+                                    if (userRes.ok) {
+                                        const userData = await userRes.json();
+                                        if (userData.code === 0 && userData.data) {
+                                            avatarUrl = userData.data.face;
+                                            // console.log(`[Bilibili Debug] Got Avatar for ${member.name}: ${avatarUrl}`);
+                                        }
+                                    }
+                                } catch (err) { console.error(`[Bilibili Avatar Error] ${member.name}:`, err); }
                             }
+
+                            // Fallback to cover if still no avatar
+                            if (!avatarUrl) avatarUrl = roomData.user_cover || roomData.keyframe;
 
                             liveStreams.push({
                                 memberName: member.name,
                                 platform: 'bilibili',
                                 channelId: member.bilibiliId,
                                 avatarUrl,
-                                title: roomInfo.title,
+                                title: roomData.title,
                                 url: `https://live.bilibili.com/${member.bilibiliId}`,
-                                thumbnail: roomInfo.cover || roomInfo.keyframe
+                                thumbnail: roomData.user_cover || roomData.keyframe
                             });
                             console.log(`[Bilibili] Found Live: ${member.name}`);
                         }
