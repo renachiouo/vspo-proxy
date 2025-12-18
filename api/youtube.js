@@ -868,7 +868,8 @@ export default async function handler(req, res) {
 
         const authenticate = () => {
             const pass = req.headers.authorization?.split(' ')[1] || searchParams.get('password');
-            return process.env.ADMIN_PASSWORD && pass === process.env.ADMIN_PASSWORD;
+            return (process.env.ADMIN_PASSWORD && pass === process.env.ADMIN_PASSWORD) ||
+                (process.env.CRON_SECRET && pass === process.env.CRON_SECRET);
         };
 
         if (forceRefresh) {
