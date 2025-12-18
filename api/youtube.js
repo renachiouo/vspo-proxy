@@ -196,10 +196,7 @@ const fetchYouTube = async (endpoint, params) => {
             }
             if (data.error) throw new Error(data.error.message);
 
-            // On success, we arguably keep currentKeyIndex where it is.
-            // If we started at index 5 and it worked, currentKeyIndex is already 5 (if logic above holds).
-            // Actually, if we loop: i=0 (index=startIndex). If success, currentKeyIndex remains startIndex.
-            // If i=1 (startIndex fail), currentKeyIndex was incremented. So next call starts at index+1. Correct.
+
             return data;
         } catch (e) {
             // Log error (optional) but continue to next key
