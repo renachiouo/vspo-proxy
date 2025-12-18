@@ -47,11 +47,11 @@ const VSPO_MEMBERS = [
     { name: "蝶屋はなび", ytId: "UCL9hJsdk9eQa0IlWbFB2oRg", twitchId: "1361841459" },
     { name: "甘結もか", ytId: "UC8vKBjGY2HVfbW9GAmgikWw", twitchId: "" },
     { name: "ぶいすぽっ!【公式】", ytId: "UCuI5XaO-6VkOEhHao6ij7JA", twitchId: "" },
-    { name: "Remia Aotsuki", ytId: "UCCra1t-eIlO3ULyXQQMD9Xw", twitchId: "1102206195" },
-    { name: "Arya Kuroha", ytId: "UCLlJpxXt6L5d-XQ0cDdIyDQ", twitchId: "1102211983" },
-    { name: "Jira Jisaki", ytId: "UCeCWj-SiJG9SWN6wGORiLmw", twitchId: "1102212264" },
-    { name: "Narin Mikure", ytId: "UCKSpM183c85d5V2cW5qaUjA", twitchId: "1125214436" },
-    { name: "Riko Solari", ytId: "UC7Xglp1fske9zmRe7Oj8YyA", twitchId: "1125216387" },
+    { name: "Remia Aotsuki", ytId: "UCCra1t-eIlO3ULyXQQMD9Xw", twitchId: "1102206195", bilibiliId: "1972360561" },
+    { name: "Arya Kuroha", ytId: "UCLlJpxXt6L5d-XQ0cDdIyDQ", twitchId: "1102211983", bilibiliId: "1842209652" },
+    { name: "Jira Jisaki", ytId: "UCeCWj-SiJG9SWN6wGORiLmw", twitchId: "1102212264", bilibiliId: "1742801253" },
+    { name: "Narin Mikure", ytId: "UCKSpM183c85d5V2cW5qaUjA", twitchId: "1125214436", bilibiliId: "1996441034" },
+    { name: "Riko Solari", ytId: "UC7Xglp1fske9zmRe7Oj8YyA", twitchId: "1125216387", bilibiliId: "1833448662" },
     { name: "Eris Suzukami", ytId: "UCp_3ej2br9l9L1DSoHVDZGw", twitchId: "" }
 ];
 
@@ -564,6 +564,47 @@ const v12_logic = {
                     }
                 }
             } catch (e) { console.error('Twitch Check Error:', e); }
+
+            // --- Bilibili Live Check ---
+            console.log('[Debug] Starting Bilibili Live Check...');
+            const biliMembers = members.filter(m => m.bilibiliId);
+            for (const member of biliMembers) {
+                try {
+                    // [Bilibili Debug] Checking ${member.name} (${member.bilibiliId})
+                    const url = `https://api.live.bilibili.com/room/v1/Room/get_info?room_id=${member.bilibiliId}`;
+                    // Spoof User-Agent to bypass basic WAF
+                    const headers = {
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                        'Referer': `https://live.bilibili.com/${member.bilibiliId}`
+                    };
+                    const res = await fetch(url, { headers });
+                    if (res.ok) {
+                        const data = await res.json();
+                        // console.log(`[Bilibili Debug] ${member.name}: Status ${data.data?.live_status}`); // Trace
+                        if (data.code === 0 && data.data && data.data.live_status === 1) {
+                            // LIVE!
+                            // Get Avatar from DB (Same as Twitch logic)
+                            const dbChannel = await db.collection('channels').findOne({ _id: member.ytId });
+                            const avatarUrl = dbChannel?.thumbnail || '';
+
+                            liveStreams.push({
+                                memberName: member.name,
+                                platform: 'bilibili', // Frontend needs to handle this icon
+                                channelId: member.bilibiliId,
+                                avatarUrl,
+                                title: data.data.title,
+                                url: `https://live.bilibili.com/${member.bilibiliId}`,
+                                thumbnail: data.data.user_cover || data.data.cover
+                            });
+                            console.log(`[Bilibili] Found Live: ${member.name}`);
+                        }
+                    } else {
+                        console.warn(`[Bilibili Fail] Status ${res.status}`);
+                    }
+                } catch (e) {
+                    console.error(`[Bilibili Error] ${member.name}:`, e);
+                }
+            }
 
             // --- NEW STRATEGY: RSS + Video Check (Bypass Channels API bug) ---
             console.log('[Debug] Starting RSS Live Check...');
