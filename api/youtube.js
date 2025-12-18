@@ -48,16 +48,18 @@ const VSPO_MEMBERS = [
     { name: "甘結もか", ytId: "UC8vKBjGY2HVfbW9GAmgikWw", twitchId: "" },
     { name: "ぶいすぽっ!【公式】", ytId: "UCuI5XaO-6VkOEhHao6ij7JA", twitchId: "" },
     { name: "Remia Aotsuki", ytId: "UCCra1t-eIlO3ULyXQQMD9Xw", twitchId: "1102206195" },
-    { name: "Arya Kuroha", ytId: "UCLlJpxXt6L5d-XQ0cDdIyDQ", twitchId: "1102211983" },
-    { name: "Jira Jisaki", ytId: "UCeCWj-SiJG9SWN6wGORiLmw", twitchId: "1102212264" },
-    { name: "Narin Mikure", ytId: "UCKSpM183c85d5V2cW5qaUjA", twitchId: "1125214436" },
-    { name: "Riko Solari", ytId: "UC7Xglp1fske9zmRe7Oj8YyA", twitchId: "1125216387" },
+    { name: "Arya Kuroha", ytId: "UCPxGl06jT8Oqa5sDAlC2Q-A", twitchId: "1102176963" },
+    { name: "Jira Jisaki", ytId: "UCR-8M8N4K532-6Jm2nL9qbw", twitchId: "1102187311" },
+    { name: "Narin Mikure", ytId: "UCU51yT-n5q4eOcf49r-1sUw", twitchId: "1102633543" },
+    { name: "Riko Solari", ytId: "UC3-1e_W28FvFbFqz2807a9g", twitchId: "1102636605" },
     { name: "Eris Suzukami", ytId: "UCp_3ej2br9l9L1DSoHVDZGw", twitchId: "" },
-    { name: "小针彩", ytId: "", twitchId: "", bilibiliId: "1972360561" },
-    { name: "白咲露理", ytId: "", twitchId: "", bilibiliId: "1842209652" },
-    { name: "帕妃", ytId: "", twitchId: "", bilibiliId: "1742801253" },
-    { name: "千郁郁", ytId: "", twitchId: "", bilibiliId: "1996441034" },
-    { name: "日向晴", ytId: "", twitchId: "", bilibiliId: "1833448662" }
+    // CN Members (Bilibili Only) - Add customAvatarUrl to fix WAF blocking
+    // TODO: User please replace these empty strings with the correct avatar URL from legal Bilibili page
+    { name: "小针彩", ytId: "", twitchId: "", bilibiliId: "1972360561", customAvatarUrl: "https://i0.hdslb.com/bfs/face/ccee4b98198a72f5de3a8174f42431bdee357270.jpg" },
+    { name: "白咲露理", ytId: "", twitchId: "", bilibiliId: "1842209652", customAvatarUrl: "https://i0.hdslb.com/bfs/face/99aa887c27725e4d1dcf2ea071f04d8b29f457d4.jpg" },
+    { name: "帕妃", ytId: "", twitchId: "", bilibiliId: "1742801253", customAvatarUrl: "https://i2.hdslb.com/bfs/face/b9915ddaa2d7f1b4279d516d77207bef9cc31856.jpg" }, // Confirmed Working
+    { name: "千郁郁", ytId: "", twitchId: "", bilibiliId: "1996441034", customAvatarUrl: "https://i1.hdslb.com/bfs/face/f9784adb001568cdc8f73f3435c0d5658af98c28.jpg" },
+    { name: "日向晴", ytId: "", twitchId: "", bilibiliId: "1833448662", customAvatarUrl: "https://i2.hdslb.com/bfs/face/39e4bb7ddf7330bcf11fd6c06f8428d8ad0f0f26.jpg" },
 ];
 
 
@@ -175,7 +177,7 @@ const fetchYouTube = async (endpoint, params) => {
 
         try {
             const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 2500); // 2.5s timeout
+            const timeoutId = setTimeout(() => controller.abort(), 5000); // 5s timeout (Was 2.5s)
             const res = await fetch(url, { signal: controller.signal });
             clearTimeout(timeoutId);
 
@@ -588,35 +590,16 @@ const v12_logic = {
 
                         if (json.code === 0 && json.data && json.data.live_status === 1) {
                             const roomData = json.data;
-                            const uid = roomData.uid;
+                            // LIVE!
+                            let avatarUrl = member.customAvatarUrl || '';
 
-                            // 2. Avatar Fetch (Only if Live) - Fetch User Profile
-                            let avatarUrl = '';
-                            // Check DB first (unlikely for new members)
-                            if (member.ytId) {
+                            // Fallback to YT Avatar if available (and no custom avatar)
+                            if (!avatarUrl && member.ytId) {
                                 const dbChannel = await db.collection('channels').findOne({ _id: member.ytId });
                                 avatarUrl = dbChannel?.thumbnail || '';
                             }
 
-                            // Fetch real avatar from Bilibili User API
-                            if (!avatarUrl && uid) {
-                                try {
-                                    const userUrl = `https://api.bilibili.com/x/space/acc/info?mid=${uid}`;
-                                    const userRes = await fetch(userUrl, { headers });
-                                    if (userRes.ok) {
-                                        const userData = await userRes.json();
-                                        if (userData.code === 0 && userData.data) {
-                                            avatarUrl = userData.data.face;
-                                        } else {
-                                            console.warn(`[Bilibili Avatar Fail] ${member.name}: Code ${userData.code}`);
-                                        }
-                                    } else {
-                                        console.warn(`[Bilibili Avatar Fail] HTTP ${userRes.status}`);
-                                    }
-                                } catch (err) { console.error(`[Bilibili Avatar Error] ${member.name}:`, err); }
-                            }
-
-                            // Fallback to cover if still no avatar
+                            // Fallback to room cover if still empty
                             if (!avatarUrl) avatarUrl = roomData.user_cover || roomData.keyframe;
 
                             liveStreams.push({
