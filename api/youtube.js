@@ -406,6 +406,7 @@ const v12_logic = {
             const retentionDate = new Date(); retentionDate.setDate(retentionDate.getDate() - 7); // Search recent 7 days
 
             // Fetch ALL lists to ensure mutual exclusion
+            console.log('[MongoDebug] Fetching Exclusion Lists...');
             const [wlCn, blCn, wlJp, blJp, pendJp] = await Promise.all([
                 db.collection('lists').findOne({ _id: 'whitelist_cn' }),
                 db.collection('lists').findOne({ _id: 'blacklist_cn' }),
@@ -413,6 +414,7 @@ const v12_logic = {
                 db.collection('lists').findOne({ _id: 'blacklist_jp' }),
                 db.collection('lists').findOne({ _id: 'pending_jp' })
             ]);
+            console.log('[MongoDebug] Exclusion Lists Fetched.');
 
             const allExistingChannels = new Set([
                 ...(wlCn?.items || []), ...(blCn?.items || []),
