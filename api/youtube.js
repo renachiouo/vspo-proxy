@@ -575,7 +575,7 @@ const v12_logic = {
             const biliMembers = members.filter(m => m.bilibiliId);
             for (const member of biliMembers) {
                 try {
-                    // [Bilibili Debug] Checking ${member.name} (${member.bilibiliId})
+                    console.log(`[Bilibili Debug] Checking ${member.name} (${member.bilibiliId})`);
                     // Use new API to get both room info (status) and anchor info (avatar)
                     const url = `https://api.live.bilibili.com/xlive/web-room/v1/index/getInfoByRoom?room_id=${member.bilibiliId}`;
                     // Spoof User-Agent to bypass basic WAF
@@ -586,6 +586,7 @@ const v12_logic = {
                     const res = await fetch(url, { headers });
                     if (res.ok) {
                         const json = await res.json();
+                        console.log(`[Bilibili Debug] ${member.name}: Code ${json.code} Status ${json.data?.room_info?.live_status}`); // Trace
                         // Checks: Code 0, Data exists, Room Info exists, Status 1
                         if (json.code === 0 && json.data && json.data.room_info && json.data.room_info.live_status === 1) {
                             const roomInfo = json.data.room_info;
