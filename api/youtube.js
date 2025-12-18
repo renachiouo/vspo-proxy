@@ -47,12 +47,17 @@ const VSPO_MEMBERS = [
     { name: "蝶屋はなび", ytId: "UCL9hJsdk9eQa0IlWbFB2oRg", twitchId: "1361841459" },
     { name: "甘結もか", ytId: "UC8vKBjGY2HVfbW9GAmgikWw", twitchId: "" },
     { name: "ぶいすぽっ!【公式】", ytId: "UCuI5XaO-6VkOEhHao6ij7JA", twitchId: "" },
-    { name: "Remia Aotsuki", ytId: "UCCra1t-eIlO3ULyXQQMD9Xw", twitchId: "1102206195", bilibiliId: "1972360561" },
-    { name: "Arya Kuroha", ytId: "UCLlJpxXt6L5d-XQ0cDdIyDQ", twitchId: "1102211983", bilibiliId: "1842209652" },
-    { name: "Jira Jisaki", ytId: "UCeCWj-SiJG9SWN6wGORiLmw", twitchId: "1102212264", bilibiliId: "1742801253" },
-    { name: "Narin Mikure", ytId: "UCKSpM183c85d5V2cW5qaUjA", twitchId: "1125214436", bilibiliId: "1996441034" },
-    { name: "Riko Solari", ytId: "UC7Xglp1fske9zmRe7Oj8YyA", twitchId: "1125216387", bilibiliId: "1833448662" },
-    { name: "Eris Suzukami", ytId: "UCp_3ej2br9l9L1DSoHVDZGw", twitchId: "" }
+    { name: "Remia Aotsuki", ytId: "UCCra1t-eIlO3ULyXQQMD9Xw", twitchId: "1102206195" },
+    { name: "Arya Kuroha", ytId: "UCLlJpxXt6L5d-XQ0cDdIyDQ", twitchId: "1102211983" },
+    { name: "Jira Jisaki", ytId: "UCeCWj-SiJG9SWN6wGORiLmw", twitchId: "1102212264" },
+    { name: "Narin Mikure", ytId: "UCKSpM183c85d5V2cW5qaUjA", twitchId: "1125214436" },
+    { name: "Riko Solari", ytId: "UC7Xglp1fske9zmRe7Oj8YyA", twitchId: "1125216387" },
+    { name: "Eris Suzukami", ytId: "UCp_3ej2br9l9L1DSoHVDZGw", twitchId: "" },
+    { name: "小针彩", ytId: "", twitchId: "", bilibiliId: "1972360561" },
+    { name: "白咲露理", ytId: "", twitchId: "", bilibiliId: "1842209652" },
+    { name: "帕妃", ytId: "", twitchId: "", bilibiliId: "1742801253" },
+    { name: "千郁郁", ytId: "", twitchId: "", bilibiliId: "1996441034" },
+    { name: "日向晴", ytId: "", twitchId: "", bilibiliId: "1833448662" }
 ];
 
 
@@ -584,8 +589,15 @@ const v12_logic = {
                         if (data.code === 0 && data.data && data.data.live_status === 1) {
                             // LIVE!
                             // Get Avatar from DB (Same as Twitch logic)
-                            const dbChannel = await db.collection('channels').findOne({ _id: member.ytId });
-                            const avatarUrl = dbChannel?.thumbnail || '';
+                            let avatarUrl = '';
+                            if (member.ytId) {
+                                const dbChannel = await db.collection('channels').findOne({ _id: member.ytId });
+                                avatarUrl = dbChannel?.thumbnail || '';
+                            }
+                            // Fallback to Bilibili user cover if no YT avatar
+                            if (!avatarUrl && (data.data.user_cover || data.data.face)) {
+                                avatarUrl = data.data.face || data.data.user_cover;
+                            }
 
                             liveStreams.push({
                                 memberName: member.name,
@@ -594,7 +606,7 @@ const v12_logic = {
                                 avatarUrl,
                                 title: data.data.title,
                                 url: `https://live.bilibili.com/${member.bilibiliId}`,
-                                thumbnail: data.data.user_cover || data.data.cover
+                                thumbnail: data.data.cover || data.data.keyframe
                             });
                             console.log(`[Bilibili] Found Live: ${member.name}`);
                         }
