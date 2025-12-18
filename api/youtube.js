@@ -317,17 +317,27 @@ const v12_logic = {
 
         // 1. Whitelist Scan
         if (whitelist.length > 0) {
+            console.log(`[Mongo] Whitelist Scan: ${whitelist.length} channels.`);
+            let batchCount = 0;
             for (const batch of batchArray(whitelist, 50)) {
+                batchCount++;
+                console.log(`[Mongo] Processing Whitelist Batch ${batchCount}...`);
                 try {
                     const res = await fetchYouTube('channels', { part: 'contentDetails', id: batch.join(',') });
                     const uploads = res.items?.map(i => i.contentDetails?.relatedPlaylists?.uploads).filter(Boolean) || [];
-                    const pResults = await Promise.all(uploads.map(pid => fetchYouTube('playlistItems', { part: 'snippet', playlistId: pid, maxResults: 10 })));
-                    pResults.forEach(r => r.items?.forEach(i => { if (new Date(i.snippet.publishedAt) > retentionDate) newVideoCandidates.add(i.snippet.resourceId.videoId); }));
+
+                    // Fix: Batch playlist fetching to avoid 429 Too Many Requests
+                    for (const uploadBatch of batchArray(uploads, 20)) {
+                        const pResults = await Promise.all(uploadBatch.map(pid => fetchYouTube('playlistItems', { part: 'snippet', playlistId: pid, maxResults: 10 })));
+                        pResults.forEach(r => r.items?.forEach(i => { if (new Date(i.snippet.publishedAt) > retentionDate) newVideoCandidates.add(i.snippet.resourceId.videoId); }));
+                        await new Promise(r => setTimeout(r, 200)); // Small delay between batches
+                    }
                 } catch { }
             }
         }
 
         // 2. Keyword Search
+        console.log('[Mongo] Starting Keyword Search...');
         const sResults = await Promise.all(SEARCH_KEYWORDS.map(q => fetchYouTube('search', { part: 'snippet', type: 'video', maxResults: 50, q, publishedAfter: retentionDate.toISOString() })));
         const searchResultIds = new Set();
         sResults.forEach(r => r.items?.forEach(i => { if (!blacklist.includes(i.snippet.channelId)) { newVideoCandidates.add(i.id.videoId); searchResultIds.add(i.id.videoId); } }));
@@ -347,6 +357,7 @@ const v12_logic = {
             }
             if (newChannels.size > 0) await db.collection('lists').updateOne({ _id: 'whitelist_cn' }, { $addToSet: { items: { $each: [...newChannels] } } }, { upsert: true });
         }
+        console.log(`[Mongo] Found ${newVideoCandidates.size} video candidates.`);
 
         // Store
         await this.processAndStoreVideos([...newVideoCandidates], db, 'main', { retentionDate, blacklist });
@@ -363,17 +374,26 @@ const v12_logic = {
         if (whitelist.length === 0) return;
 
         const newVideoCandidates = new Set();
+        console.log(`[Mongo] JP Whitelist: ${whitelist.length} channels.`);
+        let batchCount = 0;
         for (const batch of batchArray(whitelist, 50)) {
-            const res = await fetchYouTube('channels', { part: 'contentDetails', id: batch.join(',') });
-            const uploads = res.items?.map(i => i.contentDetails?.relatedPlaylists?.uploads).filter(Boolean) || [];
+            batchCount++;
+            console.log(`[Mongo] Processing JP Batch ${batchCount}...`);
+            try {
+                const res = await fetchYouTube('channels', { part: 'contentDetails', id: batch.join(',') });
+                const uploads = res.items?.map(i => i.contentDetails?.relatedPlaylists?.uploads).filter(Boolean) || [];
 
-            // Fix: Batch playlist fetching to avoid 429 Too Many Requests
-            for (const uploadBatch of batchArray(uploads, 20)) {
-                const pResults = await Promise.all(uploadBatch.map(pid => fetchYouTube('playlistItems', { part: 'snippet', playlistId: pid, maxResults: 10 })));
-                pResults.forEach(r => r.items?.forEach(i => { if (new Date(i.snippet.publishedAt) > retentionDate) newVideoCandidates.add(i.snippet.resourceId.videoId); }));
-                await new Promise(r => setTimeout(r, 200)); // Small delay between batches
+                // Fix: Batch playlist fetching to avoid 429 Too Many Requests
+                for (const uploadBatch of batchArray(uploads, 20)) {
+                    const pResults = await Promise.all(uploadBatch.map(pid => fetchYouTube('playlistItems', { part: 'snippet', playlistId: pid, maxResults: 10 })));
+                    pResults.forEach(r => r.items?.forEach(i => { if (new Date(i.snippet.publishedAt) > retentionDate) newVideoCandidates.add(i.snippet.resourceId.videoId); }));
+                    await new Promise(r => setTimeout(r, 200)); // Small delay between batches
+                }
+            } catch (e) {
+                console.error(`[JP Update] Batch ${batchCount} failed:`, e);
             }
         }
+        console.log(`[Mongo] Found ${newVideoCandidates.size} JP video candidates.`);
 
         await this.processAndStoreVideos([...newVideoCandidates], db, 'foreign', { retentionDate, blacklist: blJp?.items || [] });
         await this.verifyActiveVideos(db, 'foreign');
