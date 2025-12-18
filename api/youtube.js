@@ -549,10 +549,12 @@ const v12_logic = {
             const ytMembers = members.filter(m => m.ytId);
             console.log(`[Debug] Fetching RSS for ${ytMembers.length} channels...`);
             try {
-                // 1. Fetch RSS in parallel
                 // 1. Fetch RSS in Batches (to avoid rate limits/timeouts)
                 const results = [];
+                let rssBatchCount = 0;
                 for (const batch of batchArray(ytMembers, 10)) { // Batch size 10
+                    rssBatchCount++;
+                    console.log(`[Debug] Processing RSS Batch ${rssBatchCount}...`);
                     const batchPromises = batch.map(async m => {
                         try {
                             const ctrl = new AbortController();
