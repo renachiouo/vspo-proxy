@@ -143,8 +143,23 @@ async function incrementAndGetVisitorCount(db) {
 }
 
 let currentKeyIndex = 0;
+let isKeyIndexSynced = false; // Flag to ensure we load from DB once per cold start
 
 const fetchYouTube = async (endpoint, params) => {
+    // 1. Sync Index from DB on First Run
+    if (!isKeyIndexSynced && cachedDb) {
+        try {
+            const doc = await cachedDb.collection('metadata').findOne({ _id: 'api_key_rotator' });
+            if (doc && typeof doc.currentIndex === 'number') {
+                currentKeyIndex = doc.currentIndex % apiKeys.length;
+                console.log(`[API Key] Loaded persisted index: ${currentKeyIndex}`);
+            }
+        } catch (e) {
+            console.warn('[API Key] Failed to load persisted index:', e);
+        }
+        isKeyIndexSynced = true;
+    }
+
     const totalKeys = apiKeys.length;
     const startIndex = currentKeyIndex;
 
@@ -163,6 +178,15 @@ const fetchYouTube = async (endpoint, params) => {
             if (data.error && (data.error.message.toLowerCase().includes('quota') || data.error.reason === 'quotaExceeded')) {
                 console.warn(`[YouTube API] Key ${index} Quota Exceeded. Rotating...`);
                 currentKeyIndex = (currentKeyIndex + 1) % totalKeys; // Rotate globally
+
+                // 2. Persist New Index to DB (Fire-and-forget)
+                if (cachedDb) {
+                    cachedDb.collection('metadata').updateOne(
+                        { _id: 'api_key_rotator' },
+                        { $set: { currentIndex: currentKeyIndex, lastUpdated: Date.now() } },
+                        { upsert: true }
+                    ).catch(dbErr => console.warn('[API Key] Failed to persist rotation:', dbErr));
+                }
                 continue;
             }
             if (data.error) throw new Error(data.error.message);
