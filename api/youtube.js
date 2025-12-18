@@ -576,7 +576,7 @@ const v12_logic = {
                 // 1. Fetch RSS in Batches (to avoid rate limits/timeouts)
                 const results = [];
                 let rssBatchCount = 0;
-                for (const batch of batchArray(ytMembers, 10)) { // Batch size 10
+                for (const batch of batchArray(ytMembers, 5)) { // Batch size 5
                     rssBatchCount++;
                     console.log(`[Debug] Processing RSS Batch ${rssBatchCount}...`);
                     const batchPromises = batch.map(async m => {
