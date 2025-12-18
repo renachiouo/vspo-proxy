@@ -13,7 +13,7 @@ const DB_NAME = 'vspoproxy';
 const SPECIAL_KEYWORDS = ["ぶいすぽっ！許諾番号"];
 const FOREIGN_SEARCH_KEYWORDS = ["ぶいすぽ 切り抜き"];
 // Removed FOREIGN_SPECIAL_KEYWORDS as requested, using SPECIAL_KEYWORDS universally
-const SEARCH_KEYWORDS = ["VSPO中文", "VSPO中文精華", "VSPO精華", "VSPO中文剪輯", "VSPO剪輯"];
+const SEARCH_KEYWORDS = ["VSPO中文", "VSPO精華", "VSPO剪輯"];
 const KEYWORD_BLACKLIST = ["MMD"];
 const VSPO_MEMBER_KEYWORDS = [
     "花芽すみれ", "花芽なずな", "小雀とと", "一ノ瀬うるは", "胡桃のあ", "兎咲ミミ", "空澄セナ", "橘ひなの", "英リサ", "如月れん", "神成きゅぴ", "八雲べに", "藍沢エマ", "紫宮るな", "猫汰つな", "白波らむね", "小森めと", "夢野あかり", "夜乃くろむ", "紡木こかげ", "千燈ゆうひ", "蝶屋はなび", "甘結もか",
@@ -338,7 +338,15 @@ const v12_logic = {
 
         // 2. Keyword Search
         console.log('[Mongo] Starting Keyword Search...');
-        const sResults = await Promise.all(SEARCH_KEYWORDS.map(q => fetchYouTube('search', { part: 'snippet', type: 'video', maxResults: 50, q, publishedAfter: retentionDate.toISOString() })));
+        const sResults = [];
+        for (const q of SEARCH_KEYWORDS) {
+            try {
+                // console.log(`[MongoDebug] Searching: ${q}`); // Optional Verbose
+                const res = await fetchYouTube('search', { part: 'snippet', type: 'video', maxResults: 50, q, publishedAfter: retentionDate.toISOString() });
+                if (res) sResults.push(res);
+            } catch (e) { console.error(`[Mongo] Keyword Search Failed (${q}):`, e); }
+        }
+
         const searchResultIds = new Set();
         sResults.forEach(r => r.items?.forEach(i => { if (!blacklist.includes(i.snippet.channelId)) { newVideoCandidates.add(i.id.videoId); searchResultIds.add(i.id.videoId); } }));
 
