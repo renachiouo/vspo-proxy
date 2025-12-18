@@ -633,6 +633,7 @@ const v12_logic = {
 
                             vRes.items?.forEach(v => {
                                 // Check if Live
+                                console.log(`[Debug] Video Status: ${v.id} | ${v.snippet.liveBroadcastContent} | ${v.snippet.title}`); // Trace Log
                                 const isLive = v.snippet.liveBroadcastContent === 'live';
                                 // Also checking liveStreamingDetails to be sure it's not finished
                                 const isActive = isLive || (v.snippet.liveBroadcastContent === 'upcoming' && false); // We only want LIVE
