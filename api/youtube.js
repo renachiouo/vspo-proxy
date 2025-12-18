@@ -628,7 +628,7 @@ const v12_logic = {
                                 url: `https://live.bilibili.com/${member.bilibiliId}`,
                                 thumbnail: roomData.user_cover || roomData.keyframe
                             });
-                            console.log(`[Bilibili] Found Live: ${member.name}`);
+                            console.log(`[Bilibili] Found Live: ${member.name} | Avatar: ${avatarUrl}`);
                         }
                     } else {
                         console.warn(`[Bilibili Fail] Status ${res.status}`);
