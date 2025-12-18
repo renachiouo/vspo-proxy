@@ -575,6 +575,14 @@ const v12_logic = {
             try {
                 // 1. Fetch RSS in Batches (to avoid rate limits/timeouts)
                 const results = [];
+
+                // [Smart Retention] Load currently persistent live streams to prevent flickering
+                const currentStatusDoc = await db.collection('metadata').findOne({ _id: 'live_status' });
+                const currentActiveVideoIds = (currentStatusDoc?.streams || [])
+                    .filter(s => s.platform === 'youtube' && s.vid) // Ensure it has vid
+                    .map(s => s.vid);
+                console.log(`[Debug] Retaining ${currentActiveVideoIds.length} active streams for verification.`);
+
                 let rssBatchCount = 0;
                 for (const batch of batchArray(ytMembers, 5)) { // Batch size 5
                     rssBatchCount++;
@@ -618,6 +626,12 @@ const v12_logic = {
 
                 // 2. Batch Check Videos
                 const videoIds = candidates.map(c => c.vid);
+
+                // [Smart Retention] Merge known active IDs into the check list
+                if (currentActiveVideoIds.length > 0) {
+                    videoIds.push(...currentActiveVideoIds);
+                }
+
                 // Deduplicate
                 const uniqueVideoIds = [...new Set(videoIds)];
 
