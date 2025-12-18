@@ -11,7 +11,4 @@ jobs:
 
     steps:
       - name: Trigger Live Check (Smart Interval)
-        # Calls the API without force_refresh. 
-        # The backend natively checks if 5 mins have passed since last live_check and runs it if needed.
-        # Adds no_increment=true to avoid skewing visitor analytics.
         run: curl -X GET "https://vspo-proxy-git-main-renas-projects-c8ce958b.vercel.app/api/youtube?no_increment=true&password=${{ secrets.CRON_SECRET }}"
