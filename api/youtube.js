@@ -995,8 +995,9 @@ export default async function handler(req, res) {
                     await db.collection('metadata').updateOne({ _id: 'live_check_lock' }, { $set: { timestamp: Date.now() } }, { upsert: true });
                     (async () => {
                         try {
-                            await v12_logic.updateLiveStatus(db);
+                            // Update timestamp immediately (Start-to-Start interval)
                             await db.collection('metadata').updateOne({ _id: 'last_live_check' }, { $set: { timestamp: Date.now() } }, { upsert: true });
+                            await v12_logic.updateLiveStatus(db);
                         } catch (e) { console.error('BG Live Update:', e); }
                         finally { await db.collection('metadata').updateOne({ _id: 'live_check_lock' }, { $set: { timestamp: 0 } }); }
                     })();
