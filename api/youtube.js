@@ -646,17 +646,26 @@ const v12_logic = {
                     const batchPromises = batch.map(async m => {
                         try {
                             const ctrl = new AbortController();
-                            const timeout = setTimeout(() => ctrl.abort(), 3000); // 3s timeout
+                            const timeout = setTimeout(() => ctrl.abort(), 5000); // Increased to 5s
                             const rssRes = await fetch(`https://www.youtube.com/feeds/videos.xml?channel_id=${m.ytId}`, { signal: ctrl.signal });
                             clearTimeout(timeout);
-                            if (!rssRes.ok) return null;
+                            if (!rssRes.ok) {
+                                console.warn(`[RSS Fail] ${m.name}: HTTP ${rssRes.status}`);
+                                return null;
+                            }
                             const text = await rssRes.text();
                             // Capture ALL video IDs (up to 3 to be safe) in the feed
                             const matches = [...text.matchAll(/<yt:videoId>(.*?)<\/yt:videoId>/g)];
-                            if (!matches || matches.length === 0) return null;
+                            if (!matches || matches.length === 0) {
+                                // console.log(`[RSS No Match] ${m.name}`); // Common, so verify only if needed
+                                return null;
+                            }
                             // Return array of candidates
                             return matches.slice(0, 3).map(m => ({ mid: m.ytId, vid: m[1] }));
-                        } catch (e) { return null; }
+                        } catch (e) {
+                            console.error(`[RSS Error] ${m.name}:`, e.message);
+                            return null;
+                        }
                     });
 
                     const batchResults = await Promise.all(batchPromises);
