@@ -48,10 +48,10 @@ const VSPO_MEMBERS = [
     { name: "甘結もか", ytId: "UC8vKBjGY2HVfbW9GAmgikWw", twitchId: "" },
     { name: "ぶいすぽっ!【公式】", ytId: "UCuI5XaO-6VkOEhHao6ij7JA", twitchId: "" },
     { name: "Remia Aotsuki", ytId: "UCCra1t-eIlO3ULyXQQMD9Xw", twitchId: "1102206195" },
-    { name: "Arya Kuroha", ytId: "UCPxGl06jT8Oqa5sDAlC2Q-A", twitchId: "1102176963" },
-    { name: "Jira Jisaki", ytId: "UCR-8M8N4K532-6Jm2nL9qbw", twitchId: "1102187311" },
-    { name: "Narin Mikure", ytId: "UCU51yT-n5q4eOcf49r-1sUw", twitchId: "1102633543" },
-    { name: "Riko Solari", ytId: "UC3-1e_W28FvFbFqz2807a9g", twitchId: "1102636605" },
+    { name: "Arya Kuroha", ytId: "UCLlJpxXt6L5d-XQ0cDdIyDQ", twitchId: "1102211983" },
+    { name: "Jira Jisaki", ytId: "UCeCWj-SiJG9SWN6wGORiLmw", twitchId: "1102212264" },
+    { name: "Narin Mikure", ytId: "UCKSpM183c85d5V2cW5qaUjA", twitchId: "1125214436" },
+    { name: "Riko Solari", ytId: "UC7Xglp1fske9zmRe7Oj8YyA", twitchId: "1125216387" },
     { name: "Eris Suzukami", ytId: "UCp_3ej2br9l9L1DSoHVDZGw", twitchId: "" },
     // CN Members (Bilibili Only) - Add customAvatarUrl to fix WAF blocking
     // TODO: User please replace these empty strings with the correct avatar URL from legal Bilibili page
