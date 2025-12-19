@@ -1017,9 +1017,9 @@ export default async function handler(req, res) {
                 }
             }
 
-            // [Optimization] If this is an automated trigger (Cron), return early with status only
-            // This prevents "Response too large" errors and saves bandwidth
-            if (noIncrement || forceRefresh) {
+            // [Optimization] Return minimal JSON only if explicitly requested (for Cron Jobs)
+            // This prevents "Response too large" errors while keeping Frontend functional
+            if (searchParams.get('trigger_only') === 'true') {
                 return res.status(200).json({
                     success: true,
                     triggered: true,
