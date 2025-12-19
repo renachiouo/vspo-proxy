@@ -1016,8 +1016,18 @@ export default async function handler(req, res) {
                     })();
                 }
             }
-        }
 
+            // [Optimization] If this is an automated trigger (Cron), return early with status only
+            // This prevents "Response too large" errors and saves bandwidth
+            if (noIncrement || forceRefresh) {
+                return res.status(200).json({
+                    success: true,
+                    triggered: true,
+                    message: 'Background update triggered',
+                    timestamp: Date.now()
+                });
+            }
+        }
 
         // Fix: Use 'source' to query, so 'type' can be 'video'/'short'
         const blacklistDoc = await db.collection('lists').findOne({ _id: isForeign ? 'blacklist_jp' : 'blacklist_cn' });
