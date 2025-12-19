@@ -722,7 +722,8 @@ const v12_logic = {
                                             channelId: v.snippet.channelId,
                                             avatarUrl: '', // Will be filled by DB later or Frontend fallback
                                             title: v.snippet.title,
-                                            url: `https://www.youtube.com/watch?v=${v.id}`
+                                            url: `https://www.youtube.com/watch?v=${v.id}`,
+                                            vid: v.id // Critical for Smart Retention Logic
                                         });
                                     }
                                 }
