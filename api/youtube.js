@@ -562,7 +562,8 @@ const v12_logic = {
                                 channelId: s.user_login, // Use login handle
                                 avatarUrl,
                                 title: s.title,
-                                url: `https://www.twitch.tv/${s.user_login}` // Correct URL using login
+                                url: `https://www.twitch.tv/${s.user_login}`, // Correct URL using login
+                                thumbnailUrl: s.thumbnail_url ? s.thumbnail_url.replace('{width}', '640').replace('{height}', '360') : ''
                             });
                         }
                     }
