@@ -967,13 +967,14 @@ export default async function handler(req, res) {
             didUpdate = true;
         } else {
             const meta = await db.collection('metadata').findOne({ _id: metaId });
+            let bgUpdatePromise = Promise.resolve();
             // Standard Interval check (20 mins)
             if (Date.now() - (meta?.timestamp || 0) > (isForeign ? FOREIGN_UPDATE_INTERVAL_SECONDS : UPDATE_INTERVAL_SECONDS) * 1000) {
                 const lockId = metaId + '_lock';
                 const lock = await db.collection('metadata').findOne({ _id: lockId });
                 if (!lock || Date.now() - lock.timestamp > 600000) {
                     await db.collection('metadata').updateOne({ _id: lockId }, { $set: { timestamp: Date.now() } }, { upsert: true });
-                    (async () => {
+                    bgUpdatePromise = (async () => {
                         try {
                             // Update timestamp immediately (Start-to-Start interval)
                             await db.collection('metadata').updateOne({ _id: metaId }, { $set: { timestamp: Date.now() } }, { upsert: true });
@@ -995,18 +996,19 @@ export default async function handler(req, res) {
                         } finally {
                             await db.collection('metadata').updateOne({ _id: lockId }, { $set: { timestamp: 0 } });
                         }
-                    })();
+                    })(); // Captured Promise
                     didUpdate = true;
                 }
             }
 
             // Independent Live Status Check (5 mins)
+            let bgLivePromise = Promise.resolve();
             const liveMeta = await db.collection('metadata').findOne({ _id: 'last_live_check' });
             if (Date.now() - (liveMeta?.timestamp || 0) > LIVE_UPDATE_INTERVAL_SECONDS * 1000) {
                 const liveLock = await db.collection('metadata').findOne({ _id: 'live_check_lock' });
                 if (!liveLock || Date.now() - liveLock.timestamp > 300000) {
                     await db.collection('metadata').updateOne({ _id: 'live_check_lock' }, { $set: { timestamp: Date.now() } }, { upsert: true });
-                    (async () => {
+                    bgLivePromise = (async () => {
                         try {
                             // Update timestamp immediately (Start-to-Start interval)
                             await db.collection('metadata').updateOne({ _id: 'last_live_check' }, { $set: { timestamp: Date.now() } }, { upsert: true });
@@ -1020,6 +1022,10 @@ export default async function handler(req, res) {
             // [Optimization] Return minimal JSON only if explicitly requested (for Cron Jobs)
             // This prevents "Response too large" errors while keeping Frontend functional
             if (searchParams.get('trigger_only') === 'true') {
+                // CRITICAL: On Serverless (Vercel), we MUST await the background promise before returning,
+                // otherwise execution is frozen and the update dies.
+                await Promise.all([bgUpdatePromise, bgLivePromise]);
+
                 return res.status(200).json({
                     success: true,
                     triggered: true,
