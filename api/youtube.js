@@ -588,6 +588,27 @@ const v12_logic = {
                     if (res.ok) {
                         const json = await res.json();
                         console.log(`[Bilibili Debug] ${member.name}: Code ${json.code} Status ${json.data?.live_status}`);
+
+                        if (json.code === 0 && json.data && json.data.live_status === 1) {
+                            // Find fallback avatar
+                            const ytMember = members.find(m => m.bilibiliId === member.bilibiliId);
+                            // Best effort to find avatar from channels DB if custom is missing
+                            let avatarUrl = VSPO_MEMBERS.find(m => m.bilibiliId === member.bilibiliId)?.customAvatarUrl || '';
+                            if (!avatarUrl && ytMember?.ytId) {
+                                const dbCh = await db.collection('channels').findOne({ _id: ytMember.ytId });
+                                if (dbCh) avatarUrl = dbCh.thumbnail;
+                            }
+
+                            liveStreams.push({
+                                memberName: member.name,
+                                platform: 'bilibili',
+                                channelId: member.bilibiliId,
+                                avatarUrl,
+                                title: json.data.title,
+                                url: `https://live.bilibili.com/${member.bilibiliId}`,
+                                thumbnailUrl: json.data.keyframe || ''
+                            });
+                        }
                     }
 
                 } catch (e) {
@@ -666,7 +687,7 @@ const v12_logic = {
                                     avatarUrl: '', // Will be filled below
                                     title: v.snippet.title,
                                     url: `https://www.youtube.com/watch?v=${v.id}`,
-                                    thumbnailUrl: v.snippet.thumbnails?.maxres?.url || v.snippet.thumbnails?.high?.url
+                                    thumbnailUrl: v.snippet.thumbnails?.standard?.url || v.snippet.thumbnails?.high?.url || v.snippet.thumbnails?.maxres?.url
                                 });
                             }
                         }
