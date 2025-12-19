@@ -606,7 +606,7 @@ const v12_logic = {
                                 avatarUrl,
                                 title: json.data.title,
                                 url: `https://live.bilibili.com/${member.bilibiliId}`,
-                                thumbnailUrl: json.data.keyframe || ''
+                                thumbnailUrl: json.data.user_cover || json.data.keyframe || ''
                             });
                         }
                     }
