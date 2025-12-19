@@ -74,6 +74,9 @@ const apiKeys = [
 
 // Constants
 const LIVE_UPDATE_INTERVAL_SECONDS = 300; // 5 mins for Live Status
+const INACTIVE_THRESHOLD_MS = 90 * 24 * 60 * 60 * 1000; // 90 Days
+const INACTIVE_SCAN_INTERVAL_CN_MS = 3600 * 1000; // 1 Hour
+const INACTIVE_SCAN_INTERVAL_JP_MS = 86400 * 1000; // 24 Hours
 
 // --- DB Connection ---
 let cachedClient = null;
@@ -328,6 +331,35 @@ const v12_logic = {
             await db.collection('lists').updateOne({ _id: targetList }, { $addToSet: { items: { $each: [...newPendingChannels] } } }, { upsert: true });
         } else if (bulkOps.length > 0) {
             await db.collection('videos').bulkWrite(bulkOps);
+
+            // [Optimization] Update Channel Last Upload Date
+            const channelLatestMap = new Map();
+            for (const videoId of validVideoIds) {
+                const detail = videoDetailsMap.get(videoId);
+                if (!detail) continue;
+                const cid = detail.snippet.channelId;
+                const pAt = new Date(detail.snippet.publishedAt).getTime();
+                // Store title/thumbnail for metadata
+                const cTitle = detail.snippet.channelTitle;
+                const cThumb = channelStatsMap.get(cid)?.snippet?.thumbnails?.default?.url || '';
+
+                if (!channelLatestMap.has(cid) || pAt > channelLatestMap.get(cid).date) {
+                    channelLatestMap.set(cid, { date: pAt, title: cTitle, thumb: cThumb });
+                }
+            }
+            if (channelLatestMap.size > 0) {
+                const channelOps = [];
+                for (const [cid, data] of channelLatestMap) {
+                    channelOps.push({
+                        updateOne: {
+                            filter: { _id: cid },
+                            update: { $set: { title: data.title, thumbnail: data.thumb, last_upload_at: data.date } },
+                            upsert: true
+                        }
+                    });
+                }
+                await db.collection('channels').bulkWrite(channelOps);
+            }
         }
         return { validVideoIds };
     },
@@ -362,9 +394,29 @@ const v12_logic = {
 
         // 1. Whitelist Scan
         if (whitelist.length > 0) {
-            console.log(`[Mongo] Whitelist Scan: ${whitelist.length} channels.`);
+            // [Optimization] Conditional Scan for Inactive Channels
+            const metaScanCtx = await db.collection('metadata').findOne({ _id: 'last_inactive_scan_cn' });
+            const lastScan = metaScanCtx?.timestamp || 0;
+            const shouldScanInactive = Date.now() - lastScan > INACTIVE_SCAN_INTERVAL_CN_MS;
+
+            let targetChannels = whitelist;
+            if (shouldScanInactive) {
+                console.log('[Mongo] Update Strategy: FULL SCAN (Inactive Included)');
+                await db.collection('metadata').updateOne({ _id: 'last_inactive_scan_cn' }, { $set: { timestamp: Date.now() } }, { upsert: true });
+            } else {
+                console.log('[Mongo] Update Strategy: ACTIVE ONLY');
+                const channelDocs = await db.collection('channels').find({ _id: { $in: whitelist } }).toArray();
+                const threshold = Date.now() - INACTIVE_THRESHOLD_MS;
+                targetChannels = whitelist.filter(id => {
+                    const doc = channelDocs.find(c => c._id === id);
+                    if (!doc || !doc.last_upload_at) return true; // Treat unknown as active
+                    return doc.last_upload_at > threshold;
+                });
+            }
+
+            console.log(`[Mongo] Whitelist Scan: ${targetChannels.length} channels (Total: ${whitelist.length}).`);
             let batchCount = 0;
-            for (const batch of batchArray(whitelist, 50)) {
+            for (const batch of batchArray(targetChannels, 50)) {
                 batchCount++;
                 console.log(`[Mongo] Processing Whitelist Batch ${batchCount}...`);
                 try {
@@ -427,9 +479,30 @@ const v12_logic = {
         if (whitelist.length === 0) return;
 
         const newVideoCandidates = new Set();
-        console.log(`[Mongo] JP Whitelist: ${whitelist.length} channels.`);
+
+        // [Optimization] JP Active/Inactive Split
+        const metaScanCtx = await db.collection('metadata').findOne({ _id: 'last_inactive_scan_jp' });
+        const lastScan = metaScanCtx?.timestamp || 0;
+        const shouldScanInactive = Date.now() - lastScan > INACTIVE_SCAN_INTERVAL_JP_MS;
+
+        let targetChannels = whitelist;
+        if (shouldScanInactive) {
+            console.log('[Mongo] JP Update Strategy: FULL SCAN (Inactive Included)');
+            await db.collection('metadata').updateOne({ _id: 'last_inactive_scan_jp' }, { $set: { timestamp: Date.now() } }, { upsert: true });
+        } else {
+            console.log('[Mongo] JP Update Strategy: ACTIVE ONLY');
+            const channelDocs = await db.collection('channels').find({ _id: { $in: whitelist } }).toArray();
+            const threshold = Date.now() - INACTIVE_THRESHOLD_MS;
+            targetChannels = whitelist.filter(id => {
+                const doc = channelDocs.find(c => c._id === id);
+                if (!doc || !doc.last_upload_at) return true;
+                return doc.last_upload_at > threshold;
+            });
+        }
+
+        console.log(`[Mongo] JP Whitelist: ${targetChannels.length} channels (Total: ${whitelist.length}).`);
         let batchCount = 0;
-        for (const batch of batchArray(whitelist, 50)) {
+        for (const batch of batchArray(targetChannels, 50)) {
             batchCount++;
             console.log(`[Mongo] Processing JP Batch ${batchCount}...`);
             try {
