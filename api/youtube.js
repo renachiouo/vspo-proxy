@@ -992,6 +992,11 @@ export default async function handler(req, res) {
         const ann = await db.collection('metadata').findOne({ _id: 'announcement' });
         const updateMeta = await db.collection('metadata').findOne({ _id: metaId });
 
+        // Cron Optimization: Return minimal response if triggered automatically
+        if (searchParams.get('trigger_only') === 'true') {
+            return res.status(200).json({ success: true, message: 'Update Triggered', didUpdate });
+        }
+
         return res.status(200).json({
             videos,
             totalVisits: visits.totalVisits || 0,
