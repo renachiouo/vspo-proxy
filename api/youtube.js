@@ -965,18 +965,21 @@ export default async function handler(req, res) {
                     await db.collection('metadata').updateOne({ _id: lockId }, { $set: { timestamp: Date.now() } }, { upsert: true });
                     (async () => {
                         try {
+                            // Update timestamp immediately (Start-to-Start interval)
+                            await db.collection('metadata').updateOne({ _id: metaId }, { $set: { timestamp: Date.now() } }, { upsert: true });
+
                             if (isForeign) {
                                 await v12_logic.updateForeignClips(db);
                                 // Check if we need to run Keyword Search (60 mins)
                                 const kwMeta = await db.collection('metadata').findOne({ _id: 'last_jp_keyword_search' });
                                 if (!kwMeta || Date.now() - kwMeta.timestamp > FOREIGN_SEARCH_INTERVAL_SECONDS * 1000) {
-                                    await v12_logic.updateForeignClipsKeywords(db);
+                                    // Update keyword timestamp immediately (Start-to-Start)
                                     await db.collection('metadata').updateOne({ _id: 'last_jp_keyword_search' }, { $set: { timestamp: Date.now() } }, { upsert: true });
+                                    await v12_logic.updateForeignClipsKeywords(db);
                                 }
                             } else {
                                 await v12_logic.updateAndStoreYouTubeData(db);
                             }
-                            await db.collection('metadata').updateOne({ _id: metaId }, { $set: { timestamp: Date.now() } }, { upsert: true });
                         } catch (e) {
                             console.error('BG Update:', e);
                         } finally {
