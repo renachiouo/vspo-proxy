@@ -25,6 +25,8 @@ yarn-error.log*
 # Admin Scripts
 create_indexes.js
 
+# Temp files
+
 # Temp Debug Files
 *.xml
 *.tmp
