@@ -679,7 +679,7 @@ const v12_logic = {
                                 avatarUrl,
                                 title: json.data.title,
                                 url: `https://live.bilibili.com/${member.bilibiliId}`,
-                                thumbnailUrl: json.data.user_cover || json.data.keyframe || ''
+                                thumbnailUrl: json.data.keyframe || json.data.user_cover || ''
                             });
                         }
                     }
@@ -689,9 +689,7 @@ const v12_logic = {
                 }
             }
 
-            // --- YouTube Live Check (Plan C: Playlist API Strategy) ---
-            // RSS is unreliable (404/429/Blocked). Search is expensive (100 Q).
-            // PlaylistItems (Uploads) is reliable & cheap (1 Q).
+            // --- YouTube Live Check ---
             // Logic: Get "Uploads" playlist ID (UC -> UU) -> Get last 3 videos -> Check if Live.
 
             console.log('[Debug] Starting YouTube Live Check (Playlist Strategy)...');
