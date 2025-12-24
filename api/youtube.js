@@ -636,7 +636,10 @@ const v12_logic = {
                                 avatarUrl,
                                 title: s.title,
                                 url: `https://www.twitch.tv/${s.user_login}`, // Correct URL using login
-                                thumbnailUrl: s.thumbnail_url ? s.thumbnail_url.replace('{width}', '640').replace('{height}', '360') : ''
+                                url: `https://www.twitch.tv/${s.user_login}`, // Correct URL using login
+                                thumbnailUrl: s.thumbnail_url ? s.thumbnail_url.replace('{width}', '640').replace('{height}', '360') : '',
+                                status: 'live', // Twitch is always live if returned here
+                                startTime: s.started_at
                             });
                         }
                     }
@@ -679,7 +682,11 @@ const v12_logic = {
                                 avatarUrl,
                                 title: json.data.title,
                                 url: `https://live.bilibili.com/${member.bilibiliId}`,
-                                thumbnailUrl: json.data.keyframe || json.data.user_cover || ''
+                                title: json.data.title,
+                                url: `https://live.bilibili.com/${member.bilibiliId}`,
+                                thumbnailUrl: json.data.keyframe || json.data.user_cover || '',
+                                status: 'live', // Bilibili check verifies live_status === 1
+                                startTime: new Date().toISOString() // Fallback
                             });
                         }
                     }
@@ -742,10 +749,12 @@ const v12_logic = {
 
                     res.items?.forEach(v => {
                         const isLive = v.snippet.liveBroadcastContent === 'live';
+                        const isUpcoming = v.snippet.liveBroadcastContent === 'upcoming';
                         const hasStarted = v.liveStreamingDetails?.actualStartTime;
                         const hasEnded = v.liveStreamingDetails?.actualEndTime;
+                        const scheduledTime = v.liveStreamingDetails?.scheduledStartTime;
 
-                        if (isLive || (hasStarted && !hasEnded)) {
+                        if ((isLive || isUpcoming || (hasStarted && !hasEnded))) {
                             const channelId = v.snippet.channelId;
                             const member = members.find(m => m.ytId === channelId);
 
@@ -758,7 +767,9 @@ const v12_logic = {
                                     avatarUrl: '', // Will be filled below
                                     title: v.snippet.title,
                                     url: `https://www.youtube.com/watch?v=${v.id}`,
-                                    thumbnailUrl: v.snippet.thumbnails?.standard?.url || v.snippet.thumbnails?.high?.url || v.snippet.thumbnails?.maxres?.url
+                                    thumbnailUrl: v.snippet.thumbnails?.standard?.url || v.snippet.thumbnails?.high?.url || v.snippet.thumbnails?.maxres?.url,
+                                    status: isUpcoming ? 'upcoming' : 'live',
+                                    startTime: scheduledTime || v.liveStreamingDetails?.actualStartTime
                                 });
                             }
                         }
@@ -781,6 +792,16 @@ const v12_logic = {
             const OFFICIAL_NAME = "ぶいすぽっ!【公式】";
 
             liveStreams.sort((a, b) => {
+                // 1. Status: Live > Upcoming
+                if (a.status === 'live' && b.status !== 'live') return -1;
+                if (a.status !== 'live' && b.status === 'live') return 1;
+
+                // 2. If both Upcoming, Sort by Time (Sooner first)
+                if (a.status === 'upcoming' && b.status === 'upcoming') {
+                    return new Date(a.startTime).getTime() - new Date(b.startTime).getTime();
+                }
+
+                // 3. Official > Members
                 if (a.memberName === OFFICIAL_NAME) return -1;
                 if (b.memberName === OFFICIAL_NAME) return 1;
 
