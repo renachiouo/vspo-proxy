@@ -799,24 +799,10 @@ const v12_logic = {
             // First pass: Prioritize LIVE
             for (const s of liveStreams) {
                 if (s.status === 'live') {
-                    // Always keep LIVE streams (allow multiple if multi-platform)
-                    // But if we want strictly one card per member? Currently UI allows multiple.
-                    // Let's assume we allow multiple LIVE, but only ONE Upcoming if NOT Live.
-                    // Actually, if Live, we shouldn't show Upcoming to save space.
                     uniqueStreamsMap.set(s.memberName + '_live_' + s.platform, s);
                 }
             }
 
-            // Second pass: Add UPCOMING only if no LIVE exists for that member?
-            // Or allow Upcoming if it's a different platform?
-            // User request: "Same channel... multiple scheduled... show closest one".
-            // So we group by Member+Platform? Or just Member?
-            // "Same channel" implies Member.
-
-            // Refined Logic:
-            // Group by Member.
-            // If Member has ANY Live stream -> Show ONLY Live streams.
-            // If Member has NO Live stream -> Show ONLY the SOONEST Upcoming stream.
 
             const memberStreamMap = new Map();
             for (const s of liveStreams) {
@@ -832,11 +818,19 @@ const v12_logic = {
                 if (liveOnes.length > 0) {
                     activeAndSoonestStreams.push(...liveOnes);
                 } else {
-                    // No live, pick soonest upcoming
+                    // pick soonest upcoming
                     const upcomingOnes = streams.filter(s => s.status === 'upcoming');
                     if (upcomingOnes.length > 0) {
                         upcomingOnes.sort((a, b) => new Date(a.startTime).getTime() - new Date(b.startTime).getTime());
-                        activeAndSoonestStreams.push(upcomingOnes[0]);
+
+                        //Only show upcoming streams within 24 hours
+                        const soonest = upcomingOnes[0];
+                        const timeDiff = new Date(soonest.startTime).getTime() - Date.now();
+                        const timeLimit = 24 * 60 * 60 * 1000; // 24 Hours
+
+                        if (timeDiff <= timeLimit) {
+                            activeAndSoonestStreams.push(soonest);
+                        }
                     }
                 }
             }
