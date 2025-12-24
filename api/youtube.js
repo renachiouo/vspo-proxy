@@ -763,19 +763,23 @@ const v12_logic = {
                             const member = members.find(m => m.ytId === channelId);
 
                             if (member) {
-                                liveStreams.push({
-                                    memberName: member.name,
-                                    platform: 'youtube',
-                                    channelId: v.snippet.channelId,
-                                    vid: v.id,
-                                    avatarUrl: '', // Will be filled below
-                                    title: v.snippet.title,
-                                    url: `https://www.youtube.com/watch?v=${v.id}`,
-                                    thumbnailUrl: v.snippet.thumbnails?.standard?.url || v.snippet.thumbnails?.high?.url || v.snippet.thumbnails?.maxres?.url,
-                                    status: isUpcoming ? 'upcoming' : 'live',
-                                    // Ensure we have a sortable time. fallback to now if missing.
-                                    startTime: scheduledTime || v.liveStreamingDetails?.actualStartTime || new Date().toISOString()
-                                });
+                                // [Fix] Require valid Start Time. Do NOT fallback to 'now' which bypasses filters.
+                                const finalStartTime = scheduledTime || v.liveStreamingDetails?.actualStartTime;
+
+                                if (finalStartTime) {
+                                    liveStreams.push({
+                                        memberName: member.name,
+                                        platform: 'youtube',
+                                        channelId: v.snippet.channelId,
+                                        vid: v.id,
+                                        avatarUrl: '', // Will be filled below
+                                        title: v.snippet.title,
+                                        url: `https://www.youtube.com/watch?v=${v.id}`,
+                                        thumbnailUrl: v.snippet.thumbnails?.standard?.url || v.snippet.thumbnails?.high?.url || v.snippet.thumbnails?.maxres?.url,
+                                        status: isUpcoming ? 'upcoming' : 'live',
+                                        startTime: finalStartTime
+                                    });
+                                }
                             }
                         }
                     });
@@ -783,7 +787,6 @@ const v12_logic = {
                     console.error('[Live Check] Video Details Batch Failed:', e);
                 }
             }
-
             // Fill Avatars from DB
             for (const stream of liveStreams) {
                 if (!stream.avatarUrl && stream.platform === 'youtube') {
