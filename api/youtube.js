@@ -823,12 +823,15 @@ const v12_logic = {
                     if (upcomingOnes.length > 0) {
                         upcomingOnes.sort((a, b) => new Date(a.startTime).getTime() - new Date(b.startTime).getTime());
 
-                        //Only show upcoming streams within 24 hours
+                        // [Fix] Only show upcoming streams within 24 hours (Future)
+                        // AND ignore "Zombie" streams that are scheduled > 1 hour in the past but never started.
                         const soonest = upcomingOnes[0];
-                        const timeDiff = new Date(soonest.startTime).getTime() - Date.now();
-                        const timeLimit = 24 * 60 * 60 * 1000; // 24 Hours
+                        const now = Date.now();
+                        const timeDiff = new Date(soonest.startTime).getTime() - now;
+                        const futureLimit = 24 * 60 * 60 * 1000; // +24 Hours
+                        const pastLimit = -3 * 60 * 60 * 1000; // -3 Hour (Allow 3h delay)
 
-                        if (timeDiff <= timeLimit) {
+                        if (timeDiff <= futureLimit && timeDiff >= pastLimit) {
                             activeAndSoonestStreams.push(soonest);
                         }
                     }
