@@ -754,7 +754,11 @@ const v12_logic = {
                         const hasEnded = v.liveStreamingDetails?.actualEndTime;
                         const scheduledTime = v.liveStreamingDetails?.scheduledStartTime;
 
-                        if ((isLive || isUpcoming || (hasStarted && !hasEnded))) {
+                        // CRITICAL FIX: Strictly ignore any video that has ended.
+                        if (hasEnded) return;
+
+                        // Valid if Live, Upcoming, or Started (but not ended)
+                        if (isLive || isUpcoming || hasStarted) {
                             const channelId = v.snippet.channelId;
                             const member = members.find(m => m.ytId === channelId);
 
@@ -769,7 +773,8 @@ const v12_logic = {
                                     url: `https://www.youtube.com/watch?v=${v.id}`,
                                     thumbnailUrl: v.snippet.thumbnails?.standard?.url || v.snippet.thumbnails?.high?.url || v.snippet.thumbnails?.maxres?.url,
                                     status: isUpcoming ? 'upcoming' : 'live',
-                                    startTime: scheduledTime || v.liveStreamingDetails?.actualStartTime
+                                    // Ensure we have a sortable time. fallback to now if missing.
+                                    startTime: scheduledTime || v.liveStreamingDetails?.actualStartTime || new Date().toISOString()
                                 });
                             }
                         }
@@ -787,7 +792,57 @@ const v12_logic = {
                 }
             }
 
-            // Sort liveStreams: Official FIRST, then by Member Order (Seniority)
+            // [Optimization] Deduplicate: One Upcoming Stream per Member (Keep soonest)
+            // If member is Live, remove Upcoming.
+            const uniqueStreamsMap = new Map();
+
+            // First pass: Prioritize LIVE
+            for (const s of liveStreams) {
+                if (s.status === 'live') {
+                    // Always keep LIVE streams (allow multiple if multi-platform)
+                    // But if we want strictly one card per member? Currently UI allows multiple.
+                    // Let's assume we allow multiple LIVE, but only ONE Upcoming if NOT Live.
+                    // Actually, if Live, we shouldn't show Upcoming to save space.
+                    uniqueStreamsMap.set(s.memberName + '_live_' + s.platform, s);
+                }
+            }
+
+            // Second pass: Add UPCOMING only if no LIVE exists for that member?
+            // Or allow Upcoming if it's a different platform?
+            // User request: "Same channel... multiple scheduled... show closest one".
+            // So we group by Member+Platform? Or just Member?
+            // "Same channel" implies Member.
+
+            // Refined Logic:
+            // Group by Member.
+            // If Member has ANY Live stream -> Show ONLY Live streams.
+            // If Member has NO Live stream -> Show ONLY the SOONEST Upcoming stream.
+
+            const memberStreamMap = new Map();
+            for (const s of liveStreams) {
+                if (!memberStreamMap.has(s.memberName)) {
+                    memberStreamMap.set(s.memberName, []);
+                }
+                memberStreamMap.get(s.memberName).push(s);
+            }
+
+            const activeAndSoonestStreams = [];
+            for (const [name, streams] of memberStreamMap) {
+                const liveOnes = streams.filter(s => s.status === 'live');
+                if (liveOnes.length > 0) {
+                    activeAndSoonestStreams.push(...liveOnes);
+                } else {
+                    // No live, pick soonest upcoming
+                    const upcomingOnes = streams.filter(s => s.status === 'upcoming');
+                    if (upcomingOnes.length > 0) {
+                        upcomingOnes.sort((a, b) => new Date(a.startTime).getTime() - new Date(b.startTime).getTime());
+                        activeAndSoonestStreams.push(upcomingOnes[0]);
+                    }
+                }
+            }
+            // Replace list
+            liveStreams.length = 0;
+            liveStreams.push(...activeAndSoonestStreams);
             const memberIndexMap = new Map(VSPO_MEMBERS.map((m, i) => [m.name, i]));
             const OFFICIAL_NAME = "ぶいすぽっ!【公式】";
 
