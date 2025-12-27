@@ -1180,34 +1180,46 @@ export default async function handler(req, res) {
             let bgUpdatePromise = Promise.resolve();
             // Standard Interval check (20 mins)
             if (Date.now() - (meta?.timestamp || 0) > (isForeign ? FOREIGN_UPDATE_INTERVAL_SECONDS : UPDATE_INTERVAL_SECONDS) * 1000) {
+                // Optimistic Locking: Use previous timestamp as version
                 const lockId = metaId + '_lock';
                 const lock = await db.collection('metadata').findOne({ _id: lockId });
-                if (!lock || Date.now() - lock.timestamp > 600000) {
-                    await db.collection('metadata').updateOne({ _id: lockId }, { $set: { timestamp: Date.now() } }, { upsert: true });
-                    bgUpdatePromise = (async () => {
-                        try {
-                            // Update timestamp immediately (Start-to-Start interval)
-                            await db.collection('metadata').updateOne({ _id: metaId }, { $set: { timestamp: Date.now() } }, { upsert: true });
+                const lastLockTime = lock?.timestamp || 0;
 
-                            if (isForeign) {
-                                await v12_logic.updateForeignClips(db);
-                                // Check if we need to run Keyword Search (60 mins)
-                                const kwMeta = await db.collection('metadata').findOne({ _id: 'last_jp_keyword_search' });
-                                if (!kwMeta || Date.now() - kwMeta.timestamp > FOREIGN_SEARCH_INTERVAL_SECONDS * 1000) {
-                                    // Update keyword timestamp immediately (Start-to-Start)
-                                    await db.collection('metadata').updateOne({ _id: 'last_jp_keyword_search' }, { $set: { timestamp: Date.now() } }, { upsert: true });
-                                    await v12_logic.updateForeignClipsKeywords(db);
+                if (Date.now() - lastLockTime > 600000) {
+                    // Try to acquire lock ATOMICALLY
+                    const acquireResult = await db.collection('metadata').updateOne(
+                        { _id: lockId, timestamp: lastLockTime },
+                        { $set: { timestamp: Date.now() } },
+                        { upsert: true }
+                    );
+
+                    if (acquireResult.modifiedCount === 1 || (acquireResult.upsertedCount === 1 && !lock)) {
+                        // Lock Acquired
+                        bgUpdatePromise = (async () => {
+                            try {
+                                // Update timestamp immediately (Start-to-Start interval)
+                                await db.collection('metadata').updateOne({ _id: metaId }, { $set: { timestamp: Date.now() } }, { upsert: true });
+
+                                if (isForeign) {
+                                    await v12_logic.updateForeignClips(db);
+                                    // Check if we need to run Keyword Search (60 mins)
+                                    const kwMeta = await db.collection('metadata').findOne({ _id: 'last_jp_keyword_search' });
+                                    if (!kwMeta || Date.now() - kwMeta.timestamp > FOREIGN_SEARCH_INTERVAL_SECONDS * 1000) {
+                                        // Update keyword timestamp immediately (Start-to-Start)
+                                        await db.collection('metadata').updateOne({ _id: 'last_jp_keyword_search' }, { $set: { timestamp: Date.now() } }, { upsert: true });
+                                        await v12_logic.updateForeignClipsKeywords(db);
+                                    }
+                                } else {
+                                    await v12_logic.updateAndStoreYouTubeData(db);
                                 }
-                            } else {
-                                await v12_logic.updateAndStoreYouTubeData(db);
+                            } catch (e) {
+                                console.error('BG Update:', e);
+                            } finally {
+                                await db.collection('metadata').updateOne({ _id: lockId }, { $set: { timestamp: 0 } });
                             }
-                        } catch (e) {
-                            console.error('BG Update:', e);
-                        } finally {
-                            await db.collection('metadata').updateOne({ _id: lockId }, { $set: { timestamp: 0 } });
-                        }
-                    })(); // Captured Promise
-                    didUpdate = true;
+                        })(); // Captured Promise
+                        didUpdate = true;
+                    }
                 }
             }
 
