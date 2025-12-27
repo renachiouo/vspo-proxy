@@ -139,6 +139,64 @@ const logAdminAction = async (db, action, details) => {
     } catch (e) { console.error('AdminLog Error:', e); }
 };
 
+// --- Quota Tracker ---
+const getQuotaCost = (endpoint) => {
+    if (endpoint === 'search') return 100;
+    if (endpoint === 'videos' || endpoint === 'channels' || endpoint === 'playlistItems' || endpoint === 'playlists') return 1;
+    return 1; // Default conservative cost
+};
+
+const updateQuotaUsage = (db, keyIndex, cost, endpoint) => {
+    if (!db || cost === 0) return;
+    try {
+        // PT Midnight (America/Los_Angeles)
+        const ptDate = new Intl.DateTimeFormat('en-CA', {
+            timeZone: 'America/Los_Angeles',
+            year: 'numeric', month: '2-digit', day: '2-digit'
+        }).format(new Date());
+
+        const field = `breakdown.key_${keyIndex}`;
+        const update = {
+            $inc: {
+                totalUsed: cost,
+                [`${field}.total`]: cost,
+                [`${field}.details.${endpoint}`]: cost
+            }
+        };
+        // Fire-and-forget update
+        db.collection('quota_usage').updateOne(
+            { _id: `quota_${ptDate}` },
+            update,
+            { upsert: true }
+        ).catch(e => console.warn('[Quota] Update Failed:', e.message));
+    } catch (e) {
+        console.warn('[Quota] Logic Error:', e);
+    }
+};
+
+const cleanupOldQuotaLogs = async (db) => {
+    try {
+        const ptFormatter = new Intl.DateTimeFormat('en-CA', {
+            timeZone: 'America/Los_Angeles',
+            year: 'numeric', month: '2-digit', day: '2-digit'
+        });
+
+        const d = new Date();
+        d.setDate(d.getDate() - 7);
+        const cutoffStr = 'quota_' + ptFormatter.format(d);
+
+        const result = await db.collection('quota_usage').deleteMany({
+            _id: { $lt: cutoffStr, $regex: /^quota_/ }
+        });
+
+        if (result.deletedCount > 0) {
+            console.log(`[Quota] Cleaned up ${result.deletedCount} old records. (Cutoff: ${cutoffStr})`);
+        }
+    } catch (e) {
+        console.warn('[Quota] Cleanup Failed:', e);
+    }
+};
+
 async function getVisitorCount(db) {
     const total = await db.collection('analytics').findOne({ _id: 'total_visits' });
     const todayStr = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Taipei' }).format(new Date());
@@ -190,7 +248,22 @@ const fetchYouTube = async (endpoint, params) => {
             clearTimeout(timeoutId);
 
             const data = await res.json();
+
+            // --- Quota Tracking ---
+            // Calculate cost regardless of success/fail, unless it's a Quota Error (which implies 0 used)
+            let isQuotaErr = false;
             if (data.error && (data.error.message.toLowerCase().includes('quota') || data.error.reason === 'quotaExceeded')) {
+                isQuotaErr = true;
+            }
+
+            // Track if NOT a quota error (even 400/404 consumes quota)
+            if (!isQuotaErr && cachedDb) {
+                const cost = getQuotaCost(endpoint);
+                updateQuotaUsage(cachedDb, index, cost, endpoint);
+            }
+            // ----------------------
+
+            if (isQuotaErr) {
                 console.warn(`[YouTube API] Key ${index} Quota Exceeded.`);
 
                 // [Fix] Race Condition Protection:
@@ -1211,6 +1284,36 @@ export default async function handler(req, res) {
             timestamp: updateMeta?.timestamp || Date.now(), // Use DB timestamp
             announcement: ann ? { content: ann.content, type: ann.type, active: ann.active === "true" } : null,
             meta: { didUpdate, timestamp: Date.now() }
+        });
+    }
+
+    // --- Quota Public Endpoint ---
+    if (pathname === '/api/quota') {
+        // Optional: ?date=YYYY-MM-DD
+        let targetDate = searchParams.get('date');
+        if (!targetDate) {
+            targetDate = new Intl.DateTimeFormat('en-CA', {
+                timeZone: 'America/Los_Angeles',
+                year: 'numeric', month: '2-digit', day: '2-digit'
+            }).format(new Date());
+        }
+
+        // Trigger Cleanup (Fire and Forget)
+        cleanupOldQuotaLogs(db);
+
+        const [quotaDoc, keyDoc] = await Promise.all([
+            db.collection('quota_usage').findOne({ _id: `quota_${targetDate}` }),
+            db.collection('metadata').findOne({ _id: 'api_key_rotator' })
+        ]);
+
+        return res.status(200).json({
+            success: true,
+            date: targetDate,
+            timezone: 'PT (Pacific Time)',
+            totalUsed: quotaDoc?.totalUsed || 0,
+            breakdown: quotaDoc?.breakdown || {},
+            currentKeyIndex: keyDoc?.currentIndex || 0,
+            note: 'Calculated via Dead Reckoning (Search=100, API=1). Includes failed 4xx/5xx requests.'
         });
     }
 
