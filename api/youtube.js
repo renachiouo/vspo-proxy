@@ -76,6 +76,9 @@ const apiKeys = [
     process.env.YOUTUBE_API_KEY_13,
 ].filter(key => key);
 
+console.log('[Debug] Loaded API Keys Count:', apiKeys.length);
+console.log('[Debug] Env Vars:', Object.keys(process.env).filter(k => k.startsWith('YOUTUBE_API_KEY')).join(', '));
+
 // Constants
 const LIVE_UPDATE_INTERVAL_SECONDS = 300; // 5 mins for Live Status
 const INACTIVE_THRESHOLD_CN_MS = 60 * 24 * 60 * 60 * 1000; // CN: 60 Days
