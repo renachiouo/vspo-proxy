@@ -6,7 +6,10 @@ const SCRIPT_VERSION = '17.3-Debug-Force';
 const UPDATE_INTERVAL_SECONDS = 1200; // CN: 20 mins
 const FOREIGN_UPDATE_INTERVAL_SECONDS = 1200; // JP Whitelist: 20 mins
 const FOREIGN_SEARCH_INTERVAL_SECONDS = 3600; // JP Keywords: 60 mins
-const MONGODB_URI = process.env.MONGODB_URI || 'mongodb+srv://magirenaouo_db_user:LAS6RKXKK4AUv3UW@vspoproxy.pdjcq2p.mongodb.net/?appName=vspoproxy';
+const MONGODB_URI = process.env.MONGODB_URL;
+if (!MONGODB_URI) {
+    throw new Error('Please define the MONGODB_URL environment variable inside .env');
+}
 const DB_NAME = 'vspoproxy';
 
 // --- Constants ---
