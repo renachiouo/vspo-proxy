@@ -69,7 +69,8 @@ const apiKeys = [
     process.env.YOUTUBE_API_KEY_5, process.env.YOUTUBE_API_KEY_6,
     process.env.YOUTUBE_API_KEY_7, process.env.YOUTUBE_API_KEY_8,
     process.env.YOUTUBE_API_KEY_9, process.env.YOUTUBE_API_KEY_10,
-    process.env.YOUTUBE_API_KEY_11,
+    process.env.YOUTUBE_API_KEY_11, process.env.YOUTUBE_API_KEY_12,
+    process.env.YOUTUBE_API_KEY_13,
 ].filter(key => key);
 
 // Constants
@@ -186,16 +187,23 @@ const fetchYouTube = async (endpoint, params) => {
 
             const data = await res.json();
             if (data.error && (data.error.message.toLowerCase().includes('quota') || data.error.reason === 'quotaExceeded')) {
-                console.warn(`[YouTube API] Key ${index} Quota Exceeded. Rotating...`);
-                currentKeyIndex = (currentKeyIndex + 1) % totalKeys; // Rotate globally
+                console.warn(`[YouTube API] Key ${index} Quota Exceeded.`);
 
-                // 2. Persist New Index to DB (Fire-and-forget)
-                if (cachedDb) {
-                    cachedDb.collection('metadata').updateOne(
-                        { _id: 'api_key_rotator' },
-                        { $set: { currentIndex: currentKeyIndex, lastUpdated: Date.now() } },
-                        { upsert: true }
-                    ).catch(dbErr => console.warn('[API Key] Failed to persist rotation:', dbErr));
+                // [Fix] Race Condition Protection:
+                // Only rotate the global index if WE are the ones using the current key.
+                // Prevents parallel requests from spinning the index multiple times for the same dead key.
+                if (index === currentKeyIndex) {
+                    console.warn(`[YouTube API] Rotating Global Key Index: ${currentKeyIndex} -> ${(currentKeyIndex + 1) % totalKeys}`);
+                    currentKeyIndex = (currentKeyIndex + 1) % totalKeys; // Rotate globally
+
+                    // 2. Persist New Index to DB (Fire-and-forget)
+                    if (cachedDb) {
+                        cachedDb.collection('metadata').updateOne(
+                            { _id: 'api_key_rotator' },
+                            { $set: { currentIndex: currentKeyIndex, lastUpdated: Date.now() } },
+                            { upsert: true }
+                        ).catch(dbErr => console.warn('[API Key] Failed to persist rotation:', dbErr));
+                    }
                 }
                 continue;
             }
@@ -429,7 +437,12 @@ const v12_logic = {
                         pResults.forEach(r => r.items?.forEach(i => { if (new Date(i.snippet.publishedAt) > retentionDate) newVideoCandidates.add(i.snippet.resourceId.videoId); }));
                         await new Promise(r => setTimeout(r, 200)); // Small delay between batches
                     }
-                } catch { }
+                } catch (e) {
+                    if (e.message && (e.message.includes('Quota Exceeded') || e.message.includes('quota'))) {
+                        console.warn('[Mongo] CRITICAL: Quota Exhausted during Whitelist Scan. Aborting.');
+                        break;
+                    }
+                }
             }
         }
 
@@ -441,7 +454,13 @@ const v12_logic = {
                 // console.log(`[MongoDebug] Searching: ${q}`); // Optional Verbose
                 const res = await fetchYouTube('search', { part: 'snippet', type: 'video', maxResults: 50, q, publishedAfter: retentionDate.toISOString() });
                 if (res) sResults.push(res);
-            } catch (e) { console.error(`[Mongo] Keyword Search Failed (${q}):`, e); }
+            } catch (e) {
+                console.error(`[Mongo] Keyword Search Failed (${q}):`, e);
+                if (e.message && (e.message.includes('Quota Exceeded') || e.message.includes('quota'))) {
+                    console.warn('[Mongo] CRITICAL: Quota Exhausted during Keyword Search. Aborting.');
+                    break;
+                }
+            }
         }
 
         const searchResultIds = new Set();
@@ -706,21 +725,32 @@ const v12_logic = {
             // 1. Fetch PlaylistItems (Concurrent Batches)
             const playlistBatchSize = 15;
             for (const batch of batchArray(ytMembers, playlistBatchSize)) {
-                await Promise.all(batch.map(async (member) => {
-                    try {
-                        const uploadsPlaylistId = member.ytId.replace('UC', 'UU');
-                        const res = await fetchYouTube('playlistItems', {
-                            part: 'snippet',
-                            playlistId: uploadsPlaylistId,
-                            maxResults: 3
-                        });
-                        res.items?.forEach(item => {
-                            playlistCandidates.add(item.snippet.resourceId.videoId);
-                        });
-                    } catch (e) {
-                        // console.warn(`[Playlist Fail] ${member.name}:`, e.message);
+                try {
+                    await Promise.all(batch.map(async (member) => {
+                        try {
+                            const uploadsPlaylistId = member.ytId.replace('UC', 'UU');
+                            const res = await fetchYouTube('playlistItems', {
+                                part: 'snippet',
+                                playlistId: uploadsPlaylistId,
+                                maxResults: 3
+                            });
+                            res.items?.forEach(item => {
+                                playlistCandidates.add(item.snippet.resourceId.videoId);
+                            });
+                        } catch (e) {
+                            // console.warn(`[Playlist Fail] ${member.name}:`, e.message);
+                            if (e.message && (e.message.includes('Quota Exceeded') || e.message.includes('quota'))) {
+                                throw e; // Re-throw to be caught by outer loop and break
+                            }
+                        }
+                    }));
+                } catch (e) {
+                    if (e.message && (e.message.includes('Quota Exceeded') || e.message.includes('quota'))) {
+                        console.warn('[Live Check] CRITICAL: Quota Exhausted during Playlist Fetch. Aborting.');
+                        break;
                     }
-                }));
+                    console.error('[Live Check] Batch Error:', e);
+                }
                 // Small delay between batches
                 await new Promise(r => setTimeout(r, 200));
             }
@@ -785,6 +815,10 @@ const v12_logic = {
                     });
                 } catch (e) {
                     console.error('[Live Check] Video Details Batch Failed:', e);
+                    if (e.message && (e.message.includes('Quota Exceeded') || e.message.includes('quota'))) {
+                        console.warn('[Live Check] CRITICAL: Quota Exhausted. Aborting remaining batches.');
+                        break;
+                    }
                 }
             }
             // Fill Avatars from DB
