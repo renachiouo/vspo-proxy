@@ -78,7 +78,8 @@ const apiKeys = [
 
 // Constants
 const LIVE_UPDATE_INTERVAL_SECONDS = 300; // 5 mins for Live Status
-const INACTIVE_THRESHOLD_MS = 90 * 24 * 60 * 60 * 1000; // 90 Days
+const INACTIVE_THRESHOLD_CN_MS = 60 * 24 * 60 * 60 * 1000; // CN: 60 Days
+const INACTIVE_THRESHOLD_JP_MS = 30 * 24 * 60 * 60 * 1000; // JP: 30 Days
 const INACTIVE_SCAN_INTERVAL_CN_MS = 3600 * 1000; // 1 Hour
 const INACTIVE_SCAN_INTERVAL_JP_MS = 86400 * 1000; // 24 Hours
 
@@ -417,7 +418,7 @@ const v12_logic = {
             } else {
                 console.log('[Mongo] Update Strategy: ACTIVE ONLY');
                 const channelDocs = await db.collection('channels').find({ _id: { $in: whitelist } }).toArray();
-                const threshold = Date.now() - INACTIVE_THRESHOLD_MS;
+                const threshold = Date.now() - INACTIVE_THRESHOLD_CN_MS;
                 targetChannels = whitelist.filter(id => {
                     const doc = channelDocs.find(c => c._id === id);
                     if (!doc || !doc.last_upload_at) return true; // Treat unknown as active
@@ -514,7 +515,7 @@ const v12_logic = {
         } else {
             console.log('[Mongo] JP Update Strategy: ACTIVE ONLY');
             const channelDocs = await db.collection('channels').find({ _id: { $in: whitelist } }).toArray();
-            const threshold = Date.now() - INACTIVE_THRESHOLD_MS;
+            const threshold = Date.now() - INACTIVE_THRESHOLD_JP_MS;
             targetChannels = whitelist.filter(id => {
                 const doc = channelDocs.find(c => c._id === id);
                 if (!doc || !doc.last_upload_at) return true;
