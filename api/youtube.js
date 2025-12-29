@@ -270,31 +270,30 @@ const fetchYouTube = async (endpoint, params) => {
             if (isQuotaErr) {
                 console.warn(`[YouTube API] Key ${index} Quota Exceeded.`);
 
-                // [Fix] Race Condition Protection:
-                // Only rotate the global index if WE are the ones using the current key.
-                // Prevents parallel requests from spinning the index multiple times for the same dead key.
-                if (index === currentKeyIndex) {
-                    console.warn(`[YouTube API] Rotating Global Key Index: ${currentKeyIndex} -> ${(currentKeyIndex + 1) % totalKeys}`);
-                    currentKeyIndex = (currentKeyIndex + 1) % totalKeys; // Rotate globally
+                // [Fix] Aggressive Rotation:
+                const nextIndex = (index + 1) % totalKeys;
 
-                    // 2. Persist New Index to DB (Fire-and-forget)
-                    if (cachedDb) {
-                        cachedDb.collection('metadata').updateOne(
-                            { _id: 'api_key_rotator' },
-                            { $set: { currentIndex: currentKeyIndex, lastUpdated: Date.now() } },
-                            { upsert: true }
-                        ).catch(dbErr => console.warn('[API Key] Failed to persist rotation:', dbErr));
-                    }
+                console.warn(`[YouTube API] Rotating Global Key Index: ${currentKeyIndex} -> ${nextIndex}`);
+                currentKeyIndex = nextIndex;
+
+                // 2. Persist New Index to DB (Fire-and-forget)
+                if (cachedDb) {
+                    cachedDb.collection('metadata').updateOne(
+                        { _id: 'api_key_rotator' },
+                        { $set: { currentIndex: currentKeyIndex, lastUpdated: Date.now() } },
+                        { upsert: true }
+                    ).catch(dbErr => console.warn('[API Key] Failed to persist rotation:', dbErr));
                 }
+
                 continue;
             }
-            if (data.error) throw new Error(data.error.message);
-
+            if (data.error) throw new Error(data.error.message); // Will be caught below
 
             return data;
         } catch (e) {
             // Log error (optional) but continue to next key
-            if (e.name === 'AbortError') console.warn(`[YouTube API] Request Timed Out (${endpoint})`);
+            if (e.name === 'AbortError') console.warn(`[YouTube API] Key ${index} Request Timed Out`);
+            else console.warn(`[YouTube API] Key ${index} Failed: ${e.message}`); // Inspect why Key 7 fails
         }
     }
     throw new Error('API Quota Exceeded');
