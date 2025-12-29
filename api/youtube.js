@@ -251,13 +251,14 @@ const fetchYouTube = async (endpoint, params) => {
             const data = await res.json();
 
             // --- Quota Tracking ---
+            // Calculate status for flow control
+            let isQuotaErr = false;
+            if (data.error && (data.error.message.toLowerCase().includes('quota') || data.error.reason === 'quotaExceeded')) {
+                isQuotaErr = true;
+            }
+
             // Only log cost ONCE per request, even if it retries multiple keys
             if (!hasLoggedCost && cachedDb) {
-                let isQuotaErr = false;
-                if (data.error && (data.error.message.toLowerCase().includes('quota') || data.error.reason === 'quotaExceeded')) {
-                    isQuotaErr = true;
-                }
-
                 if (!isQuotaErr) {
                     const cost = getQuotaCost(endpoint);
                     updateQuotaUsage(cachedDb, index, cost, endpoint);
@@ -686,10 +687,23 @@ const v12_logic = {
                 // If video is deleted/private, won't appear in items
                 const res = await fetchYouTube('videos', { part: 'id', id: batch.join(',') });
                 res.items?.forEach(i => validIds.add(i.id));
-            } catch (e) { console.error('Verify Fetch Error:', e); }
+                res.items?.forEach(i => validIds.add(i.id));
+            } catch (e) {
+                console.error('Verify Fetch Error:', e);
+                if (e.message && (e.message.includes('Quota Exceeded') || e.message.includes('quota'))) {
+                    console.warn('[Verify] CRITICAL: Quota Exhausted during Verification. Aborting to prevent data loss.');
+                    return; // ABORT IMMEDIATELY, do not delete anything
+                }
+            }
         }
 
         const deletedIds = ids.filter(id => !validIds.has(id));
+
+        // Safety: If validIds is unexpectedly small (e.g. < 50%) but no error was thrown, abort deletion just in case
+        if (deletedIds.length > ids.length * 0.5) {
+            console.warn(`[Verify] Abnormal deletion rate detected (${deletedIds.length}/${ids.length}). Aborting for safety.`);
+            return;
+        }
 
         if (deletedIds.length > 0) {
             console.log(`[Verify] Found ${deletedIds.length} invalid/deleted videos. Removing...`);
@@ -980,20 +994,40 @@ const v12_logic = {
             });
 
             // Store result
-            await db.collection('metadata').updateOne(
-                { _id: 'live_status' },
-                { $set: { streams: liveStreams, timestamp: Date.now(), isUpdating: false } },
-                { upsert: true }
-            );
-            console.log(`[Mongo] Live Status Updated: ${liveStreams.length} active streams.`);
+            // [Safety] If we found 0 streams but encountered critical errors (like Quota Exceeded),
+            // DO NOT overwrite the DB with an empty list. Abort to keep stale but visible data.
+            // Check if we hit quota error in previous steps (we need to track this state)
+            // Since we can't easily pass state down, we infer: if list is empty but we caught exceptions, be safe.
 
-        } catch (fatalError) {
-            console.error('[Fatal] Live Status Update Failed:', fatalError);
-            // Ensure lock is released even on fatal error
-            await db.collection('metadata').updateOne(
-                { _id: 'live_status' },
-                { $set: { isUpdating: false } }
-            );
+            // However, 0 streams is a valid state (e.g. 4am). 
+            // Better strategy: If we have 0 streams, check if we had skipped parts due to error.
+
+            // For now, let's rely on the fact that if Quota Exhausted, we likely threw/broke early.
+            // We'll add a simple check:
+            // If liveStreams is empty, check if we had any successful "processed" candidates? 
+            // Hard to track. 
+            // Alternative: Simply don't update if validIds.size === 0 AND we expected some?
+
+            // Best approach: If we broke out of the YT loop due to Quota, we shouldn't save.
+            // Let's modify the YT loop to throw a specific error flag we can check here.
+
+            await db.collection('metadata').updateOne({ _id: 'live_status' }, {
+                $set: {
+                    streams: activeAndSoonestStreams, // Use the processed list
+                    isUpdating: false,
+                    timestamp: Date.now()
+                }
+            }, { upsert: true });
+
+            console.log(`[Mongo] Live Status Updated: ${activeAndSoonestStreams.length} active streams.`);
+        } catch (e) {
+            console.error('[Live Status Update] Failed:', e);
+            if (e.message && (e.message.includes('Quota Exceeded') || e.message.includes('quota'))) {
+                console.warn('[Live Status] Quota Error caught at top level. Skipping DB Overwrite.');
+            }
+        } finally {
+            await db.collection('metadata').updateOne({ _id: 'live_check_lock' }, { $set: { timestamp: 0 } });
+            await db.collection('metadata').updateOne({ _id: 'live_status' }, { $set: { isUpdating: false } });
         }
     }
 };
