@@ -993,22 +993,6 @@ const v12_logic = {
             });
 
             // Store result
-            // [Safety] If we found 0 streams but encountered critical errors (like Quota Exceeded),
-            // DO NOT overwrite the DB with an empty list. Abort to keep stale but visible data.
-            // Check if we hit quota error in previous steps (we need to track this state)
-            // Since we can't easily pass state down, we infer: if list is empty but we caught exceptions, be safe.
-
-            // However, 0 streams is a valid state (e.g. 4am). 
-            // Better strategy: If we have 0 streams, check if we had skipped parts due to error.
-
-            // For now, let's rely on the fact that if Quota Exhausted, we likely threw/broke early.
-            // We'll add a simple check:
-            // If liveStreams is empty, check if we had any successful "processed" candidates? 
-            // Hard to track. 
-            // Alternative: Simply don't update if validIds.size === 0 AND we expected some?
-
-            // Best approach: If we broke out of the YT loop due to Quota, we shouldn't save.
-            // Let's modify the YT loop to throw a specific error flag we can check here.
 
             await db.collection('metadata').updateOne({ _id: 'live_status' }, {
                 $set: {
