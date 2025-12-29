@@ -1145,6 +1145,12 @@ export default async function handler(req, res) {
         console.warn('[Log] Failed to save request log:', e);
     }
 
+    const logOutcome = async (reason) => {
+        try {
+            await db.collection('request_logs').updateOne({ reqId }, { $set: { outcome: reason, endTimestamp: new Date() } });
+        } catch (e) { }
+    };
+
     let body = {};
     if (req.method === 'POST') {
         try { body = typeof req.body === 'string' ? JSON.parse(req.body) : req.body; } catch { }
@@ -1195,9 +1201,12 @@ export default async function handler(req, res) {
             }
             await db.collection('metadata').updateOne({ _id: metaId }, { $set: { timestamp: Date.now() } }, { upsert: true });
             didUpdate = true;
+            logOutcome(`force_refresh_triggered_${lang}`);
         } else {
             const meta = await db.collection('metadata').findOne({ _id: metaId });
             let bgUpdatePromise = Promise.resolve();
+            let updateStarted = false;
+
             // Standard Interval check (20 mins)
             if (Date.now() - (meta?.timestamp || 0) > (isForeign ? FOREIGN_UPDATE_INTERVAL_SECONDS : UPDATE_INTERVAL_SECONDS) * 1000) {
                 // Optimistic Locking: Use previous timestamp as version
@@ -1214,6 +1223,8 @@ export default async function handler(req, res) {
                     );
 
                     if (acquireResult.modifiedCount === 1 || (acquireResult.upsertedCount === 1 && !lock)) {
+                        updateStarted = true;
+                        logOutcome(`triggered_update_${lang}`);
                         // Lock Acquired
                         bgUpdatePromise = (async () => {
                             try {
@@ -1239,8 +1250,14 @@ export default async function handler(req, res) {
                             }
                         })(); // Captured Promise
                         didUpdate = true;
+                    } else {
+                        logOutcome(`skip_lock_failed_${lang}`);
                     }
+                } else {
+                    logOutcome(`skip_lock_held_${lang}`);
                 }
+            } else {
+                logOutcome(`skip_interval_recent_${lang}`);
             }
 
             // Independent Live Status Check (5 mins)
@@ -1250,6 +1267,7 @@ export default async function handler(req, res) {
                 const liveLock = await db.collection('metadata').findOne({ _id: 'live_check_lock' });
                 if (!liveLock || Date.now() - liveLock.timestamp > 300000) {
                     await db.collection('metadata').updateOne({ _id: 'live_check_lock' }, { $set: { timestamp: Date.now() } }, { upsert: true });
+                    if (!updateStarted) logOutcome('triggered_live_check');
                     bgLivePromise = (async () => {
                         try {
                             // Update timestamp immediately (Start-to-Start interval)
