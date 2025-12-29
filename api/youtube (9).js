@@ -235,7 +235,6 @@ const fetchYouTube = async (endpoint, params) => {
 
     const totalKeys = apiKeys.length;
     const startIndex = currentKeyIndex;
-    let hasLoggedCost = false;
 
     for (let i = 0; i < totalKeys; i++) {
         const index = (startIndex + i) % totalKeys;
@@ -244,56 +243,54 @@ const fetchYouTube = async (endpoint, params) => {
 
         try {
             const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 5000); // 5s timeout
+            const timeoutId = setTimeout(() => controller.abort(), 5000); // 5s timeout (Was 2.5s)
             const res = await fetch(url, { signal: controller.signal });
             clearTimeout(timeoutId);
 
             const data = await res.json();
 
             // --- Quota Tracking ---
-            // Calculate status for flow control
+            // Calculate cost regardless of success/fail, unless it's a Quota Error (which implies 0 used)
             let isQuotaErr = false;
             if (data.error && (data.error.message.toLowerCase().includes('quota') || data.error.reason === 'quotaExceeded')) {
                 isQuotaErr = true;
             }
 
-            // Only log cost ONCE per request, even if it retries multiple keys
-            if (!hasLoggedCost && cachedDb) {
-                if (!isQuotaErr) {
-                    const cost = getQuotaCost(endpoint);
-                    updateQuotaUsage(cachedDb, index, cost, endpoint);
-                    hasLoggedCost = true; // Mark as logged so retries don't double count
-                }
+            // Track if NOT a quota error (even 400/404 consumes quota)
+            if (!isQuotaErr && cachedDb) {
+                const cost = getQuotaCost(endpoint);
+                updateQuotaUsage(cachedDb, index, cost, endpoint);
             }
             // ----------------------
 
             if (isQuotaErr) {
                 console.warn(`[YouTube API] Key ${index} Quota Exceeded.`);
 
-                // [Fix] Aggressive Rotation:
-                const nextIndex = (index + 1) % totalKeys;
+                // [Fix] Race Condition Protection:
+                // Only rotate the global index if WE are the ones using the current key.
+                // Prevents parallel requests from spinning the index multiple times for the same dead key.
+                if (index === currentKeyIndex) {
+                    console.warn(`[YouTube API] Rotating Global Key Index: ${currentKeyIndex} -> ${(currentKeyIndex + 1) % totalKeys}`);
+                    currentKeyIndex = (currentKeyIndex + 1) % totalKeys; // Rotate globally
 
-                console.warn(`[YouTube API] Rotating Global Key Index: ${currentKeyIndex} -> ${nextIndex}`);
-                currentKeyIndex = nextIndex;
-
-                // 2. Persist New Index to DB (Fire-and-forget)
-                if (cachedDb) {
-                    cachedDb.collection('metadata').updateOne(
-                        { _id: 'api_key_rotator' },
-                        { $set: { currentIndex: currentKeyIndex, lastUpdated: Date.now() } },
-                        { upsert: true }
-                    ).catch(dbErr => console.warn('[API Key] Failed to persist rotation:', dbErr));
+                    // 2. Persist New Index to DB (Fire-and-forget)
+                    if (cachedDb) {
+                        cachedDb.collection('metadata').updateOne(
+                            { _id: 'api_key_rotator' },
+                            { $set: { currentIndex: currentKeyIndex, lastUpdated: Date.now() } },
+                            { upsert: true }
+                        ).catch(dbErr => console.warn('[API Key] Failed to persist rotation:', dbErr));
+                    }
                 }
-
                 continue;
             }
-            if (data.error) throw new Error(data.error.message); // Will be caught below
+            if (data.error) throw new Error(data.error.message);
+
 
             return data;
         } catch (e) {
             // Log error (optional) but continue to next key
-            if (e.name === 'AbortError') console.warn(`[YouTube API] Key ${index} Request Timed Out`);
-            else console.warn(`[YouTube API] Key ${index} Failed: ${e.message}`); // Inspect why Key 7 fails
+            if (e.name === 'AbortError') console.warn(`[YouTube API] Request Timed Out (${endpoint})`);
         }
     }
     throw new Error('API Quota Exceeded');
@@ -686,23 +683,10 @@ const v12_logic = {
                 // If video is deleted/private, won't appear in items
                 const res = await fetchYouTube('videos', { part: 'id', id: batch.join(',') });
                 res.items?.forEach(i => validIds.add(i.id));
-                res.items?.forEach(i => validIds.add(i.id));
-            } catch (e) {
-                console.error('Verify Fetch Error:', e);
-                if (e.message && (e.message.includes('Quota Exceeded') || e.message.includes('quota'))) {
-                    console.warn('[Verify] CRITICAL: Quota Exhausted during Verification. Aborting to prevent data loss.');
-                    return; // ABORT IMMEDIATELY, do not delete anything
-                }
-            }
+            } catch (e) { console.error('Verify Fetch Error:', e); }
         }
 
         const deletedIds = ids.filter(id => !validIds.has(id));
-
-        // Safety: If validIds is unexpectedly small (e.g. < 50%) but no error was thrown, abort deletion just in case
-        if (deletedIds.length > ids.length * 0.5) {
-            console.warn(`[Verify] Abnormal deletion rate detected (${deletedIds.length}/${ids.length}). Aborting for safety.`);
-            return;
-        }
 
         if (deletedIds.length > 0) {
             console.log(`[Verify] Found ${deletedIds.length} invalid/deleted videos. Removing...`);
@@ -993,40 +977,20 @@ const v12_logic = {
             });
 
             // Store result
-            // [Safety] If we found 0 streams but encountered critical errors (like Quota Exceeded),
-            // DO NOT overwrite the DB with an empty list. Abort to keep stale but visible data.
-            // Check if we hit quota error in previous steps (we need to track this state)
-            // Since we can't easily pass state down, we infer: if list is empty but we caught exceptions, be safe.
-
-            // However, 0 streams is a valid state (e.g. 4am). 
-            // Better strategy: If we have 0 streams, check if we had skipped parts due to error.
-
-            // For now, let's rely on the fact that if Quota Exhausted, we likely threw/broke early.
-            // We'll add a simple check:
-            // If liveStreams is empty, check if we had any successful "processed" candidates? 
-            // Hard to track. 
-            // Alternative: Simply don't update if validIds.size === 0 AND we expected some?
-
-            // Best approach: If we broke out of the YT loop due to Quota, we shouldn't save.
-            // Let's modify the YT loop to throw a specific error flag we can check here.
-
-            await db.collection('metadata').updateOne({ _id: 'live_status' }, {
-                $set: {
-                    streams: liveStreams, // Use the processed list
-                    isUpdating: false,
-                    timestamp: Date.now()
-                }
-            }, { upsert: true });
-
+            await db.collection('metadata').updateOne(
+                { _id: 'live_status' },
+                { $set: { streams: liveStreams, timestamp: Date.now(), isUpdating: false } },
+                { upsert: true }
+            );
             console.log(`[Mongo] Live Status Updated: ${liveStreams.length} active streams.`);
-        } catch (e) {
-            console.error('[Live Status Update] Failed:', e);
-            if (e.message && (e.message.includes('Quota Exceeded') || e.message.includes('quota'))) {
-                console.warn('[Live Status] Quota Error caught at top level. Skipping DB Overwrite.');
-            }
-        } finally {
-            await db.collection('metadata').updateOne({ _id: 'live_check_lock' }, { $set: { timestamp: 0 } });
-            await db.collection('metadata').updateOne({ _id: 'live_status' }, { $set: { isUpdating: false } });
+
+        } catch (fatalError) {
+            console.error('[Fatal] Live Status Update Failed:', fatalError);
+            // Ensure lock is released even on fatal error
+            await db.collection('metadata').updateOne(
+                { _id: 'live_status' },
+                { $set: { isUpdating: false } }
+            );
         }
     }
 };
@@ -1156,37 +1120,11 @@ async function handleAdminAction(req, res, db, body) {
 
 // --- Handler ---
 export default async function handler(req, res) {
-    const reqId = Math.random().toString(36).substring(7);
-    console.log(`[Req:${reqId}] Incoming ${req.method} ${req.url}`);
-    console.log(`[Req:${reqId}] UA: ${req.headers['user-agent']} IP: ${req.headers['x-forwarded-for'] || req.socket.remoteAddress}`);
-
     if (req.method === 'OPTIONS') return res.status(200).end();
 
     const db = await getDb();
     const url = new URL(req.url, `http://${req.headers.host}`);
     const { pathname, searchParams } = url;
-
-    // [Debug] Request Log
-    try {
-        await db.collection('request_logs').insertOne({
-            timestamp: new Date(),
-            reqId,
-            method: req.method,
-            pathname,
-            query: Object.fromEntries(searchParams),
-            ua: req.headers['user-agent'],
-            ip: req.headers['x-forwarded-for'] || req.socket.remoteAddress
-        });
-    } catch (e) {
-        console.warn('[Log] Failed to save request log:', e);
-    }
-
-    const logOutcome = async (reason) => {
-        try {
-            await db.collection('request_logs').updateOne({ reqId }, { $set: { outcome: reason, endTimestamp: new Date() } });
-        } catch (e) { }
-    };
-
     let body = {};
     if (req.method === 'POST') {
         try { body = typeof req.body === 'string' ? JSON.parse(req.body) : req.body; } catch { }
@@ -1236,14 +1174,10 @@ export default async function handler(req, res) {
                 await v12_logic.updateLiveStatus(db); // Force refresh also updates live status
             }
             await db.collection('metadata').updateOne({ _id: metaId }, { $set: { timestamp: Date.now() } }, { upsert: true });
-
             didUpdate = true;
-            logOutcome(`force_refresh_triggered_${lang}`);
         } else {
             const meta = await db.collection('metadata').findOne({ _id: metaId });
             let bgUpdatePromise = Promise.resolve();
-            let updateStarted = false;
-
             // Standard Interval check (20 mins)
             if (Date.now() - (meta?.timestamp || 0) > (isForeign ? FOREIGN_UPDATE_INTERVAL_SECONDS : UPDATE_INTERVAL_SECONDS) * 1000) {
                 // Optimistic Locking: Use previous timestamp as version
@@ -1260,8 +1194,6 @@ export default async function handler(req, res) {
                     );
 
                     if (acquireResult.modifiedCount === 1 || (acquireResult.upsertedCount === 1 && !lock)) {
-                        updateStarted = true;
-                        logOutcome(`triggered_update_${lang}`);
                         // Lock Acquired
                         bgUpdatePromise = (async () => {
                             try {
@@ -1287,14 +1219,8 @@ export default async function handler(req, res) {
                             }
                         })(); // Captured Promise
                         didUpdate = true;
-                    } else {
-                        logOutcome(`skip_lock_failed_${lang}`);
                     }
-                } else {
-                    logOutcome(`skip_lock_held_${lang}`);
                 }
-            } else {
-                logOutcome(`skip_interval_recent_${lang}`);
             }
 
             // Independent Live Status Check (5 mins)
@@ -1304,7 +1230,6 @@ export default async function handler(req, res) {
                 const liveLock = await db.collection('metadata').findOne({ _id: 'live_check_lock' });
                 if (!liveLock || Date.now() - liveLock.timestamp > 300000) {
                     await db.collection('metadata').updateOne({ _id: 'live_check_lock' }, { $set: { timestamp: Date.now() } }, { upsert: true });
-                    if (!updateStarted) logOutcome('triggered_live_check');
                     bgLivePromise = (async () => {
                         try {
                             // Update timestamp immediately (Start-to-Start interval)
