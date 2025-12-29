@@ -253,8 +253,14 @@ const fetchYouTube = async (endpoint, params) => {
             // --- Quota Tracking ---
             // Calculate status for flow control
             let isQuotaErr = false;
-            if (data.error && (data.error.message.toLowerCase().includes('quota') || data.error.reason === 'quotaExceeded')) {
-                isQuotaErr = true;
+            if (data.error) {
+                const msg = data.error.message.toLowerCase();
+                const reason = data.error.reason;
+                // Treat 'accessNotConfigured' (Project disabled/invalid) as a Quota Error to force rotation
+                if (msg.includes('quota') || reason === 'quotaExceeded' ||
+                    reason === 'accessNotConfigured' || msg.includes('has not been used')) {
+                    isQuotaErr = true;
+                }
             }
 
             // Only log cost ONCE per request, even if it retries multiple keys
