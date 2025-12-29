@@ -235,6 +235,7 @@ const fetchYouTube = async (endpoint, params) => {
 
     const totalKeys = apiKeys.length;
     const startIndex = currentKeyIndex;
+    let hasLoggedCost = false;
 
     for (let i = 0; i < totalKeys; i++) {
         const index = (startIndex + i) % totalKeys;
@@ -243,23 +244,25 @@ const fetchYouTube = async (endpoint, params) => {
 
         try {
             const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 5000); // 5s timeout (Was 2.5s)
+            const timeoutId = setTimeout(() => controller.abort(), 5000); // 5s timeout
             const res = await fetch(url, { signal: controller.signal });
             clearTimeout(timeoutId);
 
             const data = await res.json();
 
             // --- Quota Tracking ---
-            // Calculate cost regardless of success/fail, unless it's a Quota Error (which implies 0 used)
-            let isQuotaErr = false;
-            if (data.error && (data.error.message.toLowerCase().includes('quota') || data.error.reason === 'quotaExceeded')) {
-                isQuotaErr = true;
-            }
+            // Only log cost ONCE per request, even if it retries multiple keys
+            if (!hasLoggedCost && cachedDb) {
+                let isQuotaErr = false;
+                if (data.error && (data.error.message.toLowerCase().includes('quota') || data.error.reason === 'quotaExceeded')) {
+                    isQuotaErr = true;
+                }
 
-            // Track if NOT a quota error (even 400/404 consumes quota)
-            if (!isQuotaErr && cachedDb) {
-                const cost = getQuotaCost(endpoint);
-                updateQuotaUsage(cachedDb, index, cost, endpoint);
+                if (!isQuotaErr) {
+                    const cost = getQuotaCost(endpoint);
+                    updateQuotaUsage(cachedDb, index, cost, endpoint);
+                    hasLoggedCost = true; // Mark as logged so retries don't double count
+                }
             }
             // ----------------------
 
@@ -1200,6 +1203,7 @@ export default async function handler(req, res) {
                 await v12_logic.updateLiveStatus(db); // Force refresh also updates live status
             }
             await db.collection('metadata').updateOne({ _id: metaId }, { $set: { timestamp: Date.now() } }, { upsert: true });
+
             didUpdate = true;
             logOutcome(`force_refresh_triggered_${lang}`);
         } else {
