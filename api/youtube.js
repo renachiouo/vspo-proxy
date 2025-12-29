@@ -325,7 +325,14 @@ async function getTwitchToken() {
     if (!clientId || !clientSecret) return null;
 
     try {
-        const res = await fetch(`https://id.twitch.tv/oauth2/token?client_id=${clientId}&client_secret=${clientSecret}&grant_type=client_credentials`, { method: 'POST' });
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 5000); // 5s timeout
+        const res = await fetch(`https://id.twitch.tv/oauth2/token?client_id=${clientId}&client_secret=${clientSecret}&grant_type=client_credentials`, {
+            method: 'POST',
+            signal: controller.signal
+        });
+        clearTimeout(timeoutId);
+
         const data = await res.json();
         if (data.access_token) {
             twitchToken = data.access_token;
@@ -341,9 +348,14 @@ async function fetchTwitchStreams(userIds) {
     if (!token) return [];
     try {
         const query = userIds.map(id => `user_id=${id}`).join('&');
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 5000); // 5s timeout
         const res = await fetch(`https://api.twitch.tv/helix/streams?${query}`, {
-            headers: { 'Client-ID': process.env.TWITCH_CLIENT_ID, 'Authorization': `Bearer ${token}` }
+            headers: { 'Client-ID': process.env.TWITCH_CLIENT_ID, 'Authorization': `Bearer ${token}` },
+            signal: controller.signal
         });
+        clearTimeout(timeoutId);
+
         const data = await res.json();
         return data.data || [];
     } catch (e) { console.error('Twitch Stream Error:', e); return []; }
