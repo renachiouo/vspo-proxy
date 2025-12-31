@@ -30,3 +30,8 @@ create_indexes.js
 # Temp Debug Files
 *.xml
 *.tmp
+
+# Local Tools & Reports
+channel_analyzer.cjs
+reset_key.cjs
+report_*.json

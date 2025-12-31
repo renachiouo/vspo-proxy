@@ -237,6 +237,8 @@ const fetchYouTube = async (endpoint, params) => {
     const startIndex = currentKeyIndex;
     let hasLoggedCost = false;
 
+    // console.log(`[Debug] fetchYouTube called for ${endpoint}`);
+
     for (let i = 0; i < totalKeys; i++) {
         const index = (startIndex + i) % totalKeys;
         const apiKey = apiKeys[index];
@@ -244,7 +246,7 @@ const fetchYouTube = async (endpoint, params) => {
 
         try {
             const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 5000); // 5s timeout
+            const timeoutId = setTimeout(() => controller.abort(), 3000); // 3s timeout
             const res = await fetch(url, { signal: controller.signal });
             clearTimeout(timeoutId);
 
@@ -834,7 +836,7 @@ const v12_logic = {
             const playlistCandidates = new Set();
 
             // 1. Fetch PlaylistItems (Concurrent Batches)
-            const playlistBatchSize = 15;
+            const playlistBatchSize = 10; // User preferred 10 (Balanced: 5 is too slow, 15 is too risky)
             for (const batch of batchArray(ytMembers, playlistBatchSize)) {
                 try {
                     await Promise.all(batch.map(async (member) => {
