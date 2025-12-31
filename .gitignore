@@ -35,3 +35,6 @@ create_indexes.js
 channel_analyzer.cjs
 reset_key.cjs
 report_*.json
+
+check_quota.cjs
+quota_log.txt
