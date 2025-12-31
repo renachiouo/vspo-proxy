@@ -1160,36 +1160,14 @@ async function handleAdminAction(req, res, db, body) {
 
 // --- Handler ---
 export default async function handler(req, res) {
-    const reqId = Math.random().toString(36).substring(7);
-    console.log(`[Req:${reqId}] Incoming ${req.method} ${req.url}`);
-    console.log(`[Req:${reqId}] UA: ${req.headers['user-agent']} IP: ${req.headers['x-forwarded-for'] || req.socket.remoteAddress}`);
-
     if (req.method === 'OPTIONS') return res.status(200).end();
 
     const db = await getDb();
     const url = new URL(req.url, `http://${req.headers.host}`);
     const { pathname, searchParams } = url;
 
-    // [Debug] Request Log
-    try {
-        await db.collection('request_logs').insertOne({
-            timestamp: new Date(),
-            reqId,
-            method: req.method,
-            pathname,
-            query: Object.fromEntries(searchParams),
-            ua: req.headers['user-agent'],
-            ip: req.headers['x-forwarded-for'] || req.socket.remoteAddress
-        });
-    } catch (e) {
-        console.warn('[Log] Failed to save request log:', e);
-    }
-
-    const logOutcome = async (reason) => {
-        try {
-            await db.collection('request_logs').updateOne({ reqId }, { $set: { outcome: reason, endTimestamp: new Date() } });
-        } catch (e) { }
-    };
+    // Helper for outcome (No-op now)
+    const logOutcome = async (reason) => { };
 
     let body = {};
     if (req.method === 'POST') {
