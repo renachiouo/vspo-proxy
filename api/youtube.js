@@ -831,7 +831,7 @@ const v12_logic = {
             // --- YouTube Live Check ---
             // Logic: Get "Uploads" playlist ID (UC -> UU) -> Get last 3 videos -> Check if Live.
 
-            console.log('[Debug] Starting YouTube Live Check (Playlist Strategy)...');
+            console.log('[Debug] Starting YouTube Live Check (Playlist + RSS)...');
             const ytMembers = members.filter(m => m.ytId);
             const playlistCandidates = new Set();
 
@@ -878,6 +878,7 @@ const v12_logic = {
                                     const text = await rssRes.text();
                                     const rssIds = parseRssVideoIds(text);
                                     rssIds.forEach(vid => playlistCandidates.add(vid));
+                                    if (rssIds.length > 0) console.log(`[RSS] ${member.name} found: ${rssIds.join(',')}`);
                                 }
                             } catch (e) {
                             }
