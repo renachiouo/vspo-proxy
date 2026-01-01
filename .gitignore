@@ -24,6 +24,7 @@ yarn-debug.log*
 yarn-error.log*
 # Admin Scripts
 create_indexes.js
+manual_add_live.cjs
 
 # Temp files
 
