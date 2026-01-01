@@ -836,26 +836,54 @@ const v12_logic = {
             const playlistCandidates = new Set();
 
             // 1. Fetch PlaylistItems (Concurrent Batches)
-            const playlistBatchSize = 10; // User preferred 10 (Balanced: 5 is too slow, 15 is too risky)
+            const playlistBatchSize = 10;
+            const parseRssVideoIds = (text) => {
+                const ids = [];
+                const matches = text.matchAll(/<yt:videoId>(.*?)<\/yt:videoId>/g);
+                for (const m of matches) {
+                    ids.push(m[1]);
+                    if (ids.length >= 3) break; // Only check top 3 from RSS
+                }
+                return ids;
+            };
+
             for (const batch of batchArray(ytMembers, playlistBatchSize)) {
                 try {
                     await Promise.all(batch.map(async (member) => {
-                        try {
-                            const uploadsPlaylistId = member.ytId.replace('UC', 'UU');
-                            const res = await fetchYouTube('playlistItems', {
-                                part: 'snippet',
-                                playlistId: uploadsPlaylistId,
-                                maxResults: 3
-                            });
-                            res.items?.forEach(item => {
-                                playlistCandidates.add(item.snippet.resourceId.videoId);
-                            });
-                        } catch (e) {
-                            // console.warn(`[Playlist Fail] ${member.name}:`, e.message);
-                            if (e.message && (e.message.includes('Quota Exceeded') || e.message.includes('quota'))) {
-                                throw e; // Re-throw to be caught by outer loop and break
+                        // A: API Playlist 
+                        const apiPromise = (async () => {
+                            try {
+                                const uploadsPlaylistId = member.ytId.replace('UC', 'UU');
+                                const res = await fetchYouTube('playlistItems', {
+                                    part: 'snippet',
+                                    playlistId: uploadsPlaylistId,
+                                    maxResults: 3
+                                });
+                                res.items?.forEach(item => {
+                                    playlistCandidates.add(item.snippet.resourceId.videoId);
+                                });
+                            } catch (e) {
+                                if (e.message && (e.message.includes('Quota Exceeded') || e.message.includes('quota'))) throw e;
                             }
-                        }
+                        })();
+
+                        // B: RSS Feed 
+                        const rssPromise = (async () => {
+                            try {
+                                const controller = new AbortController();
+                                const timeout = setTimeout(() => controller.abort(), 3000); // 3s Timeout
+                                const rssRes = await fetch(`https://www.youtube.com/feeds/videos.xml?channel_id=${member.ytId}`, { signal: controller.signal });
+                                clearTimeout(timeout);
+                                if (rssRes.ok) {
+                                    const text = await rssRes.text();
+                                    const rssIds = parseRssVideoIds(text);
+                                    rssIds.forEach(vid => playlistCandidates.add(vid));
+                                }
+                            } catch (e) {
+                            }
+                        })();
+
+                        await Promise.all([apiPromise, rssPromise]);
                     }));
                 } catch (e) {
                     if (e.message && (e.message.includes('Quota Exceeded') || e.message.includes('quota'))) {
@@ -1160,36 +1188,14 @@ async function handleAdminAction(req, res, db, body) {
 
 // --- Handler ---
 export default async function handler(req, res) {
-    const reqId = Math.random().toString(36).substring(7);
-    console.log(`[Req:${reqId}] Incoming ${req.method} ${req.url}`);
-    console.log(`[Req:${reqId}] UA: ${req.headers['user-agent']} IP: ${req.headers['x-forwarded-for'] || req.socket.remoteAddress}`);
-
     if (req.method === 'OPTIONS') return res.status(200).end();
 
     const db = await getDb();
     const url = new URL(req.url, `http://${req.headers.host}`);
     const { pathname, searchParams } = url;
 
-    // [Debug] Request Log
-    try {
-        await db.collection('request_logs').insertOne({
-            timestamp: new Date(),
-            reqId,
-            method: req.method,
-            pathname,
-            query: Object.fromEntries(searchParams),
-            ua: req.headers['user-agent'],
-            ip: req.headers['x-forwarded-for'] || req.socket.remoteAddress
-        });
-    } catch (e) {
-        console.warn('[Log] Failed to save request log:', e);
-    }
-
-    const logOutcome = async (reason) => {
-        try {
-            await db.collection('request_logs').updateOne({ reqId }, { $set: { outcome: reason, endTimestamp: new Date() } });
-        } catch (e) { }
-    };
+    // Helper for outcome (No-op now)
+    const logOutcome = async (reason) => { };
 
     let body = {};
     if (req.method === 'POST') {
