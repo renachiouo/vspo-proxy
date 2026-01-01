@@ -1,0 +1,269 @@
+﻿const fs = require('fs');
+const path = require('path');
+require('dotenv').config({ path: path.join(__dirname, '.env') });
+
+const API_KEYS = [
+    process.env.YOUTUBE_API_KEY_1, process.env.YOUTUBE_API_KEY_2,
+    process.env.YOUTUBE_API_KEY_3, process.env.YOUTUBE_API_KEY_4,
+    process.env.YOUTUBE_API_KEY_5, process.env.YOUTUBE_API_KEY_6,
+    process.env.YOUTUBE_API_KEY_7, process.env.YOUTUBE_API_KEY_8,
+    process.env.YOUTUBE_API_KEY_9, process.env.YOUTUBE_API_KEY_10,
+    process.env.YOUTUBE_API_KEY_11, process.env.YOUTUBE_API_KEY_12,
+    process.env.YOUTUBE_API_KEY_13,
+].filter(Boolean);
+
+if (API_KEYS.length === 0) {
+    console.error('Error: No API Keys found in .env');
+    process.exit(1);
+}
+
+// Simple Rotation
+let currentKeyIndex = 0;
+const getApiKey = () => {
+    const key = API_KEYS[currentKeyIndex];
+    currentKeyIndex = (currentKeyIndex + 1) % API_KEYS.length;
+    return key;
+};
+
+async function fetchYouTube(endpoint, params) {
+    const maxRetries = 3;
+    for (let i = 0; i < maxRetries; i++) {
+        const key = getApiKey();
+        const url = `https://www.googleapis.com/youtube/v3/${endpoint}?${new URLSearchParams({ ...params, key })}`;
+        try {
+            const res = await fetch(url);
+            const data = await res.json();
+            if (data.error) {
+                if (data.error.code === 403 || data.error.message.toLowerCase().includes('quota')) {
+                    console.warn(`[Warn] Key ${currentKeyIndex} exhausted/failed. Rotating...`);
+                    continue;
+                }
+                throw new Error(data.error.message);
+            }
+            return data;
+        } catch (e) {
+            console.warn(`[Retry ${i + 1}] Request failed: ${e.message}`);
+        }
+    }
+    throw new Error('All retries failed.');
+}
+
+// --- Logic ---
+async function analyzeChannel(channelId, startDateStr, endDateStr) {
+    // Parse Dates
+    const startDate = new Date(startDateStr);
+    const endDate = endDateStr ? new Date(endDateStr) : new Date(); // Default end to now
+
+    // Validate
+    if (isNaN(startDate.getTime())) {
+        console.error('Error: Invalid Start Date. Use YYYY-MM-DD');
+        return;
+    }
+    // Set EndDate to end of that day (23:59:59) if user didn't specify time, to be inclusive
+    if (endDateStr && !endDateStr.includes('T')) {
+        endDate.setHours(23, 59, 59, 999);
+    }
+
+    console.log(`\n?? analyzing Channel: ${channelId}`);
+    console.log(`?? Range: ${startDate.toISOString().split('T')[0]} to ${endDate.toISOString().split('T')[0]}`);
+
+    // 1. Get Uploads Playlist
+    console.log('Step 1: Fetching Channel Details...');
+    const chRes = await fetchYouTube('channels', { part: 'contentDetails,snippet', id: channelId });
+    if (!chRes.items?.[0]) {
+        console.error('Channel not found!');
+        return;
+    }
+    const channelTitle = chRes.items[0].snippet.title;
+    const uploadsPlaylistId = chRes.items[0].contentDetails.relatedPlaylists.uploads;
+    console.log(`Target: ${channelTitle}`);
+
+    // 2. Fetch All Video IDs
+    console.log('Step 2: Fetching Video List...');
+    const videoIds = [];
+    let loadMoreToken = '';
+    let isDone = false;
+    let pageCount = 0;
+
+    while (!isDone) {
+        process.stdout.write('.');
+        const plRes = await fetchYouTube('playlistItems', {
+            part: 'snippet',
+            playlistId: uploadsPlaylistId,
+            maxResults: 50,
+            pageToken: loadMoreToken
+        });
+
+        if (!plRes.items || plRes.items.length === 0) break;
+
+        for (const item of plRes.items) {
+            const publishedAt = new Date(item.snippet.publishedAt);
+
+            // Logic: Playlist returns Newest -> Oldest
+
+            // 1. If video is newer than endDate, verify strictness?
+            // Usually we just Skip it, but don't stop.
+            if (publishedAt > endDate) {
+                continue;
+            }
+
+            // 2. If video is older than startDate, we are DONE.
+            if (publishedAt < startDate) {
+                isDone = true;
+                break;
+            }
+
+            // 3. In Range
+            videoIds.push(item.snippet.resourceId.videoId);
+        }
+
+        loadMoreToken = plRes.nextPageToken;
+        if (!loadMoreToken) isDone = true;
+        pageCount++;
+    }
+    console.log(`\nFound ${videoIds.length} videos in range.`);
+
+    if (videoIds.length === 0) {
+        console.log('No videos found in this date range.');
+        return;
+    }
+
+    // 3. Fetch Video Details (Orientation & Duration)
+    console.log('Step 3: Analyzing Video Metadata (Duration & Dimensions)...');
+    const videos = [];
+    const chunks = [];
+    for (let i = 0; i < videoIds.length; i += 50) {
+        chunks.push(videoIds.slice(i, i + 50));
+    }
+
+    for (const batch of chunks) {
+        process.stdout.write('.');
+        const vRes = await fetchYouTube('videos', {
+            part: 'snippet,contentDetails,statistics,player',
+            id: batch.join(',')
+        });
+
+        if (vRes.items) {
+            for (const v of vRes.items) {
+                // Parse Duration
+                const duration = parseDuration(v.contentDetails.duration); // in seconds
+
+                // Parse Orientation
+                // YouTube 'player.embedHtml' often returns default 16:9 for Shorts unless specific params are used.
+                let isVertical = false;
+                let orientation = 'Horizontal';
+
+                // 1. Check Dimensions (Trust explicit vertical)
+                if (v.player && v.player.embedHtml) {
+                    const wMatch = v.player.embedHtml.match(/width="(\d+)"/);
+                    const hMatch = v.player.embedHtml.match(/height="(\d+)"/);
+                    if (wMatch && hMatch) {
+                        const w = parseInt(wMatch[1]);
+                        const h = parseInt(hMatch[1]);
+                        if (h > w) {
+                            isVertical = true;
+                        }
+                    }
+                }
+
+                // 2. Classify Type by Duration
+                const type = duration <= 61 ? 'Short' : 'Video'; // 61s buffer
+
+                // 3. Heuristic Override: 
+                // If it is a Short (<=61s), statistical probability is >99% that it is Vertical.
+                // User expects valid Shorts to be "Vertical".
+                if (type === 'Short' && !isVertical) {
+                    isVertical = true; // Assume Vertical for Shorts if API returned weird frame
+                }
+
+                if (isVertical) orientation = 'Vertical';
+                // Note: Only "Horizontal Long Videos" are truly Horizontal.
+
+                videos.push({
+                    id: v.id,
+                    title: v.snippet.title,
+                    publishedAt: v.snippet.publishedAt,
+                    thumbnail: v.snippet.thumbnails.high?.url || v.snippet.thumbnails.default?.url,
+                    viewCount: parseInt(v.statistics.viewCount || 0),
+                    likeCount: parseInt(v.statistics.likeCount || 0),
+                    durationSeconds: duration,
+                    type,
+                    orientation
+                });
+            }
+        }
+    }
+    console.log('\nAnalysis Complete.');
+
+    // 4. Statistics
+    const stats = {
+        total: videos.length,
+        types: { Short: 0, Video: 0 },
+        durations: { Short: 0, Video: 0 }, // Separate durations
+        durationTotal: 0
+    };
+
+    videos.forEach(v => {
+        if (stats.types[v.type] !== undefined) stats.types[v.type]++;
+        if (stats.durations[v.type] !== undefined) stats.durations[v.type] += v.durationSeconds;
+        stats.durationTotal += v.durationSeconds;
+    });
+
+    // 5. Output Report
+    console.log('\n==================================================');
+    console.log(`? REPORT: ${channelTitle}`);
+    console.log(`? Range: ${startDate.toISOString().slice(0, 10)} ~ ${endDate.toISOString().slice(0, 10)}`);
+    console.log('==================================================');
+    console.log(`Total Items:    ${stats.total}`);
+    console.log(`Total Duration: ${(stats.durationTotal / 3600).toFixed(2)} hours`);
+    console.log('--------------------------------------------------');
+
+    // Video Stats
+    const videoCount = stats.types.Video;
+    const videoDurH = (stats.durations.Video / 3600).toFixed(2);
+    const videoDurM = Math.round(stats.durations.Video / 60);
+    const videoAvg = videoCount > 0 ? (stats.durations.Video / videoCount / 60).toFixed(1) : 0;
+
+    console.log(`? Videos (Horizontal)`);
+    console.log(`   Count:    ${videoCount}`);
+    console.log(`   Duration: ${videoDurH} hours (${videoDurM} mins)`);
+    console.log(`   Avg Len:  ${videoAvg} mins`);
+
+    console.log('--------------------------------------------------');
+
+    // Short Stats
+    const shortCount = stats.types.Short;
+    const shortDurH = (stats.durations.Short / 3600).toFixed(2);
+    const shortDurM = Math.round(stats.durations.Short / 60);
+
+    console.log(`? Shorts (Vertical)`);
+    console.log(`   Count:    ${shortCount}`);
+    console.log(`   Duration: ${shortDurH} hours (${shortDurM} mins)`);
+
+    console.log('==================================================');
+
+    // Save Data
+    const filename = `report_${channelId}_${startDate.toISOString().slice(0, 10)}.json`;
+    fs.writeFileSync(filename, JSON.stringify({ meta: stats, videos }, null, 2));
+    console.log(`Detailed JSON saved to: ${filename}`);
+}
+
+function parseDuration(duration) {
+    // ISO 8601 (PT1H2M10S)
+    const match = duration.match(/PT(\d+H)?(\d+M)?(\d+S)?/);
+    if (!match) return 0;
+    const h = (match[1] ? parseInt(match[1]) : 0);
+    const m = (match[2] ? parseInt(match[2]) : 0);
+    const s = (match[3] ? parseInt(match[3]) : 0);
+    return (h * 3600) + (m * 60) + s;
+}
+
+// CLI Args
+const args = process.argv.slice(2);
+if (args.length < 2) {
+    console.log('Usage: node channel_analyzer.cjs <Channel_ID> <Start_Date> [End_Date]');
+    console.log('Format: YYYY-MM-DD');
+    console.log('Example: node channel_analyzer.cjs UCyLGcqYs7RsBb3L0SJfzGYA 2024-01-01 2024-12-31');
+} else {
+    analyzeChannel(args[0], args[1], args[2]);
+}
