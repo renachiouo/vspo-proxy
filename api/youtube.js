@@ -383,6 +383,82 @@ async function fetchTwitchStreams(userIds) {
         return data.data || [];
     } catch (e) { console.error('Twitch Stream Error:', e); return []; }
 }
+async function fetchTwitchArchives(userId) {
+    const token = await getTwitchToken();
+    if (!token) return [];
+    try {
+        // Fetch videos of type 'archive' (VODs)
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 8000); // 8s timeout
+        const res = await fetch(`https://api.twitch.tv/helix/videos?user_id=${userId}&type=archive&first=5`, {
+            headers: { 'Client-ID': process.env.TWITCH_CLIENT_ID, 'Authorization': `Bearer ${token}` },
+            signal: controller.signal
+        });
+        clearTimeout(timeoutId);
+
+        if (!res.ok) {
+            console.error(`Twitch Archive Error [${userId}]: ${res.status} ${res.statusText}`);
+            return [];
+        }
+
+        const data = await res.json();
+        return data.data || [];
+    } catch (e) { console.error(`Twitch Archive Fetch Error User=${userId}:`, e); return []; }
+}
+
+const syncTwitchArchives = async (db) => {
+    console.log('[Twitch] Starting Archive Sync...');
+    const members = VSPO_MEMBERS.filter(m => m.twitchId);
+    let totalUpserted = 0;
+
+    for (const member of members) {
+        // console.log(`[Twitch] Checking ${member.name} (${member.twitchId})...`);
+        const videos = await fetchTwitchArchives(member.twitchId);
+
+        if (videos.length === 0) continue;
+
+        const operations = videos.map(video => {
+            // Twitch thumbnails need size injection: e.g. .../thumb-{width}x{height}.jpg
+            const thumbnailUrl = video.thumbnail_url
+                ? video.thumbnail_url.replace('%{width}', '640').replace('%{height}', '360')
+                : 'https://placehold.co/640x360?text=No+Thumbnail';
+
+            const streamDoc = {
+                streamId: video.id,
+                platform: 'twitch',
+                title: video.title,
+                thumbnail: thumbnailUrl,
+                startTime: new Date(video.created_at),
+                status: 'completed', // Archive VODs are completed
+                channelId: video.user_id,
+                channelTitle: video.user_name, // Twitch API uses user_name
+                memberName: member.name,
+                viewCount: video.view_count,
+                duration: video.duration, // Twitch duration format (e.g., "3h30m") needs parsing if sorting by length, but display is string
+                url: video.url,
+                updatedAt: new Date()
+            };
+
+            return {
+                updateOne: {
+                    filter: { streamId: video.id, platform: 'twitch' },
+                    update: { $set: streamDoc },
+                    upsert: true
+                }
+            };
+        });
+
+        if (operations.length > 0) {
+            const result = await db.collection('streams').bulkWrite(operations);
+            totalUpserted += (result.upsertedCount + result.modifiedCount);
+        }
+
+        // Rate limit kindness
+        await new Promise(r => setTimeout(r, 200));
+    }
+    console.log(`[Twitch] Archive Sync Completed. Processed ${totalUpserted} streams.`);
+    return totalUpserted;
+};
 
 // --- Logic ---
 const v12_logic = {
@@ -1812,6 +1888,17 @@ export default async function handler(req, res) {
         });
     }
 
+    // 13. Sync Twitch Archives (Cron)
+    if (pathname === '/api/cron/sync-twitch') {
+        try {
+            const count = await syncTwitchArchives(db);
+            return res.status(200).json({ success: true, message: `Synced ${count} Twitch archives.` });
+        } catch (e) {
+            console.error(e);
+            return res.status(500).json({ error: e.message });
+        }
+    }
+
     return res.status(404).json({ error: 'Not Found', path: pathname });
 }
-export { v12_logic };
+export { v12_logic, syncTwitchArchives };
