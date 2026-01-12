@@ -1705,19 +1705,6 @@ export default async function handler(req, res) {
         // Filter out upcoming streams (Scheduled waiting rooms)
         query.status = { $ne: 'upcoming' };
 
-        // "Has Clips" Filter?
-        // To do this efficiently, we might need an aggregated field on 'streams' or do a lookup.
-        // For now, let's assume valid 'streams' are what we want.
-        // If user wants ONLY streams with clips, we need to check if ANY video links to it.
-        // That's expensive unless we store `clipCount` on the stream document.
-        // Let's skip `hasClips` filter implementation for now unless requested strictly 
-        // (User asked: "Only show 'Has Clips' indicator", not "Filter by it").
-        // "我希望只有當該直播有剪輯影片時，再顯示有剪輯影片。" -> This is a UI indicator requirement.
-
-        // HOWEVER, to support that UI indicator, we need to know IF it has clips.
-        // So we should probably do a $lookup or store clipCount.
-        // Aggregation is better here.
-
         const match = query;
         const skip = (page - 1) * limit;
 
