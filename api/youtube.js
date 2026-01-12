@@ -1354,7 +1354,7 @@ export default async function handler(req, res) {
         return res.status(200).json(lb.map(i => ({ channelId: i._id, ...i })));
     }
 
-    if (pathname === '/api/youtube') {
+    if (pathname === '/api/youtube' && searchParams.get('endpoint') !== 'streams') {
         if (req.method === 'POST' && body.action) {
             return await handleAdminAction(req, res, db, body);
         }
