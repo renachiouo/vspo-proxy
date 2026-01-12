@@ -1970,6 +1970,11 @@ export default async function handler(req, res) {
         // Filter out upcoming streams (Scheduled waiting rooms)
         query.status = { $ne: 'upcoming' };
 
+        // Only show streams from the last 3 months
+        const threeMonthsAgo = new Date();
+        threeMonthsAgo.setMonth(threeMonthsAgo.getMonth() - 3);
+        query.startTime = { $gte: threeMonthsAgo };
+
         const match = query;
         const skip = (page - 1) * limit;
 
