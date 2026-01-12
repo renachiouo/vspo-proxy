@@ -1459,6 +1459,8 @@ export default async function handler(req, res) {
                 await v12_logic.updateAndStoreYouTubeData(db);
                 await v12_logic.updateLiveStatus(db);
                 await v12_logic.updateMemberStreams(db);
+                // Also Sync Twitch Archives (Best effort)
+                try { await syncTwitchArchives(db); } catch (e) { console.error('Twitch Sync Failed in Main Loop:', e); }
             }
             await db.collection('metadata').updateOne({ _id: metaId }, { $set: { timestamp: Date.now() } }, { upsert: true });
 
@@ -1505,6 +1507,8 @@ export default async function handler(req, res) {
                                 } else {
                                     await v12_logic.updateAndStoreYouTubeData(db);
                                     await v12_logic.updateMemberStreams(db);
+                                    // Also Sync Twitch Archives
+                                    try { await syncTwitchArchives(db); } catch (e) { console.error('BG Twitch Sync Failed:', e); }
                                 }
                             } catch (e) {
                                 console.error('BG Update:', e);
