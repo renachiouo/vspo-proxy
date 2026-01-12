@@ -390,7 +390,7 @@ async function fetchTwitchArchives(userId) {
         // Fetch videos of type 'archive' (VODs)
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 10000); // 10s timeout
-        const res = await fetch(`https://api.twitch.tv/helix/videos?user_id=${userId}&type=archive&first=5`, {
+        const res = await fetch(`https://api.twitch.tv/helix/videos?user_id=${userId}&type=archive&first=50`, {
             headers: { 'Client-ID': process.env.TWITCH_CLIENT_ID, 'Authorization': `Bearer ${token}` },
             signal: controller.signal
         });
@@ -467,113 +467,58 @@ const syncTwitchArchives = async (db) => {
     return totalUpserted;
 };
 
-// --- Bilibili Wbi Signature Helper ---
-import md5 from 'md5';
-
-const mixinKeyEncTab = [
-    46, 47, 18, 2, 53, 8, 23, 32, 15, 50, 10, 31, 58, 3, 45, 35, 27, 43, 5, 49,
-    33, 9, 42, 19, 29, 28, 14, 39, 12, 38, 41, 13, 37, 48, 7, 16, 24, 55, 40,
-    61, 26, 17, 0, 1, 60, 51, 30, 4, 22, 25, 54, 21, 56, 59, 6, 63, 57, 62, 11,
-    36, 20, 34, 44, 52
-];
-
-// Perform mixin on the key
-const getMixinKey = (orig) => mixinKeyEncTab.map(n => orig[n]).join('').slice(0, 32);
-
-// Cache keys (they rotate daily, can cache for a few hours)
-let wbiKeys = null;
-let wbiKeysExpiry = 0;
-
-const getWbiKeys = async () => {
-    if (wbiKeys && Date.now() < wbiKeysExpiry) return wbiKeys;
-    try {
-        const res = await fetch('https://api.bilibili.com/x/web-interface/nav', {
-            headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
-                'Referer': 'https://www.bilibili.com/'
-            }
-        });
-        const json = await res.json();
-        const { img_url, sub_url } = json?.data?.wbi_img || {};
-        const img_key = img_url?.substring(img_url.lastIndexOf('/') + 1, img_url.lastIndexOf('.'));
-        const sub_key = sub_url?.substring(sub_url.lastIndexOf('/') + 1, sub_url.lastIndexOf('.'));
-        if (img_key && sub_key) {
-            wbiKeys = { img_key, sub_key };
-            wbiKeysExpiry = Date.now() + 3600000; // Cache for 1 hour
-            return wbiKeys;
-        }
-    } catch (e) {
-        console.error('[Bilibili] Failed to fetch Wbi Keys:', e);
-    }
-    return null;
-};
-
-const encWbi = async (params) => {
-    const keys = await getWbiKeys();
-    if (!keys) return new URLSearchParams(params).toString(); // Fallback without sign
-
-    const mixin_key = getMixinKey(keys.img_key + keys.sub_key);
-    const curr_time = Math.round(Date.now() / 1000);
-    const chr_filter = /[!'()*]/g;
-
-    const query = { ...params, wts: curr_time }; // wts is required
-    const sortedKeys = Object.keys(query).sort();
-
-    let queryStr = sortedKeys.map(key => {
-        const val = String(query[key]);
-        return `${encodeURIComponent(key)}=${encodeURIComponent(val).replace(chr_filter, '')}`;
-    }).join('&');
-
-    const wbi_sign = md5(queryStr + mixin_key);
-    return queryStr + '&w_rid=' + wbi_sign;
-};
-
+// --- Bilibili via RSSHub (Bypasses Bilibili anti-scraping) ---
 async function fetchBilibiliArchives(mid) {
     try {
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 10000); // 10s timeout
+        const timeoutId = setTimeout(() => controller.abort(), 15000); // 15s timeout for RSSHub
 
-        // Constuct signed params
-        const queryParams = {
-            mid,
-            ps: 50,
-            tid: 0,
-            pn: 1,
-            order: 'pubdate',
-            platform: 'web',
-            web_location: 1550101
-        };
-        const signedQuery = await encWbi(queryParams);
-        const url = `https://api.bilibili.com/x/space/wbi/arc/search?${signedQuery}`;
+        // RSSHub provides Bilibili user videos as JSON
+        const url = `https://rsshub.app/bilibili/user/video/${mid}?format=json`;
 
         const res = await fetch(url, {
             headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Referer': `https://space.bilibili.com/${mid}/`
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+                'Accept': 'application/json'
             },
             signal: controller.signal
         });
         clearTimeout(timeoutId);
 
         if (!res.ok) {
-            console.error(`Bilibili Archive Error [${mid}]: ${res.status}`);
+            console.error(`[Bilibili RSSHub] Error [${mid}]: ${res.status}`);
             return [];
         }
 
         const data = await res.json();
-        // Log detailed error codes if not 0
-        if (data.code !== 0) {
-            console.log(`[Bilibili] API Fail ${mid}: Code ${data.code} Message: ${data.message} TTL: ${data.ttl}`);
+
+        // RSSHub returns items in data.items array
+        if (!data.items || data.items.length === 0) {
+            console.log(`[Bilibili RSSHub] No videos found for ${mid}`);
             return [];
         }
 
-        if (!data.data || !data.data.list || !data.data.list.vlist) {
-            // console.log(`[Bilibili] No VODs found for ${mid}`);
-            return [];
-        }
-        return data.data.list.vlist;
+        // Transform RSSHub format to our expected format
+        return data.items.map(item => {
+            // Extract BVID from URL (https://www.bilibili.com/video/BV1xxxxx)
+            const bvidMatch = item.url?.match(/video\/(BV[a-zA-Z0-9]+)/);
+            const bvid = bvidMatch ? bvidMatch[1] : item.id;
+
+            // Parse pubDate to Unix timestamp
+            const pubDate = new Date(item.date_published || item.pubDate || Date.now());
+
+            return {
+                bvid: bvid,
+                title: item.title || 'Untitled',
+                pic: item.image || '',
+                author: item.authors?.[0]?.name || '',
+                created: Math.floor(pubDate.getTime() / 1000), // Convert to seconds
+                play: 0, // RSSHub doesn't provide view count
+                length: '' // RSSHub doesn't provide duration
+            };
+        });
     } catch (e) {
-        console.error(`Bilibili Fetch Error MID=${mid}:`, e);
+        console.error(`[Bilibili RSSHub] Fetch Error MID=${mid}:`, e.message || e);
         return [];
     }
 }
