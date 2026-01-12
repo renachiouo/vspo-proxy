@@ -327,8 +327,8 @@ function parseAllStreamInfos(description) {
         results.push({ platform: 'youtube', id: valid[1] });
     }
 
-    // Twitch Regex (Global)
-    const twRegex = /(?:https?:\/\/)?(?:www\.)?twitch\.tv\/videos\/(\d+)/g;
+    // Twitch Regex (Global) - now supports m.twitch.tv
+    const twRegex = /(?:https?:\/\/)?(?:www\.|m\.)?twitch\.tv\/videos\/(\d+)/g;
     while ((valid = twRegex.exec(description)) !== null) {
         results.push({ platform: 'twitch', id: valid[1] });
     }
