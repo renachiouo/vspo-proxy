@@ -1692,7 +1692,7 @@ export default async function handler(req, res) {
     }
 
     // 11. Get Member Streams (Archives)
-    if (pathname === '/api/streams') {
+    if (pathname === '/api/streams' || searchParams.get('endpoint') === 'streams') {
         const page = parseInt(searchParams.get('page') || '1');
         const limit = parseInt(searchParams.get('limit') || '20');
         const platform = searchParams.get('platform'); // youtube, twitch, bilibili, all

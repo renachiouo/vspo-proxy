@@ -8,6 +8,7 @@ node_modules/
 # Logs
 # One-off scripts and debug tools
 debug_*.js
+debug_*.cjs
 cleanup_*.js
 restore_*.js
 check_*.js
@@ -16,6 +17,7 @@ test_*.js
 repair_*.js
 sync_*.js
 verify-temp.js
+inspect_streams.js
 
 # Logs
 *.log
