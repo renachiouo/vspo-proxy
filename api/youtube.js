@@ -410,31 +410,38 @@ const syncTwitchArchives = async (db) => {
     console.log('[Twitch] Starting Archive Sync...');
     const members = VSPO_MEMBERS.filter(m => m.twitchId);
     let totalUpserted = 0;
+    const threeMonthsAgo = new Date();
+    threeMonthsAgo.setMonth(threeMonthsAgo.getMonth() - 3);
 
     for (const member of members) {
         // console.log(`[Twitch] Checking ${member.name} (${member.twitchId})...`);
-        const videos = await fetchTwitchArchives(member.twitchId);
+        let videos = await fetchTwitchArchives(member.twitchId);
+
+        // Filter by retention policy
+        videos = videos.filter(v => new Date(v.created_at) > threeMonthsAgo);
 
         if (videos.length === 0) continue;
 
         const operations = videos.map(video => {
-            // Twitch thumbnails need size injection: e.g. .../thumb-{width}x{height}.jpg
+            // Twitch thumbnails need size injection
             const thumbnailUrl = video.thumbnail_url
                 ? video.thumbnail_url.replace('%{width}', '640').replace('%{height}', '360')
                 : 'https://placehold.co/640x360?text=No+Thumbnail';
 
             const streamDoc = {
+                _id: video.id, // Explicitly set ID to match frontend expectation
                 streamId: video.id,
                 platform: 'twitch',
                 title: video.title,
                 thumbnail: thumbnailUrl,
                 startTime: new Date(video.created_at),
-                status: 'completed', // Archive VODs are completed
+                status: 'completed',
                 channelId: video.user_id,
-                channelTitle: video.user_name, // Twitch API uses user_name
+                channelTitle: video.user_name,
                 memberName: member.name,
+                memberId: member.ytId, // Frontend uses memberId (YouTube ID) for filtering
                 viewCount: video.view_count,
-                duration: video.duration, // Twitch duration format (e.g., "3h30m") needs parsing if sorting by length, but display is string
+                duration: video.duration,
                 url: video.url,
                 updatedAt: new Date()
             };
@@ -492,26 +499,33 @@ const syncBilibiliArchives = async (db) => {
     console.log('[Bilibili] Starting Archive Sync...');
     const members = VSPO_MEMBERS.filter(m => m.bilibiliId);
     let totalUpserted = 0;
+    const threeMonthsAgo = new Date();
+    threeMonthsAgo.setMonth(threeMonthsAgo.getMonth() - 3);
 
     for (const member of members) {
         // console.log(`[Bilibili] Checking ${member.name} (${member.bilibiliId})...`);
-        const videos = await fetchBilibiliArchives(member.bilibiliId);
+        let videos = await fetchBilibiliArchives(member.bilibiliId);
+
+        // Filter by retention (Bilibili timestamp is seconds)
+        videos = videos.filter(v => new Date(v.created * 1000) > threeMonthsAgo);
 
         if (videos.length === 0) continue;
 
         const operations = videos.map(video => {
             const streamDoc = {
-                streamId: video.bvid, // Use BVID as ID
+                _id: video.bvid, // Explicitly set ID
+                streamId: video.bvid,
                 platform: 'bilibili',
                 title: video.title,
                 thumbnail: video.pic ? video.pic.replace('http:', 'https:') : '',
-                startTime: new Date(video.created * 1000), // Bilibili timestamp is seconds
+                startTime: new Date(video.created * 1000),
                 status: 'completed',
                 channelId: member.bilibiliId,
                 channelTitle: video.author,
                 memberName: member.name,
+                memberId: member.ytId, // Map to YouTube ID for frontend filtering
                 viewCount: video.play,
-                duration: video.length, // Format is usually "MM:SS" or seconds. Use as is for display.
+                duration: video.length,
                 url: `https://www.bilibili.com/video/${video.bvid}`,
                 updatedAt: new Date()
             };
