@@ -1773,6 +1773,58 @@ export default async function handler(req, res) {
         });
     }
 
+    // 12. Get Member List (Public)
+    if (pathname === '/api/members' || searchParams.get('endpoint') === 'members') {
+        // Fetch all channels that are members
+        const memberIds = VSPO_MEMBERS.map(m => m.ytId);
+        const channels = await db.collection('channels').find({ _id: { $in: memberIds } }).toArray();
+        const channelMap = new Map(channels.map(c => [c._id, c]));
+
+        const members = VSPO_MEMBERS.map(m => {
+            const c = channelMap.get(m.ytId);
+            return {
+                name: m.name,
+                id: m.ytId,
+                avatarUrl: c?.thumbnail || '', // Fallback? Front-end has placeholders
+                twitchId: m.twitchId
+            };
+        });
+
+        return res.status(200).json({ success: true, members });
+    }
+
+    // 13. Get Stream Details + Clips
+    if (pathname === '/api/stream-details' || searchParams.get('endpoint') === 'stream-details') {
+        const streamId = searchParams.get('id');
+        if (!streamId) return res.status(400).json({ error: 'Missing id' });
+
+        const stream = await db.collection('streams').findOne({ _id: streamId });
+        if (!stream) return res.status(404).json({ error: 'Stream not found' });
+
+        // Find clips linking to this stream
+        const clips = await db.collection('videos').find({
+            $or: [
+                { relatedStreamId: streamId },
+                { relatedStreamIds: streamId }
+            ]
+        }).sort({ publishedAt: -1 }).toArray();
+
+        return res.status(200).json({
+            success: true,
+            stream,
+            clips: clips.map(c => ({
+                id: c._id,
+                title: c.title,
+                thumbnail: c.thumbnail,
+                channelName: c.channelTitle,
+                avatarUrl: c.channelAvatarUrl,
+                source: c.source, // 'cn' or 'jp'
+                publishedAt: c.publishedAt,
+                duration: c.duration
+            }))
+        });
+    }
+
     return res.status(404).json({ error: 'Not Found', path: pathname });
 }
 export { v12_logic };

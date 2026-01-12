@@ -54,3 +54,5 @@ manual_migrate.js
 manual_migrate_v2.js
 
 manual_migrate_v3.js
+
+check_live_response.cjs
