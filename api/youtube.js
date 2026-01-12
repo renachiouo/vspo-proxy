@@ -57,10 +57,9 @@ const VSPO_MEMBERS = [
     { name: "Riko Solari", ytId: "UC7Xglp1fske9zmRe7Oj8YyA", twitchId: "1125216387" },
     { name: "Eris Suzukami", ytId: "UCp_3ej2br9l9L1DSoHVDZGw", twitchId: "" },
     // CN Members (Bilibili Only) - Add customAvatarUrl to fix WAF blocking
-    // TODO: User please replace these empty strings with the correct avatar URL from legal Bilibili page
-    { name: "小针彩", ytId: "", twitchId: "", bilibiliId: "1972360561", customAvatarUrl: "https://i0.hdslb.com/bfs/face/ccee4b98198a72f5de3a8174f42431bdee357270.jpg" },
+    { name: "小針彩", ytId: "", twitchId: "", bilibiliId: "1972360561", customAvatarUrl: "https://i0.hdslb.com/bfs/face/ccee4b98198a72f5de3a8174f42431bdee357270.jpg" },
     { name: "白咲露理", ytId: "", twitchId: "", bilibiliId: "1842209652", customAvatarUrl: "https://i0.hdslb.com/bfs/face/99aa887c27725e4d1dcf2ea071f04d8b29f457d4.jpg" },
-    { name: "帕妃", ytId: "", twitchId: "", bilibiliId: "1742801253", customAvatarUrl: "https://i2.hdslb.com/bfs/face/b9915ddaa2d7f1b4279d516d77207bef9cc31856.jpg" }, // Confirmed Working
+    { name: "帕妃", ytId: "", twitchId: "", bilibiliId: "1742801253", customAvatarUrl: "https://i2.hdslb.com/bfs/face/b9915ddaa2d7f1b4279d516d77207bef9cc31856.jpg" },
     { name: "千郁郁", ytId: "", twitchId: "", bilibiliId: "1996441034", customAvatarUrl: "https://i1.hdslb.com/bfs/face/f9784adb001568cdc8f73f3435c0d5658af98c28.jpg" },
     { name: "日向晴", ytId: "", twitchId: "", bilibiliId: "1833448662", customAvatarUrl: "https://i2.hdslb.com/bfs/face/39e4bb7ddf7330bcf11fd6c06f8428d8ad0f0f26.jpg" },
 ];
@@ -1703,6 +1702,9 @@ export default async function handler(req, res) {
         if (platform && platform !== 'all') query.platform = platform;
         if (memberId) query.memberId = memberId;
 
+        // Filter out upcoming streams (Scheduled waiting rooms)
+        query.status = { $ne: 'upcoming' };
+
         // "Has Clips" Filter?
         // To do this efficiently, we might need an aggregated field on 'streams' or do a lookup.
         // For now, let's assume valid 'streams' are what we want.
@@ -1784,8 +1786,8 @@ export default async function handler(req, res) {
             const c = channelMap.get(m.ytId);
             return {
                 name: m.name,
-                id: m.ytId,
-                avatarUrl: c?.thumbnail || '', // Fallback? Front-end has placeholders
+                id: m.ytId || m.bilibiliId || m.name, // Fallback ID for members without YT
+                avatarUrl: m.customAvatarUrl || c?.thumbnail || '',
                 twitchId: m.twitchId
             };
         });
@@ -1818,7 +1820,7 @@ export default async function handler(req, res) {
                 thumbnail: c.thumbnail,
                 channelName: c.channelTitle,
                 avatarUrl: c.channelAvatarUrl,
-                source: c.source, // 'cn' or 'jp'
+                source: (c.source === 'foreign' || c.source === 'jp') ? 'jp' : 'cn',
                 publishedAt: c.publishedAt,
                 duration: c.duration
             }))
