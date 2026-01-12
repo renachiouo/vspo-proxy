@@ -467,15 +467,88 @@ const syncTwitchArchives = async (db) => {
     return totalUpserted;
 };
 
+// --- Bilibili Wbi Signature Helper ---
+import md5 from 'md5';
+
+const mixinKeyEncTab = [
+    46, 47, 18, 2, 53, 8, 23, 32, 15, 50, 10, 31, 58, 3, 45, 35, 27, 43, 5, 49,
+    33, 9, 42, 19, 29, 28, 14, 39, 12, 38, 41, 13, 37, 48, 7, 16, 24, 55, 40,
+    61, 26, 17, 0, 1, 60, 51, 30, 4, 22, 25, 54, 21, 56, 59, 6, 63, 57, 62, 11,
+    36, 20, 34, 44, 52
+];
+
+// Perform mixin on the key
+const getMixinKey = (orig) => mixinKeyEncTab.map(n => orig[n]).join('').slice(0, 32);
+
+// Cache keys (they rotate daily, can cache for a few hours)
+let wbiKeys = null;
+let wbiKeysExpiry = 0;
+
+const getWbiKeys = async () => {
+    if (wbiKeys && Date.now() < wbiKeysExpiry) return wbiKeys;
+    try {
+        const res = await fetch('https://api.bilibili.com/x/web-interface/nav', {
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+                'Referer': 'https://www.bilibili.com/'
+            }
+        });
+        const json = await res.json();
+        const { img_url, sub_url } = json?.data?.wbi_img || {};
+        const img_key = img_url?.substring(img_url.lastIndexOf('/') + 1, img_url.lastIndexOf('.'));
+        const sub_key = sub_url?.substring(sub_url.lastIndexOf('/') + 1, sub_url.lastIndexOf('.'));
+        if (img_key && sub_key) {
+            wbiKeys = { img_key, sub_key };
+            wbiKeysExpiry = Date.now() + 3600000; // Cache for 1 hour
+            return wbiKeys;
+        }
+    } catch (e) {
+        console.error('[Bilibili] Failed to fetch Wbi Keys:', e);
+    }
+    return null;
+};
+
+const encWbi = async (params) => {
+    const keys = await getWbiKeys();
+    if (!keys) return new URLSearchParams(params).toString(); // Fallback without sign
+
+    const mixin_key = getMixinKey(keys.img_key + keys.sub_key);
+    const curr_time = Math.round(Date.now() / 1000);
+    const chr_filter = /[!'()*]/g;
+
+    const query = { ...params, wts: curr_time }; // wts is required
+    const sortedKeys = Object.keys(query).sort();
+
+    let queryStr = sortedKeys.map(key => {
+        const val = String(query[key]);
+        return `${encodeURIComponent(key)}=${encodeURIComponent(val).replace(chr_filter, '')}`;
+    }).join('&');
+
+    const wbi_sign = md5(queryStr + mixin_key);
+    return queryStr + '&w_rid=' + wbi_sign;
+};
+
 async function fetchBilibiliArchives(mid) {
     try {
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 8000); // 8s timeout
-        // ps=50 to fetch latest 50 videos
-        const res = await fetch(`https://api.bilibili.com/x/space/arc/search?mid=${mid}&ps=50&tid=0&pn=1&order=pubdate`, {
+        const timeoutId = setTimeout(() => controller.abort(), 10000); // 10s timeout
+
+        // Constuct signed params
+        const queryParams = {
+            mid,
+            ps: 50,
+            tid: 0,
+            pn: 1,
+            order: 'pubdate',
+            platform: 'web',
+            web_location: 1550101
+        };
+        const signedQuery = await encWbi(queryParams);
+        const url = `https://api.bilibili.com/x/space/wbi/arc/search?${signedQuery}`;
+
+        const res = await fetch(url, {
             headers: {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                // Bilibili API might require Referer matching the MID
                 'Referer': `https://space.bilibili.com/${mid}/`
             },
             signal: controller.signal
@@ -488,11 +561,21 @@ async function fetchBilibiliArchives(mid) {
         }
 
         const data = await res.json();
-        if (data.code !== 0 || !data.data || !data.data.list || !data.data.list.vlist) {
+        // Log detailed error codes if not 0
+        if (data.code !== 0) {
+            console.log(`[Bilibili] API Fail ${mid}: Code ${data.code} Message: ${data.message} TTL: ${data.ttl}`);
+            return [];
+        }
+
+        if (!data.data || !data.data.list || !data.data.list.vlist) {
+            // console.log(`[Bilibili] No VODs found for ${mid}`);
             return [];
         }
         return data.data.list.vlist;
-    } catch (e) { console.error(`Bilibili Fetch Error MID=${mid}:`, e); return []; }
+    } catch (e) {
+        console.error(`Bilibili Fetch Error MID=${mid}:`, e);
+        return [];
+    }
 }
 
 const syncBilibiliArchives = async (db) => {
@@ -704,6 +787,12 @@ const v12_logic = {
         const blacklist = blCn?.items || [];
         const jpWhitelist = wlJp?.items || [];
         const newVideoCandidates = new Set();
+
+        // [FIX] Sync Twitch & Bilibili archives FIRST, so linking logic can find them
+        console.log('[Mongo] Syncing Twitch/Bilibili archives before clip processing...');
+        try { await syncTwitchArchives(db); } catch (e) { console.error('Pre-sync Twitch Failed:', e); }
+        try { await syncBilibiliArchives(db); } catch (e) { console.error('Pre-sync Bilibili Failed:', e); }
+
 
         // 1. Whitelist Scan
         if (whitelist.length > 0) {
@@ -1481,9 +1570,69 @@ async function handleAdminAction(req, res, db, body) {
             const logs = await db.collection('admin_logs').find().sort({ timestamp: -1 }).limit(100).toArray();
             return res.status(200).json({ success: true, logs });
 
-        // Mock Backfill
+        // Backfill: Re-link clips to Twitch/Bilibili archives
+        case 'backfill_links':
+            try {
+                // 1. Sync archives first to ensure we have latest data
+                console.log('[Backfill] Syncing archives...');
+                await syncTwitchArchives(db);
+                await syncBilibiliArchives(db);
+
+                // 2. Get recent videos that might need re-linking
+                const lookbackDays = parseInt(body.days) || 7;
+                const cutoffDate = new Date();
+                cutoffDate.setDate(cutoffDate.getDate() - lookbackDays);
+
+                const videosToCheck = await db.collection('videos').find({
+                    publishedAt: { $gte: cutoffDate },
+                    $or: [
+                        { relatedStreamIds: { $exists: false } },
+                        { relatedStreamIds: { $size: 0 } },
+                        { relatedStreamIds: null }
+                    ]
+                }).toArray();
+
+                console.log(`[Backfill] Found ${videosToCheck.length} videos to check.`);
+
+                let updatedCount = 0;
+                for (const video of videosToCheck) {
+                    // Parse URLs from searchableText (contains description)
+                    const text = video.searchableText || '';
+                    const osis = parseAllStreamInfos(text);
+
+                    if (osis.length > 0) {
+                        const candidateIds = osis.map(o => o.id);
+                        const validStreams = await db.collection('streams').find(
+                            { _id: { $in: candidateIds } },
+                            { projection: { _id: 1 } }
+                        ).toArray();
+
+                        if (validStreams.length > 0) {
+                            const streamIds = validStreams.map(s => s._id);
+                            await db.collection('videos').updateOne(
+                                { _id: video._id },
+                                {
+                                    $set: {
+                                        relatedStreamIds: streamIds,
+                                        relatedStreamId: streamIds[0]
+                                    }
+                                }
+                            );
+                            updatedCount++;
+                        }
+                    }
+                }
+
+                await logAdminAction(db, 'backfill_links', { lookbackDays, checked: videosToCheck.length, updated: updatedCount });
+                return res.json({ success: true, message: `Backfill complete. Checked ${videosToCheck.length} videos, updated ${updatedCount} links.` });
+            } catch (e) {
+                console.error('[Backfill] Error:', e);
+                return res.status(500).json({ error: e.message });
+            }
+
+        // Legacy Mock Backfill (Deprecated)
         case 'backfill':
-            return res.json({ success: true, message: 'Backfill triggered (Mock)' });
+            return res.json({ success: true, message: 'Use backfill_links action instead.' });
 
         default: return res.status(400).json({ error: 'Invalid action' });
     }
