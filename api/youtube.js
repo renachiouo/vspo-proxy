@@ -82,6 +82,7 @@ const INACTIVE_THRESHOLD_CN_MS = 60 * 24 * 60 * 60 * 1000; // CN: 60 Days
 const INACTIVE_THRESHOLD_JP_MS = 30 * 24 * 60 * 60 * 1000; // JP: 30 Days
 const INACTIVE_SCAN_INTERVAL_CN_MS = 3600 * 1000; // 1 Hour
 const INACTIVE_SCAN_INTERVAL_JP_MS = 86400 * 1000; // 24 Hours
+const STREAM_UPDATE_INTERVAL_SECONDS = 3600; // 1 Hour
 
 // --- DB Connection ---
 let cachedClient = null;
@@ -316,6 +317,27 @@ function parseOriginalStreamInfo(description) {
     return null;
 }
 
+function parseAllStreamInfos(description) {
+    if (!description) return [];
+    const results = [];
+
+    // YouTube Regex (Global)
+    const ytRegex = /(?:https?:\/\/)?(?:www\.)?(?:youtube\.com\/(?:watch\?v=|live\/)|youtu\.be\/)([a-zA-Z0-9_-]{11})/g;
+    let valid;
+    while ((valid = ytRegex.exec(description)) !== null) {
+        results.push({ platform: 'youtube', id: valid[1] });
+    }
+
+    // Twitch Regex (Global)
+    const twRegex = /(?:https?:\/\/)?(?:www\.)?twitch\.tv\/videos\/(\d+)/g;
+    while ((valid = twRegex.exec(description)) !== null) {
+        results.push({ platform: 'twitch', id: valid[1] });
+    }
+
+    // Deduplicate by ID
+    return [...new Map(results.map(item => [item.id, item])).values()];
+}
+
 // Twitch Helpers
 let twitchToken = null;
 let twitchTokenExpiry = 0;
@@ -429,8 +451,27 @@ const v12_logic = {
                 source: type,
                 videoType: durationMinutes <= 1.05 ? 'short' : 'video'
             };
-            const osi = parseOriginalStreamInfo(description);
-            if (osi) doc.originalStreamInfo = osi;
+
+            // [NEW] Multi-Link Logic
+            const osis = parseAllStreamInfos(description);
+            if (osis.length > 0) {
+                doc.originalStreamInfo = osis[0]; // Legacy: Keep first match as primary
+
+                // Extract all candidate IDs
+                const candidateIds = osis.map(o => o.id);
+
+                // Lookup in DB
+                // Optimized: We fetch ONLY valid stream IDs from our collection
+                const validStreams = await db.collection('streams').find(
+                    { _id: { $in: candidateIds } },
+                    { projection: { _id: 1, title: 1 } }
+                ).toArray();
+
+                if (validStreams.length > 0) {
+                    doc.relatedStreamIds = validStreams.map(s => s._id); // Store Array
+                    doc.relatedStreamId = validStreams[0]._id; // Store Primary (First valid match)
+                }
+            }
 
             bulkOps.push({ updateOne: { filter: { _id: videoId }, update: { $set: doc }, upsert: true } });
         }
@@ -730,6 +771,103 @@ const v12_logic = {
         } else {
             console.log(`[Verify] All ${ids.length} recent videos are valid.`);
         }
+    },
+
+    async updateMemberStreams(db) {
+        console.log('[Mongo] Updating Member Streams (Forward Fetch)...');
+
+        // 1. Check Interval
+        const meta = await db.collection('metadata').findOne({ _id: 'last_stream_update' });
+        const lastUpdate = meta?.timestamp || 0;
+        if (Date.now() - lastUpdate < STREAM_UPDATE_INTERVAL_SECONDS * 1000) {
+            console.log('[Mongo] Stream Update Skipped (Interval not met).');
+            return;
+        }
+
+        // 2. Update Timestamp immediately to prevent concurrent runs
+        await db.collection('metadata').updateOne(
+            { _id: 'last_stream_update' },
+            { $set: { timestamp: Date.now() } },
+            { upsert: true }
+        );
+
+        let totalStreamsFound = 0;
+        const members = VSPO_MEMBERS.filter(m => m.ytId); // Filter only members with YT
+
+        for (const member of members) {
+            try {
+                // A. Get Uploads Playlist ID
+                const chRes = await fetchYouTube('channels', { part: 'contentDetails', id: member.ytId });
+                const uploadsPlaylistId = chRes.items?.[0]?.contentDetails?.relatedPlaylists?.uploads;
+
+                if (!uploadsPlaylistId) continue;
+
+                // B. Fetch Recent Uploads (Top 50 is enough for 1 hour interval)
+                // We fetch 50 to ensure we catch recent streams even if they upload many clips/Shorts
+                const plRes = await fetchYouTube('playlistItems', {
+                    part: 'snippet',
+                    playlistId: uploadsPlaylistId,
+                    maxResults: 50
+                });
+
+                const videosToCheck = plRes.items?.map(i => i.snippet.resourceId.videoId) || [];
+                if (videosToCheck.length === 0) continue;
+
+                // C. Check Video Details for Live Streaming Info
+                const vRes = await fetchYouTube('videos', {
+                    part: 'liveStreamingDetails,snippet,statistics',
+                    id: videosToCheck.join(',')
+                });
+
+                const bulkOps = [];
+
+                for (const item of vRes.items || []) {
+                    // We only want ARCHIVED streams or currently active ones if useful
+                    const live = item.liveStreamingDetails;
+                    if (!live) continue; // Not a stream
+
+                    // Check if it's a VOD (has actualStartTime)
+                    if (!live.actualStartTime) continue;
+
+                    const description = item.snippet.description || "";
+                    const isClipProhibited = description.includes("切り抜き禁止");
+
+                    const doc = {
+                        _id: item.id,
+                        streamId: item.id,
+                        memberId: member.ytId,
+                        memberName: member.name,
+                        title: item.snippet.title,
+                        startTime: new Date(live.actualStartTime),
+                        endTime: live.actualEndTime ? new Date(live.actualEndTime) : null,
+                        platform: 'youtube',
+                        channelTitle: item.snippet.channelTitle,
+                        thumbnail: item.snippet.thumbnails.maxres?.url || item.snippet.thumbnails.high?.url,
+                        status: live.actualEndTime ? 'ended' : 'live', // Simple status
+                        scheduledStartTime: live.scheduledStartTime ? new Date(live.scheduledStartTime) : null,
+                        isClipProhibited // [NEW] Prohibited Flag
+                    };
+
+                    bulkOps.push({
+                        updateOne: {
+                            filter: { _id: item.id },
+                            update: { $set: doc },
+                            upsert: true
+                        }
+                    });
+                }
+
+                if (bulkOps.length > 0) {
+                    await db.collection('streams').bulkWrite(bulkOps);
+                    totalStreamsFound += bulkOps.length;
+                }
+
+            } catch (e) {
+                console.error(`[Stream Update] Failed for ${member.name}:`, e.message);
+            }
+        }
+
+        console.log(`[Mongo] Stream Update Completed. Processed ${totalStreamsFound} streams.`);
     },
 
     async updateLiveStatus(db) {
@@ -1244,7 +1382,8 @@ export default async function handler(req, res) {
             }
             else {
                 await v12_logic.updateAndStoreYouTubeData(db);
-                await v12_logic.updateLiveStatus(db); // Force refresh also updates live status
+                await v12_logic.updateLiveStatus(db);
+                await v12_logic.updateMemberStreams(db);
             }
             await db.collection('metadata').updateOne({ _id: metaId }, { $set: { timestamp: Date.now() } }, { upsert: true });
 
@@ -1290,6 +1429,7 @@ export default async function handler(req, res) {
                                     }
                                 } else {
                                     await v12_logic.updateAndStoreYouTubeData(db);
+                                    await v12_logic.updateMemberStreams(db);
                                 }
                             } catch (e) {
                                 console.error('BG Update:', e);
@@ -1551,5 +1691,88 @@ export default async function handler(req, res) {
         });
     }
 
+    // 11. Get Member Streams (Archives)
+    if (pathname === '/api/streams') {
+        const page = parseInt(searchParams.get('page') || '1');
+        const limit = parseInt(searchParams.get('limit') || '20');
+        const platform = searchParams.get('platform'); // youtube, twitch, bilibili, all
+        const memberId = searchParams.get('memberId');
+        const hasClips = searchParams.get('hasClips') === 'true'; // Filter streams that have linked clips?
+
+        const query = {};
+        if (platform && platform !== 'all') query.platform = platform;
+        if (memberId) query.memberId = memberId;
+
+        // "Has Clips" Filter?
+        // To do this efficiently, we might need an aggregated field on 'streams' or do a lookup.
+        // For now, let's assume valid 'streams' are what we want.
+        // If user wants ONLY streams with clips, we need to check if ANY video links to it.
+        // That's expensive unless we store `clipCount` on the stream document.
+        // Let's skip `hasClips` filter implementation for now unless requested strictly 
+        // (User asked: "Only show 'Has Clips' indicator", not "Filter by it").
+        // "我希望只有當該直播有剪輯影片時，再顯示有剪輯影片。" -> This is a UI indicator requirement.
+
+        // HOWEVER, to support that UI indicator, we need to know IF it has clips.
+        // So we should probably do a $lookup or store clipCount.
+        // Aggregation is better here.
+
+        const match = query;
+        const skip = (page - 1) * limit;
+
+        const pipeline = [
+            { $match: match },
+            { $sort: { startTime: -1 } },
+            { $skip: skip },
+            { $limit: limit },
+            // Lookup to check for clips
+            {
+                $lookup: {
+                    from: 'videos',
+                    localField: '_id',
+                    foreignField: 'relatedStreamId', // OR relatedStreamIds
+                    as: 'clips', // This pulls ALL clips, might be heavy if many.
+                    pipeline: [{ $project: { _id: 1 } }, { $limit: 1 }] // Optimization: Just check existence
+                }
+            },
+            {
+                $lookup: {
+                    from: 'videos',
+                    localField: '_id',
+                    foreignField: 'relatedStreamIds', // Also check the array field
+                    as: 'clipsMulti',
+                    pipeline: [{ $project: { _id: 1 } }, { $limit: 1 }]
+                }
+            },
+            {
+                $addFields: {
+                    hasClips: {
+                        $or: [
+                            { $gt: [{ $size: "$clips" }, 0] },
+                            { $gt: [{ $size: "$clipsMulti" }, 0] }
+                        ]
+                    }
+                }
+            },
+            { $project: { clips: 0, clipsMulti: 0 } } // Remove the heavy arrays
+        ];
+
+        const [streams, totalCount] = await Promise.all([
+            db.collection('streams').aggregate(pipeline).toArray(),
+            db.collection('streams').countDocuments(match)
+        ]);
+
+        return res.status(200).json({
+            success: true,
+            streams,
+            pagination: {
+                page,
+                limit,
+                total: totalCount,
+                totalPages: Math.ceil(totalCount / limit)
+            }
+        });
+    }
+
     return res.status(404).json({ error: 'Not Found', path: pathname });
 }
+export { v12_logic };

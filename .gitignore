@@ -39,3 +39,16 @@ report_*.json
 
 check_quota.cjs
 quota_log.txt
+
+# API Key Verification
+verify_api_keys.js
+
+manual_stream_test.js
+
+migrate_links.js
+
+manual_migrate.js
+
+manual_migrate_v2.js
+
+manual_migrate_v3.js
