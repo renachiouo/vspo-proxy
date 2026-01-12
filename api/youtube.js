@@ -460,6 +460,81 @@ const syncTwitchArchives = async (db) => {
     return totalUpserted;
 };
 
+async function fetchBilibiliArchives(mid) {
+    try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 8000); // 8s timeout
+        // ps=50 to fetch latest 50 videos
+        const res = await fetch(`https://api.bilibili.com/x/space/arc/search?mid=${mid}&ps=50&tid=0&pn=1&order=pubdate`, {
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                // Bilibili API might require Referer matching the MID
+                'Referer': `https://space.bilibili.com/${mid}/`
+            },
+            signal: controller.signal
+        });
+        clearTimeout(timeoutId);
+
+        if (!res.ok) {
+            console.error(`Bilibili Archive Error [${mid}]: ${res.status}`);
+            return [];
+        }
+
+        const data = await res.json();
+        if (data.code !== 0 || !data.data || !data.data.list || !data.data.list.vlist) {
+            return [];
+        }
+        return data.data.list.vlist;
+    } catch (e) { console.error(`Bilibili Fetch Error MID=${mid}:`, e); return []; }
+}
+
+const syncBilibiliArchives = async (db) => {
+    console.log('[Bilibili] Starting Archive Sync...');
+    const members = VSPO_MEMBERS.filter(m => m.bilibiliId);
+    let totalUpserted = 0;
+
+    for (const member of members) {
+        // console.log(`[Bilibili] Checking ${member.name} (${member.bilibiliId})...`);
+        const videos = await fetchBilibiliArchives(member.bilibiliId);
+
+        if (videos.length === 0) continue;
+
+        const operations = videos.map(video => {
+            const streamDoc = {
+                streamId: video.bvid, // Use BVID as ID
+                platform: 'bilibili',
+                title: video.title,
+                thumbnail: video.pic ? video.pic.replace('http:', 'https:') : '',
+                startTime: new Date(video.created * 1000), // Bilibili timestamp is seconds
+                status: 'completed',
+                channelId: member.bilibiliId,
+                channelTitle: video.author,
+                memberName: member.name,
+                viewCount: video.play,
+                duration: video.length, // Format is usually "MM:SS" or seconds. Use as is for display.
+                url: `https://www.bilibili.com/video/${video.bvid}`,
+                updatedAt: new Date()
+            };
+
+            return {
+                updateOne: {
+                    filter: { streamId: video.bvid, platform: 'bilibili' },
+                    update: { $set: streamDoc },
+                    upsert: true
+                }
+            };
+        });
+
+        if (operations.length > 0) {
+            const result = await db.collection('streams').bulkWrite(operations);
+            totalUpserted += (result.upsertedCount + result.modifiedCount);
+        }
+        await new Promise(r => setTimeout(r, 500)); // Be gentler with Bilibili
+    }
+    console.log(`[Bilibili] Archive Sync Completed. Processed ${totalUpserted} streams.`);
+    return totalUpserted;
+};
+
 // --- Logic ---
 const v12_logic = {
     async processAndStoreVideos(videoIds, db, type, options = {}) {
@@ -1459,8 +1534,9 @@ export default async function handler(req, res) {
                 await v12_logic.updateAndStoreYouTubeData(db);
                 await v12_logic.updateLiveStatus(db);
                 await v12_logic.updateMemberStreams(db);
-                // Also Sync Twitch Archives (Best effort)
+                // Also Sync Twitch & Bilibili Archives (Best effort)
                 try { await syncTwitchArchives(db); } catch (e) { console.error('Twitch Sync Failed in Main Loop:', e); }
+                try { await syncBilibiliArchives(db); } catch (e) { console.error('Bilibili Sync Failed in Main Loop:', e); }
             }
             await db.collection('metadata').updateOne({ _id: metaId }, { $set: { timestamp: Date.now() } }, { upsert: true });
 
@@ -1507,8 +1583,9 @@ export default async function handler(req, res) {
                                 } else {
                                     await v12_logic.updateAndStoreYouTubeData(db);
                                     await v12_logic.updateMemberStreams(db);
-                                    // Also Sync Twitch Archives
+                                    // Also Sync Twitch & Bilibili Archives
                                     try { await syncTwitchArchives(db); } catch (e) { console.error('BG Twitch Sync Failed:', e); }
+                                    try { await syncBilibiliArchives(db); } catch (e) { console.error('BG Bilibili Sync Failed:', e); }
                                 }
                             } catch (e) {
                                 console.error('BG Update:', e);
@@ -1903,6 +1980,17 @@ export default async function handler(req, res) {
         }
     }
 
+    // 14. Sync Bilibili Archives (Cron)
+    if (pathname === '/api/cron/sync-bilibili') {
+        try {
+            const count = await syncBilibiliArchives(db);
+            return res.status(200).json({ success: true, message: `Synced ${count} Bilibili archives.` });
+        } catch (e) {
+            console.error(e);
+            return res.status(500).json({ error: e.message });
+        }
+    }
+
     return res.status(404).json({ error: 'Not Found', path: pathname });
 }
-export { v12_logic, syncTwitchArchives };
+export { v12_logic, syncTwitchArchives, syncBilibiliArchives };
