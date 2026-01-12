@@ -1713,36 +1713,30 @@ export default async function handler(req, res) {
             { $sort: { startTime: -1 } },
             { $skip: skip },
             { $limit: limit },
-            // Lookup to check for clips
+            // Lookup to check for clips (Optimized)
             {
                 $lookup: {
                     from: 'videos',
-                    localField: '_id',
-                    foreignField: 'relatedStreamId', // OR relatedStreamIds
-                    as: 'clips', // This pulls ALL clips, might be heavy if many.
-                    pipeline: [{ $project: { _id: 1 } }, { $limit: 1 }] // Optimization: Just check existence
+                    let: { sid: '$_id' },
+                    pipeline: [
+                        {
+                            $match: {
+                                $expr: {
+                                    $or: [
+                                        { $eq: ["$relatedStreamId", "$$sid"] },
+                                        { $in: ["$$sid", { $ifNull: ["$relatedStreamIds", []] }] }
+                                    ]
+                                }
+                            }
+                        },
+                        { $limit: 1 },
+                        { $project: { _id: 1 } }
+                    ],
+                    as: 'clips_exist'
                 }
             },
-            {
-                $lookup: {
-                    from: 'videos',
-                    localField: '_id',
-                    foreignField: 'relatedStreamIds', // Also check the array field
-                    as: 'clipsMulti',
-                    pipeline: [{ $project: { _id: 1 } }, { $limit: 1 }]
-                }
-            },
-            {
-                $addFields: {
-                    hasClips: {
-                        $or: [
-                            { $gt: [{ $size: "$clips" }, 0] },
-                            { $gt: [{ $size: "$clipsMulti" }, 0] }
-                        ]
-                    }
-                }
-            },
-            { $project: { clips: 0, clipsMulti: 0 } } // Remove the heavy arrays
+            { $addFields: { hasClips: { $gt: [{ $size: '$clips_exist' }, 0] } } },
+            { $project: { clips_exist: 0 } }
         ];
 
         const [streams, totalCount] = await Promise.all([
@@ -1805,8 +1799,12 @@ export default async function handler(req, res) {
                 id: c._id,
                 title: c.title,
                 thumbnail: c.thumbnail,
-                channelName: c.channelTitle,
-                avatarUrl: c.channelAvatarUrl,
+                channelTitle: c.channelTitle, // Changed from channelName to match createVideoCard
+                channelAvatarUrl: c.channelAvatarUrl,
+                channelId: c.channelId,
+                viewCount: c.viewCount,
+                subscriberCount: c.subscriberCount,
+                videoType: c.videoType,
                 source: (c.source === 'foreign' || c.source === 'jp') ? 'jp' : 'cn',
                 publishedAt: c.publishedAt,
                 duration: c.duration
