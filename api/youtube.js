@@ -2,7 +2,7 @@
 import { MongoClient } from 'mongodb';
 
 // --- Configuration ---
-const SCRIPT_VERSION = '17.3-Debug-Force';
+const SCRIPT_VERSION = '17.4-FIXED';
 const UPDATE_INTERVAL_SECONDS = 1200; // CN: 20 mins
 const FOREIGN_UPDATE_INTERVAL_SECONDS = 1200; // JP Whitelist: 20 mins
 const FOREIGN_SEARCH_INTERVAL_SECONDS = 3600; // JP Keywords: 60 mins
