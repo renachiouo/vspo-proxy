@@ -372,7 +372,7 @@ async function fetchTwitchStreams(userIds) {
     try {
         const query = userIds.map(id => `user_id=${id}`).join('&');
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 5000); // 5s timeout
+        const timeoutId = setTimeout(() => controller.abort(), 10000); // 10s timeout
         const res = await fetch(`https://api.twitch.tv/helix/streams?${query}`, {
             headers: { 'Client-ID': process.env.TWITCH_CLIENT_ID, 'Authorization': `Bearer ${token}` },
             signal: controller.signal
@@ -389,7 +389,7 @@ async function fetchTwitchArchives(userId) {
     try {
         // Fetch videos of type 'archive' (VODs)
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 8000); // 8s timeout
+        const timeoutId = setTimeout(() => controller.abort(), 10000); // 10s timeout
         const res = await fetch(`https://api.twitch.tv/helix/videos?user_id=${userId}&type=archive&first=5`, {
             headers: { 'Client-ID': process.env.TWITCH_CLIENT_ID, 'Authorization': `Bearer ${token}` },
             signal: controller.signal
