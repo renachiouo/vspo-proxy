@@ -1111,8 +1111,25 @@ const v12_logic = {
         for (const member of members) {
             try {
                 // A. Get Uploads Playlist ID
-                const chRes = await fetchYouTube('channels', { part: 'contentDetails', id: member.ytId });
+                // A. Get Channel Info (Uploads Playlist + Metadata)
+                const chRes = await fetchYouTube('channels', { part: 'contentDetails,snippet', id: member.ytId });
                 const uploadsPlaylistId = chRes.items?.[0]?.contentDetails?.relatedPlaylists?.uploads;
+
+                // [FIX] Update Channel Metadata (Avatar/Title) for /api/members
+                if (chRes.items?.[0]?.snippet) {
+                    const snippet = chRes.items[0].snippet;
+                    await db.collection('channels').updateOne(
+                        { _id: member.ytId },
+                        {
+                            $set: {
+                                title: snippet.title,
+                                thumbnail: snippet.thumbnails?.high?.url || snippet.thumbnails?.default?.url || "",
+                                updatedAt: new Date()
+                            }
+                        },
+                        { upsert: true }
+                    );
+                }
 
                 if (!uploadsPlaylistId) continue;
 
