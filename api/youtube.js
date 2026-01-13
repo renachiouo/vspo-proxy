@@ -698,9 +698,17 @@ const syncBilibiliArchives = async (db) => {
             );
         }
 
+        // Clear Error Status on Success
+        await db.collection('metadata').updateOne({ _id: 'bilibili_status' }, { $unset: { error: "" }, $set: { status: 'ok', timestamp: Date.now() } });
+
         return totalUpserted;
     } catch (e) {
-        console.error(`[Bilibili Sync Error] ${member?.name}:`, e);
+        if (e.message === 'BILIBILI_AUTH_ERROR') {
+            console.error(`[Bilibili Sync Critical] SESSDATA Expired.`);
+            await db.collection('metadata').updateOne({ _id: 'bilibili_status' }, { $set: { error: 'expired', timestamp: Date.now() } }, { upsert: true });
+        } else {
+            console.error(`[Bilibili Sync Error] ${member?.name}:`, e);
+        }
         return 0;
     }
 };
@@ -2010,7 +2018,8 @@ export default async function handler(req, res) {
             blacklist_cn: await hydrate(bl_cn?.items),
             blacklist_jp: await hydrate(bl_jp?.items),
             pending_jp: await hydrate(p_jp?.items),
-            announcement: ann ? { content: ann.content, type: ann.type, active: ann.active === "true" } : null
+            announcement: ann ? { content: ann.content, type: ann.type, active: ann.active === "true" } : null,
+            bilibili_error: (await db.collection('metadata').findOne({ _id: 'bilibili_status' }))?.error === 'expired'
         });
     }
 
@@ -2388,6 +2397,13 @@ async function fetchBilibiliArchivesWbi(mid) {
         }
 
         const data = await res.json();
+
+        // [NEW] Check for Auth Error (-101)
+        if (data.code === -101) {
+            console.error(`[Bilibili] Auth Error -101: Account not logged in. SESSDATA may have expired.`);
+            throw new Error('BILIBILI_AUTH_ERROR');
+        }
+
         if (data.code !== 0) {
             console.error(`[Bilibili] API Error ${data.code} for ${mid}: ${data.message}`);
             return [];
