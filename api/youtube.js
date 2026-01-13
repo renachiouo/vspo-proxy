@@ -258,7 +258,7 @@ const fetchYouTube = async (endpoint, params) => {
 
         try {
             const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 3000); // 3s timeout
+            const timeoutId = setTimeout(() => controller.abort(), 8000); // 8s timeout
             const res = await fetch(url, { signal: controller.signal });
             clearTimeout(timeoutId);
 
