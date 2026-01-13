@@ -784,9 +784,9 @@ const v12_logic = {
         if (last && (Date.now() - last.timestamp < 86400000)) return; // Run once daily
         await db.collection('metadata').updateOne({ _id: 'last_cleanup' }, { $set: { timestamp: Date.now() } }, { upsert: true });
 
-        // CN: 30 Days
-        const thirtyDaysAgo = new Date(); thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
-        const resCN = await db.collection('videos').deleteMany({ source: 'main', publishedAt: { $lt: thirtyDaysAgo } });
+        // CN: 90 Days (Extended to match JP)
+        const ninetyDaysAgoCN = new Date(); ninetyDaysAgoCN.setDate(ninetyDaysAgoCN.getDate() - 90);
+        const resCN = await db.collection('videos').deleteMany({ source: 'main', publishedAt: { $lt: ninetyDaysAgoCN } });
 
         // JP: 90 Days
         const ninetyDaysAgo = new Date(); ninetyDaysAgo.setDate(ninetyDaysAgo.getDate() - 90);
@@ -798,7 +798,7 @@ const v12_logic = {
     async updateAndStoreYouTubeData(db) {
         // CN Strategy: 20 mins. Keyword + Whitelist. New channels -> Auto Whitelist.
         console.log('[Mongo] CN Update...');
-        const retentionDate = new Date(); retentionDate.setDate(retentionDate.getDate() - 30); // 30 days retention scan
+        const retentionDate = new Date(); retentionDate.setDate(retentionDate.getDate() - 90); // 90 days retention scan
         const [wlCn, blCn, wlJp] = await Promise.all([
             db.collection('lists').findOne({ _id: 'whitelist_cn' }), db.collection('lists').findOne({ _id: 'blacklist_cn' }), db.collection('lists').findOne({ _id: 'whitelist_jp' })
         ]);
