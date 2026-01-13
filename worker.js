@@ -1845,12 +1845,20 @@ async function startWorker() {
     };
 
     // Start Loops
-    // Execute immediately on start
-    runLiveCheck();
-    // Stagger Main Sync by 10s
-    setTimeout(runMainSync, 10000);
+    console.log('[Worker] HTTP Server is ready. Scheduling tasks...');
 
-    console.log('[Worker] Loops started. Press Ctrl+C to exit.');
+    // DELAY STARTUP: Wait 30 seconds before running the first check
+    // This allows the HTTP server to respond to Render's health check immediately
+    // and prevents initial CPU spike from causing timeouts.
+    setTimeout(() => {
+        console.log('[Worker] Initial Delay Complete. Starting First Live Check...');
+        runLiveCheck();
+    }, 30000);
+
+    // Stagger Main Sync by 40s (10s after Live Check)
+    setTimeout(runMainSync, 40000);
+
+    console.log('[Worker] Loops scheduled. Press Ctrl+C to exit.');
 
     // Keep process alive
     process.on('SIGINT', async () => {
