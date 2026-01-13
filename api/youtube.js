@@ -1831,128 +1831,50 @@ export default async function handler(req, res) {
                 (process.env.CRON_SECRET && pass === process.env.CRON_SECRET);
         };
 
-        // [OPTIMIZATION] Vercel is now Read-Only. Update logic is handled by Render Worker.
-        /* 
-        // --- Original Logic (Preserved for Reference) ---
+        // [OPTIMIZATION] Vercel is Read-Only for Public, but allows Manual Trigger for Admin.
         if (forceRefresh) {
             if (!authenticate()) return res.status(401).json({ error: 'Unauthorized' });
+
+            // 1. Try Remote Trigger (Render Worker) if URL is configured
+            if (process.env.RENDER_WORKER_URL) {
+                try {
+                    console.log(`[Vercel] Delegating Manual Update to Render Worker (${process.env.RENDER_WORKER_URL})...`);
+                    const workerRes = await fetch(`${process.env.RENDER_WORKER_URL}/trigger-sync`, {
+                        method: 'POST',
+                        headers: { 'Authorization': `Bearer ${process.env.ADMIN_PASSWORD || process.env.CRON_SECRET}` }
+                    });
+                    if (workerRes.ok) {
+                        const workerJson = await workerRes.json();
+                        console.log('[Vercel] Remote Trigger Successful:', workerJson);
+                        return res.status(200).json({ success: true, message: 'Remote Worker Triggered successfully', detail: workerJson });
+                    } else {
+                        console.error(`[Vercel] Remote Trigger Failed: ${workerRes.status} ${workerRes.statusText}`);
+                    }
+                } catch (e) {
+                    console.error('[Vercel] Remote Trigger Error:', e);
+                }
+                // If remote fails, continue to local fallback...
+            }
+
+            // 2. Local Fallback (Best Effort)
+            console.log(`[Vercel] Manual Update Triggered locally for ${lang.toUpperCase()}...`);
             if (isForeign) {
                 await v12_logic.updateForeignClips(db);
                 await v12_logic.updateForeignClipsKeywords(db); // Force refresh both
             }
             else {
-                await v12_logic.updateAndStoreYouTubeData(db);
+                await v12_logic.updateAndStoreYouTubeData(db); // Includes Pre-sync(Archives)
                 await v12_logic.updateLiveStatus(db);
-                await v12_logic.updateMemberStreams(db);
-                // Also Sync Twitch & Bilibili Archives (Best effort)
-                try { await syncTwitchArchives(db); } catch (e) { console.error('Twitch Sync Failed in Main Loop:', e); }
-                try { await syncBilibiliArchives(db); } catch (e) { console.error('Bilibili Sync Failed in Main Loop:', e); }
             }
             await db.collection('metadata').updateOne({ _id: metaId }, { $set: { timestamp: Date.now() } }, { upsert: true });
 
             didUpdate = true;
             logOutcome(`force_refresh_triggered_${lang}`);
-        } else {
-            const meta = await db.collection('metadata').findOne({ _id: metaId });
-            let bgUpdatePromise = Promise.resolve();
-            let updateStarted = false;
-
-            // Standard Interval check (20 mins)
-            if (Date.now() - (meta?.timestamp || 0) > (isForeign ? FOREIGN_UPDATE_INTERVAL_SECONDS : UPDATE_INTERVAL_SECONDS) * 1000) {
-                // Optimistic Locking: Use previous timestamp as version
-                const lockId = metaId + '_lock';
-                const lock = await db.collection('metadata').findOne({ _id: lockId });
-                const lastLockTime = lock?.timestamp || 0;
-
-                if (Date.now() - lastLockTime > 600000) {
-                    // Try to acquire lock ATOMICALLY
-                    const acquireResult = await db.collection('metadata').updateOne(
-                        { _id: lockId, timestamp: lastLockTime },
-                        { $set: { timestamp: Date.now() } },
-                        { upsert: true }
-                    );
-
-                    if (acquireResult.modifiedCount === 1 || (acquireResult.upsertedCount === 1 && !lock)) {
-                        updateStarted = true;
-                        logOutcome(`triggered_update_${lang}`);
-                        // Lock Acquired
-                        bgUpdatePromise = (async () => {
-                            try {
-                                // Update timestamp immediately (Start-to-Start interval)
-                                await db.collection('metadata').updateOne({ _id: metaId }, { $set: { timestamp: Date.now() } }, { upsert: true });
-
-                                if (isForeign) {
-                                    await v12_logic.updateForeignClips(db);
-                                    // Check if we need to run Keyword Search (60 mins)
-                                    const kwMeta = await db.collection('metadata').findOne({ _id: 'last_jp_keyword_search' });
-                                    if (!kwMeta || Date.now() - kwMeta.timestamp > FOREIGN_SEARCH_INTERVAL_SECONDS * 1000) {
-                                        // Update keyword timestamp immediately (Start-to-Start)
-                                        await db.collection('metadata').updateOne({ _id: 'last_jp_keyword_search' }, { $set: { timestamp: Date.now() } }, { upsert: true });
-                                        await v12_logic.updateForeignClipsKeywords(db);
-                                    }
-                                } else {
-                                    await v12_logic.updateAndStoreYouTubeData(db);
-                                    // Archive syncs (Twitch, Bilibili, YouTube Streams) are now handled in pre-sync phase
-                                    // inside updateAndStoreYouTubeData with global timeout protection
-                                }
-                            } catch (e) {
-                                console.error('BG Update:', e);
-                            } finally {
-                                await db.collection('metadata').updateOne({ _id: lockId }, { $set: { timestamp: 0 } });
-                            }
-                        })(); // Captured Promise
-                        didUpdate = true;
-                    } else {
-                        logOutcome(`skip_lock_failed_${lang}`);
-                    }
-                } else {
-                    logOutcome(`skip_lock_held_${lang}`);
-                }
-            } else {
-                logOutcome(`skip_interval_recent_${lang}`);
-            }
-
-            // Independent Live Status Check (5 mins)
-            let bgLivePromise = Promise.resolve();
-            const liveMeta = await db.collection('metadata').findOne({ _id: 'last_live_check' });
-            if (Date.now() - (liveMeta?.timestamp || 0) > LIVE_UPDATE_INTERVAL_SECONDS * 1000) {
-                const liveLock = await db.collection('metadata').findOne({ _id: 'live_check_lock' });
-                if (!liveLock || Date.now() - liveLock.timestamp > 300000) {
-                    await db.collection('metadata').updateOne({ _id: 'live_check_lock' }, { $set: { timestamp: Date.now() } }, { upsert: true });
-                    if (!updateStarted) logOutcome('triggered_live_check');
-                    bgLivePromise = (async () => {
-                        try {
-                            // Update timestamp immediately (Start-to-Start interval)
-                            await db.collection('metadata').updateOne({ _id: 'last_live_check' }, { $set: { timestamp: Date.now() } }, { upsert: true });
-                            await v12_logic.updateLiveStatus(db);
-                        } catch (e) { console.error('BG Live Update:', e); }
-                        finally { await db.collection('metadata').updateOne({ _id: 'live_check_lock' }, { $set: { timestamp: 0 } }); }
-                    })();
-                }
-            }
-
-            // [Optimization] Return minimal JSON only if explicitly requested (for Cron Jobs)
-            // This prevents "Response too large" errors while keeping Frontend functional
-            if (searchParams.get('trigger_only') === 'true') {
-                // CRITICAL: On Serverless (Vercel), we MUST await the background promise before returning,
-                // otherwise execution is frozen and the update dies.
-                await Promise.all([bgUpdatePromise, bgLivePromise]);
-
-                return res.status(200).json({
-                    success: true,
-                    triggered: true,
-                    message: 'Background update triggered',
-                    timestamp: Date.now()
-                });
-            }
-        }
-        */
-
-        if (forceRefresh) {
-            console.log('Force Refresh requested but Vercel is in Read-Only mode.');
+            return res.status(200).json({ success: true, message: 'Manual Update Completed (Local)', didUpdate: true });
         }
 
-        // Skip all update logic
+        // else: Skip automated schedule checks (Handled by Render Worker)
+
         logOutcome(`read_only_mode_${lang}`);
 
 

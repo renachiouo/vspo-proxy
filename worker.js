@@ -4,13 +4,7 @@ import { MongoClient } from 'mongodb';
 import crypto from 'crypto';
 import http from 'http';
 
-// --- Minimal HTTP Server for Render Keep-Alive ---
-const PORT = process.env.PORT || 3000;
-console.log(`[Worker] Attempting to start HTTP server on port ${PORT}...`);
-http.createServer((req, res) => {
-    res.writeHead(200, { 'Content-Type': 'text/plain' });
-    res.end('VSPO Worker Active');
-}).listen(PORT, '0.0.0.0', () => console.log(`[Worker] Keep-Alive Server listening on port ${PORT}`));
+// --- Minimal HTTP Server moved inside startWorker to access sync functions ---
 
 // --- Configuration ---
 const SCRIPT_VERSION = '17.4-FIXED';
@@ -1839,10 +1833,14 @@ async function startWorker() {
         setTimeout(runLiveCheck, 5 * 60 * 1000);
     };
 
-    // 2. Main Data Sync Loop (Every 20 mins - Start-to-Start)
-    const runMainSync = async () => {
-        const startTime = Date.now();
-        const INTERVAL = 20 * 60 * 1000; // 20 mins
+    // 2. Main Data Sync Logic (Reusable)
+    let isSyncing = false;
+    const executeSyncTask = async () => {
+        if (isSyncing) {
+            console.log('[Worker] Sync request skipped: Already in progress.');
+            return;
+        }
+        isSyncing = true;
         try {
             console.log('[Worker] Running Main YouTube/Twitch/Bilibili Sync...');
 
@@ -1857,13 +1855,25 @@ async function startWorker() {
             await db.collection('metadata').updateOne({ _id: 'last_update_jp' }, { $set: { timestamp: Date.now() } }, { upsert: true });
 
             console.log('[Worker] All Metadata Timestamps Updated.');
-        } catch (e) { console.error('[Worker] Main Sync Error:', e); }
+        } catch (e) {
+            console.error('[Worker] Sync execution error:', e);
+        } finally {
+            isSyncing = false;
+        }
+    };
+
+    // 2.3 Scheduled Loop (Every 20 mins - Start-to-Start)
+    const runMainSyncLoop = async () => {
+        const startTime = Date.now();
+        const INTERVAL = 20 * 60 * 1000; // 20 mins
+
+        await executeSyncTask();
 
         // Start-to-Start logic: Subtract execution time from interval
         const executionTime = Date.now() - startTime;
         const nextDelay = Math.max(0, INTERVAL - executionTime);
-        console.log(`[Worker] Main Sync finished in ${executionTime / 1000}s. Next run in ${nextDelay / 1000}s.`);
-        setTimeout(runMainSync, nextDelay);
+        console.log(`[Worker] Loop cycle finished in ${executionTime / 1000}s. Next run in ${nextDelay / 1000}s.`);
+        setTimeout(runMainSyncLoop, nextDelay);
     };
 
     // 3. Daily Backfill Service (Every 24 hours)
@@ -1910,6 +1920,31 @@ async function startWorker() {
         setTimeout(runBackfillService, 6 * 60 * 60 * 1000); // 6 Hours
     };
 
+    // --- Internal HTTP Server ---
+    const SERVER_PORT = process.env.PORT || 3000;
+    http.createServer(async (req, res) => {
+        if (req.method === 'POST' && req.url === '/trigger-sync') {
+            // Auth Check
+            const authHeader = req.headers['authorization'];
+            const pass = authHeader ? authHeader.replace('Bearer ', '') : null;
+            if (pass !== process.env.ADMIN_PASSWORD && pass !== process.env.CRON_SECRET) {
+                res.writeHead(401); res.end('Unauthorized'); return;
+            }
+
+            console.log('[Worker] Received Manual Sync Trigger via HTTP!');
+            // Run Sync Immediately (Fire and Forget)
+            executeSyncTask().catch(e => console.error('[Worker] Manual Sync Failed:', e));
+
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ success: true, message: 'Sync Triggered' }));
+            return;
+        }
+
+        // Default Keep-Alive
+        res.writeHead(200);
+        res.end('VSPO Worker Active');
+    }).listen(SERVER_PORT, '0.0.0.0', () => console.log(`[Worker] HTTP Server listening on port ${SERVER_PORT}`));
+
     // Start Loops
     console.log('[Worker] HTTP Server is ready. Scheduling tasks...');
 
@@ -1922,7 +1957,7 @@ async function startWorker() {
     }, 30000);
 
     // Stagger Main Sync by 40s (10s after Live Check)
-    setTimeout(runMainSync, 40000);
+    setTimeout(runMainSyncLoop, 40000);
 
     // Stagger Backfill by 5 minutes (to avoid conflict with initial syncs)
     setTimeout(runBackfillService, 5 * 60 * 1000);
