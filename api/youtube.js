@@ -58,11 +58,12 @@ const VSPO_MEMBERS = [
     { name: "Riko Solari", ytId: "UC7Xglp1fske9zmRe7Oj8YyA", twitchId: "1125216387" },
     { name: "Eris Suzukami", ytId: "UCp_3ej2br9l9L1DSoHVDZGw", twitchId: "" },
     // CN Members (Bilibili Only) - Add customAvatarUrl to fix WAF blocking
-    { name: "小針彩", ytId: "", twitchId: "", bilibiliId: "1972360561", customAvatarUrl: "https://i0.hdslb.com/bfs/face/ccee4b98198a72f5de3a8174f42431bdee357270.jpg" },
-    { name: "白咲露理", ytId: "", twitchId: "", bilibiliId: "1842209652", customAvatarUrl: "https://i0.hdslb.com/bfs/face/99aa887c27725e4d1dcf2ea071f04d8b29f457d4.jpg" },
-    { name: "帕妃", ytId: "", twitchId: "", bilibiliId: "1742801253", customAvatarUrl: "https://i2.hdslb.com/bfs/face/b9915ddaa2d7f1b4279d516d77207bef9cc31856.jpg" },
-    { name: "千郁郁", ytId: "", twitchId: "", bilibiliId: "1996441034", customAvatarUrl: "https://i1.hdslb.com/bfs/face/f9784adb001568cdc8f73f3435c0d5658af98c28.jpg" },
-    { name: "日向晴", ytId: "", twitchId: "", bilibiliId: "1833448662", customAvatarUrl: "https://i2.hdslb.com/bfs/face/39e4bb7ddf7330bcf11fd6c06f8428d8ad0f0f26.jpg" },
+    // bilibiliId = Live Room ID (for Live Status), bilibiliUid = Member ID (for Archives)
+    { name: "小針彩", ytId: "", twitchId: "", bilibiliId: "1972360561", bilibiliUid: "3546695948306751", customAvatarUrl: "https://i0.hdslb.com/bfs/face/ccee4b98198a72f5de3a8174f42431bdee357270.jpg" },
+    { name: "白咲露理", ytId: "", twitchId: "", bilibiliId: "1842209652", bilibiliUid: "3546695864421312", customAvatarUrl: "https://i0.hdslb.com/bfs/face/99aa887c27725e4d1dcf2ea071f04d8b29f457d4.jpg" },
+    { name: "帕妃", ytId: "", twitchId: "", bilibiliId: "1742801253", bilibiliUid: "3546695946209651", customAvatarUrl: "https://i2.hdslb.com/bfs/face/b9915ddaa2d7f1b4279d516d77207bef9cc31856.jpg" },
+    { name: "千郁郁", ytId: "", twitchId: "", bilibiliId: "1996441034", bilibiliUid: "3546695956695430", customAvatarUrl: "https://i1.hdslb.com/bfs/face/f9784adb001568cdc8f73f3435c0d5658af98c28.jpg" },
+    { name: "日向晴", ytId: "", twitchId: "", bilibiliId: "1833448662", bilibiliUid: "3546860864146139", customAvatarUrl: "https://i2.hdslb.com/bfs/face/39e4bb7ddf7330bcf11fd6c06f8428d8ad0f0f26.jpg" },
 ];
 
 
@@ -391,7 +392,7 @@ async function fetchTwitchArchives(userId) {
         // Fetch videos of type 'archive' (VODs)
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 30000); // 30s timeout
-        const res = await fetch(`https://api.twitch.tv/helix/videos?user_id=${userId}&type=archive&first=50`, {
+        const res = await fetch(`https://api.twitch.tv/helix/videos?user_id=${userId}&type=archive&first=20`, {
             headers: { 'Client-ID': process.env.TWITCH_CLIENT_ID, 'Authorization': `Bearer ${token}` },
             signal: controller.signal
         });
@@ -532,13 +533,24 @@ const syncBilibiliArchives = async (db) => {
     threeMonthsAgo.setMonth(threeMonthsAgo.getMonth() - 3);
 
     for (const member of members) {
-        // console.log(`[Bilibili] Checking ${member.name} (${member.bilibiliId})...`);
-        let videos = await fetchBilibiliArchivesWbi(member.bilibiliId);
+        if (!member.bilibiliUid) continue; // Skip if no UID (only Room ID)
+        // console.log(`[Bilibili] Checking ${member.name} (${member.bilibiliUid})...`);
+        let videos = await fetchBilibiliArchivesWbi(member.bilibiliUid);
 
         // Filter by retention (Bilibili timestamp is seconds)
+        // [Debug] Log incoming videos count and first video date
+        if (videos.length > 0) {
+            console.log(`[Bilibili] ${member.name}: Found ${videos.length} videos. First: ${new Date(videos[0].created * 1000).toISOString()}`);
+        } else {
+            console.log(`[Bilibili] ${member.name}: No videos found from API.`);
+        }
+
         videos = videos.filter(v => new Date(v.created * 1000) > threeMonthsAgo);
 
-        if (videos.length === 0) continue;
+        if (videos.length === 0) {
+            // console.log(`[Bilibili] ${member.name}: No recent videos after filter.`);
+            continue;
+        }
 
         const operations = videos.map(video => {
             const streamDoc = {
@@ -552,7 +564,7 @@ const syncBilibiliArchives = async (db) => {
                 channelId: member.bilibiliId,
                 channelTitle: video.author,
                 memberName: member.name,
-                memberId: member.ytId, // Map to YouTube ID for frontend filtering
+                memberId: member.ytId || member.bilibiliId, // Map to YouTube ID (or Room ID for CN) for frontend filtering
                 viewCount: video.play,
                 duration: video.length,
                 url: `https://www.bilibili.com/video/${video.bvid}`,

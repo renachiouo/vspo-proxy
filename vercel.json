@@ -27,5 +27,10 @@
       "source": "/api/:path*",
       "destination": "/api/youtube"
     }
-  ]
+  ],
+  "functions": {
+    "api/**/*.js": {
+      "maxDuration": 60
+    }
+  }
 }
