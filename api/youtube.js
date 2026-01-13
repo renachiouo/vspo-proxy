@@ -853,7 +853,7 @@ const v12_logic = {
         console.log(`[Cleanup] Deleted ${resCN.deletedCount} CN videos and ${resJP.deletedCount} JP videos.`);
     },
 
-    async updateAndStoreYouTubeData(db) {
+    async updateAndStoreYouTubeData(db, force = false) {
         // Global Timeout for Main YouTube Update (3 mins)
         // If it hangs, it throws, ensuring the main lock is released in caller
         const globalTimeout = new Promise((_, reject) => setTimeout(() => reject(new Error('YouTube Update (CN) Timed Out')), 180000));
@@ -878,7 +878,7 @@ const v12_logic = {
             const preSyncWork = (async () => {
                 try { await syncTwitchArchives(db); } catch (e) { console.warn('Pre-sync Twitch Failed:', e.message); }
                 try { await syncBilibiliArchives(db); } catch (e) { console.warn('Pre-sync Bilibili Failed:', e.message); }
-                try { await v12_logic.updateMemberStreams(db); } catch (e) { console.warn('Pre-sync YouTube Streams Failed:', e.message); }
+                try { await v12_logic.updateMemberStreams(db, force); } catch (e) { console.warn('Pre-sync YouTube Streams Failed:', e.message); }
             })();
             try {
                 await Promise.race([preSyncWork, preSyncTimeout]);
@@ -1123,15 +1123,17 @@ const v12_logic = {
         }
     },
 
-    async updateMemberStreams(db) {
-        console.log('[Mongo] Updating Member Streams (Forward Fetch)...');
+    async updateMemberStreams(db, force = false) {
+        console.log(`[Mongo] Updating Member Streams (Forward Fetch)... ${force ? '[FORCE]' : ''}`);
 
-        // 1. Check Interval
-        const meta = await db.collection('metadata').findOne({ _id: 'last_stream_update' });
-        const lastUpdate = meta?.timestamp || 0;
-        if (Date.now() - lastUpdate < STREAM_UPDATE_INTERVAL_SECONDS * 1000) {
-            console.log('[Mongo] Stream Update Skipped (Interval not met).');
-            return;
+        // 1. Check Interval (Skip if not forced)
+        if (!force) {
+            const meta = await db.collection('metadata').findOne({ _id: 'last_stream_update' });
+            const lastUpdate = meta?.timestamp || 0;
+            if (Date.now() - lastUpdate < STREAM_UPDATE_INTERVAL_SECONDS * 1000) {
+                console.log('[Mongo] Stream Update Skipped (Interval not met).');
+                return;
+            }
         }
 
         // 2. Update Timestamp immediately to prevent concurrent runs

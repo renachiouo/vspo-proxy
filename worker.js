@@ -1835,17 +1835,17 @@ async function startWorker() {
 
     // 2. Main Data Sync Logic (Reusable)
     let isSyncing = false;
-    const executeSyncTask = async () => {
+    const executeSyncTask = async (force = false) => {
         if (isSyncing) {
             console.log('[Worker] Sync request skipped: Already in progress.');
             return;
         }
         isSyncing = true;
         try {
-            console.log('[Worker] Running Main YouTube/Twitch/Bilibili Sync...');
+            console.log(`[Worker] Running Main YouTube/Twitch/Bilibili Sync... ${force ? '(FORCED)' : ''}`);
 
-            // 2.1 CN Update
-            await v12_logic.updateAndStoreYouTubeData(db);
+            // 2.1 CN Update (Pass force flag)
+            await v12_logic.updateAndStoreYouTubeData(db, force);
             await db.collection('metadata').updateOne({ _id: 'last_update_cn' }, { $set: { timestamp: Date.now() } }, { upsert: true });
 
             // 2.2 JP Update (Whitelist + Keywords)
@@ -1867,7 +1867,7 @@ async function startWorker() {
         const startTime = Date.now();
         const INTERVAL = 20 * 60 * 1000; // 20 mins
 
-        await executeSyncTask();
+        await executeSyncTask(false); // Normal scheduled run (Respects intervals)
 
         // Start-to-Start logic: Subtract execution time from interval
         const executionTime = Date.now() - startTime;
@@ -1932,8 +1932,8 @@ async function startWorker() {
             }
 
             console.log('[Worker] Received Manual Sync Trigger via HTTP!');
-            // Run Sync Immediately (Fire and Forget)
-            executeSyncTask().catch(e => console.error('[Worker] Manual Sync Failed:', e));
+            // Run Sync Immediately (Fire and Forget, Force = true)
+            executeSyncTask(true).catch(e => console.error('[Worker] Manual Sync Failed:', e));
 
             res.writeHead(200, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ success: true, message: 'Sync Triggered' }));
