@@ -1,5 +1,6 @@
 
 import { MongoClient } from 'mongodb';
+import crypto from 'crypto';
 
 // --- Configuration ---
 const SCRIPT_VERSION = '17.4-FIXED';
@@ -532,7 +533,7 @@ const syncBilibiliArchives = async (db) => {
 
     for (const member of members) {
         // console.log(`[Bilibili] Checking ${member.name} (${member.bilibiliId})...`);
-        let videos = await fetchBilibiliArchivesV2(member.bilibiliId);
+        let videos = await fetchBilibiliArchivesWbi(member.bilibiliId);
 
         // Filter by retention (Bilibili timestamp is seconds)
         videos = videos.filter(v => new Date(v.created * 1000) > threeMonthsAgo);
@@ -1693,7 +1694,15 @@ export default async function handler(req, res) {
                                     await v12_logic.updateMemberStreams(db);
                                     // Also Sync Twitch & Bilibili Archives
                                     try { await syncTwitchArchives(db); } catch (e) { console.error('BG Twitch Sync Failed:', e); }
-                                    try { await syncBilibiliArchives(db); } catch (e) { console.error('BG Bilibili Sync Failed:', e); }
+
+                                    // Sync Bilibili Archives (Every 60 mins)
+                                    try {
+                                        const biliMeta = await db.collection('metadata').findOne({ _id: 'last_bilibili_sync' });
+                                        if (!biliMeta || Date.now() - biliMeta.timestamp > 3600 * 1000) {
+                                            await db.collection('metadata').updateOne({ _id: 'last_bilibili_sync' }, { $set: { timestamp: Date.now() } }, { upsert: true });
+                                            await syncBilibiliArchives(db);
+                                        }
+                                    } catch (e) { console.error('BG Bilibili Sync Failed:', e); }
                                 }
                             } catch (e) {
                                 console.error('BG Update:', e);
@@ -2176,6 +2185,103 @@ async function fetchBilibiliArchivesV2(mid) {
 
     console.error(`[Bilibili] All RSSHub instances failed for ${mid}`);
     return [];
+}
+
+// --- Bilibili Wbi Signed API Logic (Authenticated) ---
+const mixinKeyEncTab = [
+    46, 47, 18, 2, 53, 8, 23, 32, 15, 50, 10, 31, 58, 3, 45, 35, 27, 43, 5, 49,
+    33, 9, 42, 19, 29, 28, 14, 39, 12, 38, 41, 13, 37, 48, 7, 16, 24, 55, 40,
+    61, 26, 17, 0, 1, 60, 51, 30, 4, 22, 25, 54, 21, 56, 59, 6, 63, 57, 62, 11,
+    36, 20, 34, 44, 52
+];
+
+const getMixinKey = (orig) => mixinKeyEncTab.map(n => orig[n]).join('').slice(0, 32);
+
+async function getWbiKeys() {
+    const sessdata = process.env.BILIBILI_SESSDATA;
+    const headers = { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' };
+    if (sessdata) headers['Cookie'] = `SESSDATA=${sessdata}`;
+
+    const res = await fetch('https://api.bilibili.com/x/web-interface/nav', { headers });
+    const json = await res.json();
+    if (!json.data || !json.data.wbi_img) {
+        console.warn('[Bilibili] Failed to get Wbi Keys, response:', json);
+        throw new Error('Failed to get Wbi Keys');
+    }
+
+    const img_url = json.data.wbi_img.img_url;
+    const sub_url = json.data.wbi_img.sub_url;
+
+    return {
+        img_key: img_url.substring(img_url.lastIndexOf('/') + 1, img_url.lastIndexOf('.')),
+        sub_key: sub_url.substring(sub_url.lastIndexOf('/') + 1, sub_url.lastIndexOf('.'))
+    };
+}
+
+function encWbi(params, img_key, sub_key) {
+    const mixin_key = getMixinKey(img_key + sub_key);
+    const curr_time = Math.round(Date.now() / 1000);
+    const chr_filter = /[!'()*]/g;
+    const new_params = { ...params, wts: curr_time };
+    const query = Object.keys(new_params).sort().map(key => {
+        let value = new_params[key];
+        if (typeof value === 'string') value = value.replace(chr_filter, '');
+        return `${encodeURIComponent(key)}=${encodeURIComponent(value)}`;
+    }).join('&');
+    const wbi_sign = crypto.createHash('md5').update(query + mixin_key).digest('hex');
+    return query + '&w_rid=' + wbi_sign;
+}
+
+async function fetchBilibiliArchivesWbi(mid) {
+    try {
+        const { img_key, sub_key } = await getWbiKeys();
+        const params = { mid, ps: 30, tid: 0, keyword: '', order: 'pubdate', pn: 1, web_location: 1550101, order_avoided: true };
+        const query = encWbi(params, img_key, sub_key);
+        const url = `https://api.bilibili.com/x/space/wbi/arc/search?${query}`;
+
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 10000);
+
+        const sessdata = process.env.BILIBILI_SESSDATA;
+        const headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Referer': `https://space.bilibili.com/${mid}/video`,
+            'Origin': 'https://space.bilibili.com'
+        };
+        if (sessdata) headers['Cookie'] = `SESSDATA=${sessdata}`;
+
+        const res = await fetch(url, { headers, signal: controller.signal });
+        clearTimeout(timeoutId);
+
+        if (!res.ok) {
+            console.error(`[Bilibili] HTTP Error ${res.status} for ${mid}`);
+            // If 412 or 403, might need to rotate cookie or slow down
+            return [];
+        }
+
+        const data = await res.json();
+        if (data.code !== 0) {
+            console.error(`[Bilibili] API Error ${data.code} for ${mid}: ${data.message}`);
+            return [];
+        }
+
+        const vlist = data.data?.list?.vlist || [];
+        if (vlist.length === 0) return [];
+
+        return vlist.map(v => ({
+            bvid: v.bvid,
+            title: v.title,
+            pic: v.pic,
+            author: v.author,
+            created: v.created, // Correct timestamp in seconds
+            play: v.play,
+            length: v.length // Duration string "MM:SS"
+        }));
+
+    } catch (e) {
+        console.error(`[Bilibili] Fetch Error MID=${mid}:`, e.message);
+        return [];
+    }
 }
 
 export { v12_logic, syncTwitchArchives, syncBilibiliArchives };
