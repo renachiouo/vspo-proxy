@@ -2,6 +2,14 @@
 import 'dotenv/config';
 import { MongoClient } from 'mongodb';
 import crypto from 'crypto';
+import http from 'http';
+
+// --- Minimal HTTP Server for Render Keep-Alive ---
+const PORT = process.env.PORT || 3000;
+http.createServer((req, res) => {
+    res.writeHead(200, { 'Content-Type': 'text/plain' });
+    res.end('VSPO Worker Active');
+}).listen(PORT, () => console.log(`[Worker] Keep-Alive Server listening on port ${PORT}`));
 
 // --- Configuration ---
 const SCRIPT_VERSION = '17.4-FIXED';
@@ -1599,6 +1607,218 @@ const v12_logic = {
         }
     },
 };
+
+
+// --- Bilibili Helpers (Extracted from youtube.js) ---
+const mixinKeyEncTab = [
+    46, 47, 18, 2, 53, 8, 23, 32, 15, 50, 10, 31, 58, 3, 45, 35, 27, 43, 5, 49,
+    33, 9, 42, 19, 29, 28, 14, 39, 12, 38, 41, 13, 37, 48, 7, 16, 24, 55, 40,
+    61, 26, 17, 0, 1, 60, 51, 30, 4, 22, 25, 54, 21, 56, 59, 6, 63, 57, 62, 11,
+    36, 20, 34, 44, 52
+];
+
+const getMixinKey = (orig) => mixinKeyEncTab.map(n => orig[n]).join('').slice(0, 32);
+
+async function getWbiKeys() {
+    const sessdata = process.env.BILIBILI_SESSDATA;
+    const headers = { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' };
+    if (sessdata) headers['Cookie'] = `SESSDATA=${sessdata}`;
+
+    const res = await fetch('https://api.bilibili.com/x/web-interface/nav', { headers });
+    const json = await res.json();
+    if (!json.data || !json.data.wbi_img) {
+        console.warn('[Bilibili] Failed to get Wbi Keys, response:', json);
+        throw new Error('Failed to get Wbi Keys');
+    }
+
+    const img_url = json.data.wbi_img.img_url;
+    const sub_url = json.data.wbi_img.sub_url;
+
+    return {
+        img_key: img_url.substring(img_url.lastIndexOf('/') + 1, img_url.lastIndexOf('.')),
+        sub_key: sub_url.substring(sub_url.lastIndexOf('/') + 1, sub_url.lastIndexOf('.'))
+    };
+}
+
+function encWbi(params, img_key, sub_key) {
+    const mixin_key = getMixinKey(img_key + sub_key);
+    const curr_time = Math.round(Date.now() / 1000);
+    const chr_filter = /[!'()*]/g;
+    const new_params = { ...params, wts: curr_time };
+    const query = Object.keys(new_params).sort().map(key => {
+        let value = new_params[key];
+        if (typeof value === 'string') value = value.replace(chr_filter, '');
+        return `${encodeURIComponent(key)}=${encodeURIComponent(value)}`;
+    }).join('&');
+    const wbi_sign = crypto.createHash('md5').update(query + mixin_key).digest('hex');
+    return query + '&w_rid=' + wbi_sign;
+}
+
+async function fetchBilibiliArchivesWbi(mid) {
+    try {
+        const { img_key, sub_key } = await getWbiKeys();
+        const params = { mid, ps: 100, tid: 0, keyword: '', order: 'pubdate', pn: 1, web_location: 1550101, order_avoided: true };
+        const query = encWbi(params, img_key, sub_key);
+        const url = `https://api.bilibili.com/x/space/wbi/arc/search?${query}`;
+
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 10000);
+
+        const sessdata = process.env.BILIBILI_SESSDATA;
+        const headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Referer': `https://space.bilibili.com/${mid}/video`,
+            'Origin': 'https://space.bilibili.com'
+        };
+        if (sessdata) headers['Cookie'] = `SESSDATA=${sessdata}`;
+
+        const res = await fetch(url, { headers, signal: controller.signal });
+        clearTimeout(timeoutId);
+
+        if (!res.ok) return [];
+        const data = await res.json();
+        if (data.code !== 0) return [];
+
+        const vlist = data.data?.list?.vlist || [];
+        return vlist.map(v => ({
+            bvid: v.bvid,
+            title: v.title,
+            pic: v.pic,
+            author: v.author,
+            created: v.created,
+            play: v.play,
+            length: v.length
+        }));
+    } catch (e) {
+        console.error(`[Bilibili] Fetch Error MID=${mid}:`, e.message);
+        return [];
+    }
+}
+
+function formatBilibiliDuration(val) {
+    if (!val) return '00:00';
+    if (typeof val === 'number') {
+        const h = Math.floor(val / 3600);
+        const m = Math.floor((val % 3600) / 60);
+        const s = val % 60;
+        return h > 0
+            ? `${h}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`
+            : `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+    }
+    return val;
+}
+
+async function fetchBilibiliCollections(mid) {
+    try {
+        const url = `https://api.bilibili.com/x/polymer/web-space/seasons_series_list?mid=${mid}&page_num=1&page_size=20`;
+        const headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+            'Referer': `https://space.bilibili.com/${mid}/video`,
+            'Origin': 'https://space.bilibili.com'
+        };
+        const sessdata = process.env.BILIBILI_SESSDATA;
+        if (sessdata) headers['Cookie'] = `SESSDATA=${sessdata}`;
+
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 10000);
+        const res = await fetch(url, { headers, signal: controller.signal });
+        clearTimeout(timeoutId);
+
+        if (!res.ok) return [];
+        const data = await res.json();
+        if (data.code !== 0) return [];
+
+        const items = data.data?.items_lists || {};
+        const collections = [];
+        if (items.seasons_list) {
+            items.seasons_list.forEach(s => {
+                const id = s.meta?.season_id || s.season_id;
+                if (id) collections.push({ type: 'season', id: id, name: s.meta?.name || s.name });
+            });
+        }
+        if (items.series_list) {
+            items.series_list.forEach(s => {
+                const id = s.meta?.series_id || s.series_id || s.sid;
+                if (id) collections.push({ type: 'series', id: id, name: s.meta?.name || s.name });
+            });
+        }
+        return collections;
+    } catch (e) { return []; }
+}
+
+async function fetchBilibiliSeriesArchives(mid, seriesId, memberName = '') {
+    let allVideos = [];
+    try {
+        for (let page = 1; page <= 3; page++) {
+            const url = `https://api.bilibili.com/x/series/archives?mid=${mid}&series_id=${seriesId}&sort=desc&pn=${page}&ps=30`;
+            const headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+                'Referer': `https://space.bilibili.com/${mid}/video`,
+                'Origin': 'https://space.bilibili.com'
+            };
+            const sessdata = process.env.BILIBILI_SESSDATA;
+            if (sessdata) headers['Cookie'] = `SESSDATA=${sessdata}`;
+
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 15000);
+            const res = await fetch(url, { headers, signal: controller.signal });
+            clearTimeout(timeoutId);
+
+            if (!res.ok) break;
+            const data = await res.json();
+            if (data.code !== 0) break;
+
+            const archives = data.data?.archives || [];
+            if (archives.length === 0) break;
+            const pageVideos = archives.map(v => ({
+                bvid: v.bvid, title: v.title, pic: v.pic,
+                author: memberName || v.owner?.name || '',
+                created: v.pubdate, play: v.stat?.view || 0, length: v.duration
+            }));
+            allVideos = [...allVideos, ...pageVideos];
+            if (archives.length < 30) break;
+            await new Promise(r => setTimeout(r, 1000));
+        }
+        return allVideos;
+    } catch (e) { return allVideos; }
+}
+
+async function fetchBilibiliSeasonArchives(mid, seasonId, memberName = '') {
+    let allVideos = [];
+    try {
+        for (let page = 1; page <= 3; page++) {
+            const url = `https://api.bilibili.com/x/polymer/web-space/seasons_archives?mid=${mid}&season_id=${seasonId}&page_num=${page}&page_size=30`;
+            const headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+                'Referer': `https://space.bilibili.com/${mid}/video`,
+                'Origin': 'https://space.bilibili.com'
+            };
+            const sessdata = process.env.BILIBILI_SESSDATA;
+            if (sessdata) headers['Cookie'] = `SESSDATA=${sessdata}`;
+
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 15000);
+            const res = await fetch(url, { headers, signal: controller.signal });
+            clearTimeout(timeoutId);
+
+            if (!res.ok) break;
+            const data = await res.json();
+            if (data.code !== 0) break;
+
+            const archives = data.data?.archives || [];
+            if (archives.length === 0) break;
+            const pageVideos = archives.map(v => ({
+                bvid: v.bvid, title: v.title, pic: v.pic,
+                author: memberName || v.owner?.name || '',
+                created: v.pubdate, play: v.stat?.view || 0, length: v.duration
+            }));
+            allVideos = [...allVideos, ...pageVideos];
+            if (archives.length < 30) break;
+            await new Promise(r => setTimeout(r, 1000));
+        }
+        return allVideos;
+    } catch (e) { return allVideos; }
+}
 
 // --- Worker Entry Point ---
 async function startWorker() {
