@@ -18,6 +18,8 @@ repair_*.js
 sync_*.js
 verify-temp.js
 inspect_streams.js
+find_latest_url.cjs
+find_working_url.cjs
 
 # Logs
 *.log
@@ -27,6 +29,13 @@ yarn-error.log*
 # Admin Scripts
 create_indexes.js
 manual_add_live.cjs
+manual_stream_test.js
+manual_migrate.js
+manual_migrate_v2.js
+manual_migrate_v3.js
+migrate_links.js
+current_committed_code.js
+check_live_response.cjs
 
 # Temp files
 
@@ -38,21 +47,6 @@ manual_add_live.cjs
 channel_analyzer.cjs
 reset_key.cjs
 report_*.json
-
 check_quota.cjs
 quota_log.txt
-
-# API Key Verification
 verify_api_keys.js
-
-manual_stream_test.js
-
-migrate_links.js
-
-manual_migrate.js
-
-manual_migrate_v2.js
-
-manual_migrate_v3.js
-
-check_live_response.cjs
