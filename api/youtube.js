@@ -315,6 +315,8 @@ function parseOriginalStreamInfo(description) {
     if (split?.[1]) return { platform: 'youtube', id: split[1] };
     const tw = description.match(/(?:https?:\/\/)?(?:www\.)?twitch\.tv\/videos\/(\d+)/);
     if (tw?.[1]) return { platform: 'twitch', id: tw[1] };
+    const bili = description.match(/(?:https?:\/\/)?(?:www\.)?bilibili\.com\/video\/(BV[a-zA-Z0-9]+)/);
+    if (bili?.[1]) return { platform: 'bilibili', id: bili[1] };
     return null;
 }
 
@@ -333,6 +335,13 @@ function parseAllStreamInfos(description) {
     const twRegex = /(?:https?:\/\/)?(?:www\.|m\.)?twitch\.tv\/videos\/(\d+)/g;
     while ((valid = twRegex.exec(description)) !== null) {
         results.push({ platform: 'twitch', id: valid[1] });
+    }
+
+    // [NEW] Bilibili Regex (Global)
+    // Supports: bilibili.com/video/BV...
+    const biliRegex = /(?:https?:\/\/)?(?:www\.)?bilibili\.com\/video\/(BV[a-zA-Z0-9]+)/g;
+    while ((valid = biliRegex.exec(description)) !== null) {
+        results.push({ platform: 'bilibili', id: valid[1] });
     }
 
     // Deduplicate by ID
@@ -532,10 +541,26 @@ const syncBilibiliArchives = async (db) => {
     const threeMonthsAgo = new Date();
     threeMonthsAgo.setMonth(threeMonthsAgo.getMonth() - 3);
 
-    for (const member of members) {
-        if (!member.bilibiliUid) continue; // Skip if no UID (only Room ID)
+    // [Safety Strategy] 1 Member Per Run (Approx every 20 mins)
+    // 5 Members = Cycle every 100 mins (~1.5 hours)
+    // This prevents timeout (Vercel 60s limit) and bans (Low frequency)
+    const cronIndex = Math.floor(Date.now() / (20 * 60 * 1000)); // Change every 20 mins
+    const memberIndex = cronIndex % members.length;
+    const member = members[memberIndex];
+
+    console.log(`[Bilibili] Rotation: Processing ${member.name} (${memberIndex + 1}/${members.length})`);
+
+    try {
+        if (!member.bilibiliUid) {
+            console.log(`[Bilibili] ${member.name} has no UID. Skipping.`);
+            return 0;
+        }
+
         // console.log(`[Bilibili] Checking ${member.name} (${member.bilibiliUid})...`);
         let videos = await fetchBilibiliArchivesWbi(member.bilibiliUid);
+
+        // [Safety Delay]
+        await new Promise(r => setTimeout(r, 5000)); // 5s delay
 
         // [NEW] Fetch Series Archives (Live Replays captured in Collections)
         try {
@@ -551,7 +576,7 @@ const syncBilibiliArchives = async (db) => {
                         videos = [...videos, ...seriesVideos];
                     }
                     // Small delay to be gentle with API
-                    await new Promise(r => setTimeout(r, 2000)); // 2s delay
+                    await new Promise(r => setTimeout(r, 5000)); // 5s delay
                 }
             }
         } catch (e) {
@@ -571,45 +596,45 @@ const syncBilibiliArchives = async (db) => {
 
         videos = videos.filter(v => new Date(v.created * 1000) > threeMonthsAgo);
 
-        if (videos.length === 0) {
-            // console.log(`[Bilibili] ${member.name}: No recent videos after filter.`);
-            continue;
+        if (videos.length > 0) {
+            const operations = videos.map(video => {
+                const streamDoc = {
+                    _id: video.bvid, // Explicitly set ID
+                    streamId: video.bvid,
+                    platform: 'bilibili',
+                    title: video.title,
+                    thumbnail: video.pic ? video.pic.replace('http:', 'https:') : '',
+                    startTime: new Date(video.created * 1000),
+                    status: 'completed',
+                    channelId: member.bilibiliId,
+                    channelTitle: video.author,
+                    memberName: member.name,
+                    memberId: member.ytId || member.bilibiliId, // Map to YouTube ID (or Room ID for CN) for frontend filtering
+                    viewCount: video.play,
+                    duration: video.length,
+                    url: `https://www.bilibili.com/video/${video.bvid}`,
+                    updatedAt: new Date()
+                };
+
+                return {
+                    updateOne: {
+                        filter: { streamId: video.bvid, platform: 'bilibili' },
+                        update: { $set: streamDoc },
+                        upsert: true
+                    }
+                };
+            });
+
+            if (operations.length > 0) {
+                const result = await db.collection('streams').bulkWrite(operations);
+                totalUpserted += (result.upsertedCount + result.modifiedCount);
+            }
         }
 
-        const operations = videos.map(video => {
-            const streamDoc = {
-                _id: video.bvid, // Explicitly set ID
-                streamId: video.bvid,
-                platform: 'bilibili',
-                title: video.title,
-                thumbnail: video.pic ? video.pic.replace('http:', 'https:') : '',
-                startTime: new Date(video.created * 1000),
-                status: 'completed',
-                channelId: member.bilibiliId,
-                channelTitle: video.author,
-                memberName: member.name,
-                memberId: member.ytId || member.bilibiliId, // Map to YouTube ID (or Room ID for CN) for frontend filtering
-                viewCount: video.play,
-                duration: video.length,
-                url: `https://www.bilibili.com/video/${video.bvid}`,
-                updatedAt: new Date()
-            };
-
-            return {
-                updateOne: {
-                    filter: { streamId: video.bvid, platform: 'bilibili' },
-                    update: { $set: streamDoc },
-                    upsert: true
-                }
-            };
-        });
-
-        if (operations.length > 0) {
-            const result = await db.collection('streams').bulkWrite(operations);
-            totalUpserted += (result.upsertedCount + result.modifiedCount);
-        }
-        await new Promise(r => setTimeout(r, 2000)); // Be gentler with Bilibili (2s delay)
+    } catch (e) {
+        console.error(`[Bilibili] Critical Error processing ${member.name}:`, e);
     }
+
     console.log(`[Bilibili] Archive Sync Completed. Processed ${totalUpserted} streams.`);
     return totalUpserted;
 };
