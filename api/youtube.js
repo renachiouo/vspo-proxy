@@ -1087,7 +1087,7 @@ const v12_logic = {
 
                 // C. Check Video Details for Live Streaming Info
                 const vRes = await fetchYouTube('videos', {
-                    part: 'liveStreamingDetails,snippet,statistics',
+                    part: 'liveStreamingDetails,snippet,statistics,contentDetails',
                     id: videosToCheck.join(',')
                 });
 
@@ -1118,6 +1118,7 @@ const v12_logic = {
                         thumbnail: item.snippet.thumbnails.maxres?.url || item.snippet.thumbnails.high?.url,
                         status: live.actualEndTime ? 'ended' : 'live', // Simple status
                         scheduledStartTime: live.scheduledStartTime ? new Date(live.scheduledStartTime) : null,
+                        duration: item.contentDetails?.duration || null, // [NEW] Store accurate duration from YouTube
                         isClipProhibited // [NEW] Prohibited Flag
                     };
 
