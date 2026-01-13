@@ -1831,11 +1831,14 @@ export default async function handler(req, res) {
                 (process.env.CRON_SECRET && pass === process.env.CRON_SECRET);
         };
 
+        // [OPTIMIZATION] Vercel is now Read-Only. Update logic is handled by Render Worker.
+        /* 
+        // --- Original Logic (Preserved for Reference) ---
         if (forceRefresh) {
             if (!authenticate()) return res.status(401).json({ error: 'Unauthorized' });
             if (isForeign) {
                 await v12_logic.updateForeignClips(db);
-                await v12_logic.updateForeignClipsKeywords(db); // Force refresh does both
+                await v12_logic.updateForeignClipsKeywords(db); // Force refresh both
             }
             else {
                 await v12_logic.updateAndStoreYouTubeData(db);
@@ -1943,6 +1946,15 @@ export default async function handler(req, res) {
                 });
             }
         }
+        */
+
+        if (forceRefresh) {
+            console.log('Force Refresh requested but Vercel is in Read-Only mode.');
+        }
+
+        // Skip all update logic
+        logOutcome(`read_only_mode_${lang}`);
+
 
         // Fix: Use 'source' to query, so 'type' can be 'video'/'short'
         const blacklistDoc = await db.collection('lists').findOne({ _id: isForeign ? 'blacklist_jp' : 'blacklist_cn' });

@@ -6,10 +6,11 @@ import http from 'http';
 
 // --- Minimal HTTP Server for Render Keep-Alive ---
 const PORT = process.env.PORT || 3000;
+console.log(`[Worker] Attempting to start HTTP server on port ${PORT}...`);
 http.createServer((req, res) => {
     res.writeHead(200, { 'Content-Type': 'text/plain' });
     res.end('VSPO Worker Active');
-}).listen(PORT, () => console.log(`[Worker] Keep-Alive Server listening on port ${PORT}`));
+}).listen(PORT, '0.0.0.0', () => console.log(`[Worker] Keep-Alive Server listening on port ${PORT}`));
 
 // --- Configuration ---
 const SCRIPT_VERSION = '17.4-FIXED';
