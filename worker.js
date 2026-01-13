@@ -1822,27 +1822,8 @@ async function fetchBilibiliSeasonArchives(mid, seasonId, memberName = '') {
 }
 
 // --- Helpers ---
-function parseAllStreamInfos(description) {
-    if (!description) return [];
-    const results = [];
-    // YouTube Regex (Global)
-    const ytRegex = /(?:https?:\/\/)?(?:www\.)?(?:youtube\.com\/(?:watch\?v=|live\/)|youtu\.be\/)([a-zA-Z0-9_-]{11})/g;
-    let valid;
-    while ((valid = ytRegex.exec(description)) !== null) {
-        results.push({ platform: 'youtube', id: valid[1] });
-    }
-    // Twitch Regex (Global)
-    const twRegex = /(?:https?:\/\/)?(?:www\.|m\.)?twitch\.tv\/videos\/(\d+)/g;
-    while ((valid = twRegex.exec(description)) !== null) {
-        results.push({ platform: 'twitch', id: valid[1] });
-    }
-    // Bilibili Regex (Global)
-    const biliRegex = /(?:https?:\/\/)?(?:www\.)?bilibili\.com\/video\/(BV[a-zA-Z0-9]+)/g;
-    while ((valid = biliRegex.exec(description)) !== null) {
-        results.push({ platform: 'bilibili', id: valid[1] });
-    }
-    return [...new Map(results.map(item => [item.id, item])).values()];
-}
+// (parseAllStreamInfos was already defined above, so removing duplicate)
+
 
 // --- Worker Entry Point ---
 async function startWorker() {
