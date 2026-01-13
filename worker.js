@@ -1821,6 +1821,29 @@ async function fetchBilibiliSeasonArchives(mid, seasonId, memberName = '') {
     } catch (e) { return allVideos; }
 }
 
+// --- Helpers ---
+function parseAllStreamInfos(description) {
+    if (!description) return [];
+    const results = [];
+    // YouTube Regex (Global)
+    const ytRegex = /(?:https?:\/\/)?(?:www\.)?(?:youtube\.com\/(?:watch\?v=|live\/)|youtu\.be\/)([a-zA-Z0-9_-]{11})/g;
+    let valid;
+    while ((valid = ytRegex.exec(description)) !== null) {
+        results.push({ platform: 'youtube', id: valid[1] });
+    }
+    // Twitch Regex (Global)
+    const twRegex = /(?:https?:\/\/)?(?:www\.|m\.)?twitch\.tv\/videos\/(\d+)/g;
+    while ((valid = twRegex.exec(description)) !== null) {
+        results.push({ platform: 'twitch', id: valid[1] });
+    }
+    // Bilibili Regex (Global)
+    const biliRegex = /(?:https?:\/\/)?(?:www\.)?bilibili\.com\/video\/(BV[a-zA-Z0-9]+)/g;
+    while ((valid = biliRegex.exec(description)) !== null) {
+        results.push({ platform: 'bilibili', id: valid[1] });
+    }
+    return [...new Map(results.map(item => [item.id, item])).values()];
+}
+
 // --- Worker Entry Point ---
 async function startWorker() {
     console.log(`[Worker] Starting VSPO Proxy Worker v${SCRIPT_VERSION}...`);
@@ -1835,13 +1858,75 @@ async function startWorker() {
         setTimeout(runLiveCheck, 5 * 60 * 1000);
     };
 
-    // 2. Main Data Sync Loop (Every 20 mins)
+    // 2. Main Data Sync Loop (Every 20 mins - Start-to-Start)
     const runMainSync = async () => {
+        const startTime = Date.now();
+        const INTERVAL = 20 * 60 * 1000; // 20 mins
         try {
             console.log('[Worker] Running Main YouTube/Twitch/Bilibili Sync...');
+
+            // 2.1 CN Update
             await v12_logic.updateAndStoreYouTubeData(db);
+            await db.collection('metadata').updateOne({ _id: 'last_update_cn' }, { $set: { timestamp: Date.now() } }, { upsert: true });
+
+            // 2.2 JP Update (Whitelist + Keywords)
+            console.log('[Worker] Running JP Clips Update...');
+            await v12_logic.updateForeignClips(db);
+            await v12_logic.updateForeignClipsKeywords(db);
+            await db.collection('metadata').updateOne({ _id: 'last_update_jp' }, { $set: { timestamp: Date.now() } }, { upsert: true });
+
+            console.log('[Worker] All Metadata Timestamps Updated.');
         } catch (e) { console.error('[Worker] Main Sync Error:', e); }
-        setTimeout(runMainSync, 20 * 60 * 1000); // 20 mins
+
+        // Start-to-Start logic: Subtract execution time from interval
+        const executionTime = Date.now() - startTime;
+        const nextDelay = Math.max(0, INTERVAL - executionTime);
+        console.log(`[Worker] Main Sync finished in ${executionTime / 1000}s. Next run in ${nextDelay / 1000}s.`);
+        setTimeout(runMainSync, nextDelay);
+    };
+
+    // 3. Daily Backfill Service (Every 24 hours)
+    const runBackfillService = async () => {
+        try {
+            console.log('[Worker] Running Daily Backfill Service...');
+            const lookbackDays = 7;
+            const cutoffDate = new Date();
+            cutoffDate.setDate(cutoffDate.getDate() - lookbackDays);
+
+            const videosToCheck = await db.collection('videos').find({
+                publishedAt: { $gte: cutoffDate },
+                $or: [
+                    { relatedStreamIds: { $exists: false } },
+                    { relatedStreamIds: { $size: 0 } },
+                    { relatedStreamIds: null }
+                ]
+            }).toArray();
+
+            console.log(`[Backfill] Found ${videosToCheck.length} recent videos to check for links.`);
+
+            let updatedCount = 0;
+            for (const video of videosToCheck) {
+                const osis = parseAllStreamInfos(video.searchableText || '');
+                if (osis.length > 0) {
+                    const candidateIds = osis.map(o => o.id);
+                    const validStreams = await db.collection('streams').find(
+                        { _id: { $in: candidateIds } },
+                        { projection: { _id: 1 } }
+                    ).toArray();
+
+                    if (validStreams.length > 0) {
+                        const streamIds = validStreams.map(s => s._id);
+                        await db.collection('videos').updateOne(
+                            { _id: video._id },
+                            { $set: { relatedStreamIds: streamIds, relatedStreamId: streamIds[0] } }
+                        );
+                        updatedCount++;
+                    }
+                }
+            }
+            console.log(`[Backfill] Complete. Updated ${updatedCount} videos.`);
+        } catch (e) { console.error('[Worker] Backfill Error:', e); }
+        setTimeout(runBackfillService, 6 * 60 * 60 * 1000); // 6 Hours
     };
 
     // Start Loops
@@ -1857,6 +1942,9 @@ async function startWorker() {
 
     // Stagger Main Sync by 40s (10s after Live Check)
     setTimeout(runMainSync, 40000);
+
+    // Stagger Backfill by 5 minutes (to avoid conflict with initial syncs)
+    setTimeout(runBackfillService, 5 * 60 * 1000);
 
     console.log('[Worker] Loops scheduled. Press Ctrl+C to exit.');
 
