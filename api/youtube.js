@@ -509,11 +509,20 @@ const syncTwitchArchives = async (db) => {
 
         await Promise.race([syncWork, globalTimeout]);
         console.log(`[Twitch] Archive Sync Completed. Processed ${totalUpserted} streams.`);
-    } catch (e) {
-        console.warn(`[Twitch] Sync aborted: ${e.message}. Processed ${totalUpserted} streams before timeout.`);
-    }
 
-    return totalUpserted;
+        if (totalUpserted > 0) {
+            await db.collection('metadata').updateOne(
+                { _id: 'sync_status' },
+                { $set: { lastStreamSync: new Date() } },
+                { upsert: true }
+            );
+        }
+
+        return totalUpserted;
+    } catch (e) {
+        console.error(`[Twitch Sync Error]`, e);
+        return 0;
+    }
 };
 
 // --- Bilibili via RSSHub (Bypasses Bilibili anti-scraping) ---
@@ -576,8 +585,9 @@ const syncBilibiliArchives = async (db) => {
     console.log('[Bilibili] Starting Archive Sync...');
     const members = VSPO_MEMBERS.filter(m => m.bilibiliId);
     let totalUpserted = 0;
-    const threeMonthsAgo = new Date();
-    threeMonthsAgo.setMonth(threeMonthsAgo.getMonth() - 3);
+
+    const retentionDate = new Date();
+    retentionDate.setMonth(retentionDate.getMonth() - 3);
 
     // [Safety Strategy] 1 Member Per Run (Approx every 20 mins)
     // 5 Members = Cycle every 100 mins (~1.5 hours)
@@ -600,25 +610,36 @@ const syncBilibiliArchives = async (db) => {
         // [Safety Delay]
         await new Promise(r => setTimeout(r, 5000)); // 5s delay
 
-        // [NEW] Fetch Series Archives (Live Replays captured in Collections)
+        // [NEW] Fetch Series & Seasons Archives (Live Replays often go here)
         try {
-            const seriesList = await fetchBilibiliSeriesList(member.bilibiliUid);
-            // User requested to fetch ALL series, not just live replays
+            const collections = await fetchBilibiliCollections(member.bilibiliUid);
 
-            if (seriesList.length > 0) {
-                console.log(`[Bilibili] ${member.name}: Scanning ${seriesList.length} series collections found.`);
-                for (const series of seriesList) {
-                    const seriesVideos = await fetchBilibiliSeriesArchives(member.bilibiliUid, series.meta?.series_id || series.series_id);
-                    if (seriesVideos.length > 0) {
-                        console.log(`[Bilibili] ${member.name}: Processed Series "${series.meta?.name}" (${seriesVideos.length} videos)`);
-                        videos = [...videos, ...seriesVideos];
+            if (collections.length > 0) {
+                console.log(`[Bilibili] ${member.name}: Scanning ${collections.length} collections (series/seasons)...`);
+                for (const col of collections) {
+                    let colVideos = [];
+                    try {
+                        if (col.type === 'series') {
+                            colVideos = await fetchBilibiliSeriesArchives(member.bilibiliUid, col.id, member.name);
+                        } else if (col.type === 'season') {
+                            colVideos = await fetchBilibiliSeasonArchives(member.bilibiliUid, col.id, member.name);
+                        }
+
+                        if (colVideos.length > 0) {
+                            console.log(`[Bilibili] ${member.name}: Extracted ${colVideos.length} videos from ${col.type} "${col.name}" (ID: ${col.id})`);
+                            videos = [...videos, ...colVideos];
+                        }
+                    } catch (err) {
+                        console.warn(`[Bilibili] ${member.name}: Error fetching ${col.type} "${col.name}":`, err.message);
                     }
-                    // Small delay to be gentle with API
-                    await new Promise(r => setTimeout(r, 5000)); // 5s delay
+                    // Small delay
+                    await new Promise(r => setTimeout(r, 1500));
                 }
+            } else {
+                console.log(`[Bilibili] ${member.name}: No collections (Series/Seasons) found.`);
             }
         } catch (e) {
-            console.error(`[Bilibili] Series Sync Failed for ${member.name}:`, e.message);
+            console.error(`[Bilibili] Collection Sync Failed for ${member.name}:`, e.message);
         }
 
         // Deduplicate Videos (BVID)
@@ -632,7 +653,7 @@ const syncBilibiliArchives = async (db) => {
             console.log(`[Bilibili] ${member.name}: No videos found from API (Uploads + Series).`);
         }
 
-        videos = videos.filter(v => new Date(v.created * 1000) > threeMonthsAgo);
+        videos = videos.filter(v => new Date(v.created * 1000) > retentionDate);
 
         if (videos.length > 0) {
             const operations = videos.map(video => {
@@ -649,7 +670,7 @@ const syncBilibiliArchives = async (db) => {
                     memberName: member.name,
                     memberId: member.ytId || member.bilibiliId, // Map to YouTube ID (or Room ID for CN) for frontend filtering
                     viewCount: video.play,
-                    duration: video.length,
+                    duration: formatBilibiliDuration(video.length),
                     url: `https://www.bilibili.com/video/${video.bvid}`,
                     updatedAt: new Date()
                 };
@@ -669,12 +690,19 @@ const syncBilibiliArchives = async (db) => {
             }
         }
 
-    } catch (e) {
-        console.error(`[Bilibili] Critical Error processing ${member.name}:`, e);
-    }
+        if (totalUpserted > 0) {
+            await db.collection('metadata').updateOne(
+                { _id: 'sync_status' },
+                { $set: { lastStreamSync: new Date() } },
+                { upsert: true }
+            );
+        }
 
-    console.log(`[Bilibili] Archive Sync Completed. Processed ${totalUpserted} streams.`);
-    return totalUpserted;
+        return totalUpserted;
+    } catch (e) {
+        console.error(`[Bilibili Sync Error] ${member?.name}:`, e);
+        return 0;
+    }
 };
 
 // --- Logic ---
@@ -1201,6 +1229,11 @@ const v12_logic = {
         }
 
         console.log(`[Mongo] Stream Update Completed. Processed ${totalStreamsFound} streams.`);
+        await db.collection('metadata').updateOne(
+            { _id: 'sync_status' },
+            { $set: { lastStreamSync: new Date() } },
+            { upsert: true }
+        );
     },
 
     async updateLiveStatus(db) {
@@ -1257,7 +1290,7 @@ const v12_logic = {
                     console.log(`[Bilibili Debug] Checking ${member.name} (${member.bilibiliId})`);
 
                     // 1. Status Check (Using reliable legacy API)
-                    const statusUrl = `https://api.live.bilibili.com/room/v1/Room/get_info?room_id=${member.bilibiliId}`;
+                    const statusUrl = `https://api.bilibili.com/room/v1/Room/get_info?room_id=${member.bilibiliId}`;
                     const headers = {
                         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
                         'Referer': `https://live.bilibili.com/${member.bilibiliId}`
@@ -2142,14 +2175,17 @@ export default async function handler(req, res) {
             { $project: { clips_exist: 0 } }
         ];
 
-        const [streams, totalCount] = await Promise.all([
+        const [streams, totalCount, syncDoc] = await Promise.all([
             db.collection('streams').aggregate(pipeline).toArray(),
-            db.collection('streams').countDocuments(match)
+            db.collection('streams').countDocuments(match),
+            db.collection('metadata').findOne({ _id: 'sync_status' })
         ]);
 
         return res.status(200).json({
             success: true,
             streams,
+            totalCount,
+            lastSync: syncDoc?.lastStreamSync || null,
             pagination: {
                 page,
                 limit,
@@ -2359,7 +2395,8 @@ function encWbi(params, img_key, sub_key) {
 async function fetchBilibiliArchivesWbi(mid) {
     try {
         const { img_key, sub_key } = await getWbiKeys();
-        const params = { mid, ps: 30, tid: 0, keyword: '', order: 'pubdate', pn: 1, web_location: 1550101, order_avoided: true };
+        // Increased ps to 100 for better initial coverage
+        const params = { mid, ps: 100, tid: 0, keyword: '', order: 'pubdate', pn: 1, web_location: 1550101, order_avoided: true };
         const query = encWbi(params, img_key, sub_key);
         const url = `https://api.bilibili.com/x/space/wbi/arc/search?${query}`;
 
@@ -2408,10 +2445,27 @@ async function fetchBilibiliArchivesWbi(mid) {
     }
 }
 
-async function fetchBilibiliSeriesList(mid) {
+function formatBilibiliDuration(val) {
+    if (!val) return '00:00';
+    if (typeof val === 'number') {
+        const h = Math.floor(val / 3600);
+        const m = Math.floor((val % 3600) / 60);
+        const s = val % 60;
+        return h > 0
+            ? `${h}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`
+            : `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+    }
+    return val; // Already string
+}
+
+async function fetchBilibiliCollections(mid) {
     try {
         const url = `https://api.bilibili.com/x/polymer/web-space/seasons_series_list?mid=${mid}&page_num=1&page_size=20`;
-        const headers = { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' };
+        const headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+            'Referer': `https://space.bilibili.com/${mid}/video`,
+            'Origin': 'https://space.bilibili.com'
+        };
         const sessdata = process.env.BILIBILI_SESSDATA;
         if (sessdata) headers['Cookie'] = `SESSDATA=${sessdata}`;
 
@@ -2420,46 +2474,154 @@ async function fetchBilibiliSeriesList(mid) {
         const res = await fetch(url, { headers, signal: controller.signal });
         clearTimeout(timeoutId);
 
-        if (!res.ok) return [];
+        if (!res.ok) {
+            console.error(`[Bilibili] Collections List HTTP Error ${res.status} for MID=${mid}`);
+            return [];
+        }
         const data = await res.json();
-        if (data.code !== 0) return [];
+        if (data.code !== 0) {
+            console.error(`[Bilibili] Collections List API Error ${data.code} for MID=${mid}: ${data.message}`);
+            return [];
+        }
 
-        return data.data?.items_lists?.series_list || [];
+        const items = data.data?.items_lists || {};
+        const collections = [];
+
+        // 1. Process Seasons (合集)
+        if (items.seasons_list) {
+            items.seasons_list.forEach(s => {
+                const id = s.meta?.season_id || s.season_id;
+                if (id) {
+                    collections.push({
+                        type: 'season',
+                        id: id,
+                        name: s.meta?.name || s.name || '未命名合集'
+                    });
+                }
+            });
+        }
+
+        // 2. Process Series (系列)
+        if (items.series_list) {
+            items.series_list.forEach(s => {
+                const id = s.meta?.series_id || s.series_id || s.sid;
+                if (id) {
+                    collections.push({
+                        type: 'series',
+                        id: id,
+                        name: s.meta?.name || s.name || '未命名系列'
+                    });
+                }
+            });
+        }
+
+        console.log(`[Bilibili] MID=${mid}: Parsed ${collections.length} collections from API.`);
+        return collections;
     } catch (e) {
-        console.error(`[Bilibili] Series List Error MID=${mid}:`, e.message);
+        console.error(`[Bilibili] Collections List Error MID=${mid}:`, e.message);
         return [];
     }
 }
 
-async function fetchBilibiliSeriesArchives(mid, seriesId) {
+async function fetchBilibiliSeriesArchives(mid, seriesId, memberName = '') {
+    let allVideos = [];
     try {
-        const url = `https://api.bilibili.com/x/series/archives?mid=${mid}&series_id=${seriesId}&only_normal=true&sort=desc&pn=1&ps=30`;
-        const headers = { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' };
-        const sessdata = process.env.BILIBILI_SESSDATA;
-        if (sessdata) headers['Cookie'] = `SESSDATA=${sessdata}`;
+        // Fetch up to 3 pages (300 videos) per series to cover large "Live Replay" lists
+        for (let page = 1; page <= 3; page++) {
+            const url = `https://api.bilibili.com/x/series/archives?mid=${mid}&series_id=${seriesId}&sort=desc&pn=${page}&ps=100`;
+            const headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Referer': `https://space.bilibili.com/${mid}/video`,
+                'Origin': 'https://space.bilibili.com'
+            };
+            const sessdata = process.env.BILIBILI_SESSDATA;
+            if (sessdata) headers['Cookie'] = `SESSDATA=${sessdata}`;
 
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 10000);
-        const res = await fetch(url, { headers, signal: controller.signal });
-        clearTimeout(timeoutId);
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 10000);
+            const res = await fetch(url, { headers, signal: controller.signal });
+            clearTimeout(timeoutId);
 
-        if (!res.ok) return [];
-        const data = await res.json();
-        if (data.code !== 0) return [];
+            if (!res.ok) break;
+            const data = await res.json();
+            if (data.code !== 0) {
+                console.error(`[Bilibili] Series API Error [${data.code}] for MID=${mid} SID=${seriesId} at P=${page}`);
+                break;
+            }
 
-        const archives = data.data?.archives || [];
-        return archives.map(v => ({
-            bvid: v.bvid,
-            title: v.title,
-            pic: v.pic,
-            author: v.owner?.name || '',
-            created: v.pubdate, // Series uses pubdate (seconds)
-            play: v.stat?.view || 0,
-            length: v.duration // Seconds
-        }));
+            const archives = data.data?.archives || [];
+            if (archives.length === 0) break;
+
+            const pageVideos = archives.map(v => ({
+                bvid: v.bvid,
+                title: v.title,
+                pic: v.pic,
+                author: memberName || v.owner?.name || '',
+                created: v.pubdate,
+                play: v.stat?.view || 0,
+                length: v.duration
+            }));
+            allVideos = [...allVideos, ...pageVideos];
+
+            // If the page isn't full, we reached the end
+            if (archives.length < 100) break;
+            // Delay between pages
+            await new Promise(r => setTimeout(r, 1000));
+        }
+        return allVideos;
     } catch (e) {
         console.error(`[Bilibili] Series Archives Error MID=${mid} SID=${seriesId}:`, e.message);
-        return [];
+        return allVideos;
+    }
+}
+
+async function fetchBilibiliSeasonArchives(mid, seasonId, memberName = '') {
+    let allVideos = [];
+    try {
+        // Fetch up to 3 pages (300 videos) per season
+        for (let page = 1; page <= 3; page++) {
+            const url = `https://api.bilibili.com/x/polymer/web-space/seasons_archives?mid=${mid}&season_id=${seasonId}&sort_reverse=false&page_num=${page}&page_size=100`;
+            const headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Referer': `https://space.bilibili.com/${mid}/video`,
+                'Origin': 'https://space.bilibili.com'
+            };
+            const sessdata = process.env.BILIBILI_SESSDATA;
+            if (sessdata) headers['Cookie'] = `SESSDATA=${sessdata}`;
+
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 10000);
+            const res = await fetch(url, { headers, signal: controller.signal });
+            clearTimeout(timeoutId);
+
+            if (!res.ok) break;
+            const data = await res.json();
+            if (data.code !== 0) {
+                console.error(`[Bilibili] Season API Error [${data.code}] for MID=${mid} SID=${seasonId} at P=${page}`);
+                break;
+            }
+
+            const archives = data.data?.archives || [];
+            if (archives.length === 0) break;
+
+            const pageVideos = archives.map(v => ({
+                bvid: v.bvid,
+                title: v.title,
+                pic: v.pic,
+                author: memberName || v.owner?.name || '',
+                created: v.pubdate,
+                play: v.stat?.view || 0,
+                length: v.duration
+            }));
+            allVideos = [...allVideos, ...pageVideos];
+
+            if (archives.length < 100) break;
+            await new Promise(r => setTimeout(r, 1000));
+        }
+        return allVideos;
+    } catch (e) {
+        console.error(`[Bilibili] Season Archives Error MID=${mid} SID=${seasonId}:`, e.message);
+        return allVideos;
     }
 }
 
