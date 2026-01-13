@@ -1246,6 +1246,9 @@ const v12_logic = {
     },
 
     async updateLiveStatus(db) {
+        if (Date.now() - (db.lastLiveCheckStart || 0) < 60000) return; // Debounce 1 min internally
+        db.lastLiveCheckStart = Date.now();
+
         console.log('[Mongo] Updating Live Status...');
         // Set Lock
         await db.collection('metadata').updateOne(
@@ -1254,327 +1257,338 @@ const v12_logic = {
             { upsert: true }
         );
 
+        // Global Timeout for Safety - Force Fail after 45s
+        const globalTimeout = new Promise((_, reject) => setTimeout(() => reject(new Error('Live Status Update Timed Out')), 45000));
+
         const members = VSPO_MEMBERS;
         const liveStreams = [];
 
-        try {
-
-            // 2. Twitch Live Check
-            console.log('[Debug] Starting Twitch Live Check...');
-            const twitchIds = members.map(m => m.twitchId).filter(Boolean);
-            // Twitch allows up to 100 IDs
+        const updateWork = (async () => {
             try {
-                const streams = await fetchTwitchStreams(twitchIds);
-                console.log(`[Debug] Twitch Check Done. Found ${streams.length} streams.`);
-                for (const s of streams) {
-                    if (s.type === 'live') {
-                        const member = members.find(m => m.twitchId === s.user_id);
-                        if (member) {
-                            // Get Avatar from DB (Best effort)
-                            const dbChannel = await db.collection('channels').findOne({ _id: member.ytId });
-                            const avatarUrl = dbChannel?.thumbnail || '';
 
-                            liveStreams.push({
-                                memberName: member.name,
-                                platform: 'twitch',
-                                channelId: s.user_login, // Use login handle
-                                avatarUrl,
-                                title: s.title,
-                                url: `https://www.twitch.tv/${s.user_login}`, // Correct URL using login
-                                url: `https://www.twitch.tv/${s.user_login}`, // Correct URL using login
-                                thumbnailUrl: s.thumbnail_url ? s.thumbnail_url.replace('{width}', '640').replace('{height}', '360') : '',
-                                status: 'live', // Twitch is always live if returned here
-                                startTime: s.started_at
-                            });
-                        }
-                    }
-                }
-            } catch (e) { console.error('Twitch Check Error:', e); }
-
-            // --- Bilibili Live Check ---
-            console.log('[Debug] Starting Bilibili Live Check...');
-            const biliMembers = members.filter(m => m.bilibiliId);
-            for (const member of biliMembers) {
+                // 2. Twitch Live Check
+                console.log('[Debug] Starting Twitch Live Check...');
+                const twitchIds = members.map(m => m.twitchId).filter(Boolean);
+                // Twitch allows up to 100 IDs
                 try {
-                    console.log(`[Bilibili Debug] Checking ${member.name} (${member.bilibiliId})`);
-
-                    // 1. Status Check (Using reliable legacy API)
-                    const statusUrl = `https://api.bilibili.com/room/v1/Room/get_info?room_id=${member.bilibiliId}`;
-                    const headers = {
-                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                        'Referer': `https://live.bilibili.com/${member.bilibiliId}`
-                    };
-
-                    const res = await fetch(statusUrl, { headers });
-                    if (res.ok) {
-                        const json = await res.json();
-                        console.log(`[Bilibili Debug] ${member.name}: Code ${json.code} Status ${json.data?.live_status}`);
-
-                        if (json.code === 0 && json.data && json.data.live_status === 1) {
-                            // Find fallback avatar
-                            const ytMember = members.find(m => m.bilibiliId === member.bilibiliId);
-                            // Best effort to find avatar from channels DB if custom is missing
-                            let avatarUrl = VSPO_MEMBERS.find(m => m.bilibiliId === member.bilibiliId)?.customAvatarUrl || '';
-                            if (!avatarUrl && ytMember?.ytId) {
-                                const dbCh = await db.collection('channels').findOne({ _id: ytMember.ytId });
-                                if (dbCh) avatarUrl = dbCh.thumbnail;
-                            }
-
-                            liveStreams.push({
-                                memberName: member.name,
-                                platform: 'bilibili',
-                                channelId: member.bilibiliId,
-                                avatarUrl,
-                                title: json.data.title,
-                                url: `https://live.bilibili.com/${member.bilibiliId}`,
-                                title: json.data.title,
-                                url: `https://live.bilibili.com/${member.bilibiliId}`,
-                                thumbnailUrl: json.data.keyframe || json.data.user_cover || '',
-                                status: 'live', // Bilibili check verifies live_status === 1
-                                startTime: new Date().toISOString() // Fallback
-                            });
-                        }
-                    }
-
-                } catch (e) {
-                    console.error(`[Bilibili Error] ${member.name}:`, e);
-                }
-            }
-
-            // --- YouTube Live Check ---
-            // Logic: Get "Uploads" playlist ID (UC -> UU) -> Get last 3 videos -> Check if Live.
-
-            console.log('[Debug] Starting YouTube Live Check (Playlist + RSS)...');
-            const ytMembers = members.filter(m => m.ytId);
-            const playlistCandidates = new Set();
-
-            // 1. Fetch PlaylistItems (Concurrent Batches)
-            const playlistBatchSize = 10;
-            const parseRssVideoIds = (text) => {
-                const ids = [];
-                const matches = text.matchAll(/<yt:videoId>(.*?)<\/yt:videoId>/g);
-                for (const m of matches) {
-                    ids.push(m[1]);
-                    if (ids.length >= 3) break; // Only check top 3 from RSS
-                }
-                return ids;
-            };
-
-            for (const batch of batchArray(ytMembers, playlistBatchSize)) {
-                try {
-                    await Promise.all(batch.map(async (member) => {
-                        // A: API Playlist 
-                        const apiPromise = (async () => {
-                            try {
-                                const uploadsPlaylistId = member.ytId.replace('UC', 'UU');
-                                const res = await fetchYouTube('playlistItems', {
-                                    part: 'snippet',
-                                    playlistId: uploadsPlaylistId,
-                                    maxResults: 3
-                                });
-                                res.items?.forEach(item => {
-                                    playlistCandidates.add(item.snippet.resourceId.videoId);
-                                });
-                            } catch (e) {
-                                if (e.message && (e.message.includes('Quota Exceeded') || e.message.includes('quota'))) throw e;
-                            }
-                        })();
-
-                        // B: RSS Feed 
-                        const rssPromise = (async () => {
-                            try {
-                                const controller = new AbortController();
-                                const timeout = setTimeout(() => controller.abort(), 3000); // 3s Timeout
-                                const rssRes = await fetch(`https://www.youtube.com/feeds/videos.xml?channel_id=${member.ytId}`, { signal: controller.signal });
-                                clearTimeout(timeout);
-                                if (rssRes.ok) {
-                                    const text = await rssRes.text();
-                                    const rssIds = parseRssVideoIds(text);
-                                    rssIds.forEach(vid => playlistCandidates.add(vid));
-                                    if (rssIds.length > 0) console.log(`[RSS] ${member.name} found: ${rssIds.join(',')}`);
-                                }
-                            } catch (e) {
-                            }
-                        })();
-
-                        await Promise.all([apiPromise, rssPromise]);
-                    }));
-                } catch (e) {
-                    if (e.message && (e.message.includes('Quota Exceeded') || e.message.includes('quota'))) {
-                        console.warn('[Live Check] CRITICAL: Quota Exhausted during Playlist Fetch. Aborting.');
-                        break;
-                    }
-                    console.error('[Live Check] Batch Error:', e);
-                }
-                // Small delay between batches
-                await new Promise(r => setTimeout(r, 200));
-            }
-
-            console.log(`[Debug] Found ${playlistCandidates.size} recent candidates.`);
-
-            // 2. Merge with Smart Retention Candidates
-            const currentStatusDoc = await db.collection('metadata').findOne({ _id: 'live_status' });
-            const currentActiveVideoIds = (currentStatusDoc?.streams || [])
-                .filter(s => s.platform === 'youtube' && s.vid)
-                .map(s => s.vid);
-
-            currentActiveVideoIds.forEach(vid => playlistCandidates.add(vid));
-
-            const totalCandidates = [...playlistCandidates];
-            console.log(`[Debug] Verifying ${totalCandidates.length} videos...`);
-
-            // 3. Batch Verify Video Status (Is it Live?)
-            for (const batch of batchArray(totalCandidates, 50)) {
-                try {
-                    console.log(`[Debug] Checking YT Video Status Batch: ${batch.length}`);
-                    const res = await fetchYouTube('videos', {
-                        part: 'snippet,liveStreamingDetails',
-                        id: batch.join(',')
-                    });
-
-                    res.items?.forEach(v => {
-                        const isLive = v.snippet.liveBroadcastContent === 'live';
-                        const isUpcoming = v.snippet.liveBroadcastContent === 'upcoming';
-                        const hasStarted = v.liveStreamingDetails?.actualStartTime;
-                        const hasEnded = v.liveStreamingDetails?.actualEndTime;
-                        const scheduledTime = v.liveStreamingDetails?.scheduledStartTime;
-
-                        // CRITICAL FIX: Strictly ignore any video that has ended.
-                        if (hasEnded) return;
-
-                        // Valid if Live, Upcoming, or Started (but not ended)
-                        if (isLive || isUpcoming || hasStarted) {
-                            const channelId = v.snippet.channelId;
-                            const member = members.find(m => m.ytId === channelId);
-
+                    const streams = await fetchTwitchStreams(twitchIds);
+                    console.log(`[Debug] Twitch Check Done. Found ${streams.length} streams.`);
+                    for (const s of streams) {
+                        if (s.type === 'live') {
+                            const member = members.find(m => m.twitchId === s.user_id);
                             if (member) {
-                                // [Fix] Require valid Start Time. Do NOT fallback to 'now' which bypasses filters.
-                                const finalStartTime = scheduledTime || v.liveStreamingDetails?.actualStartTime;
+                                // Get Avatar from DB (Best effort)
+                                const dbChannel = await db.collection('channels').findOne({ _id: member.ytId });
+                                const avatarUrl = dbChannel?.thumbnail || '';
 
-                                if (finalStartTime) {
-                                    liveStreams.push({
-                                        memberName: member.name,
-                                        platform: 'youtube',
-                                        channelId: v.snippet.channelId,
-                                        vid: v.id,
-                                        avatarUrl: '', // Will be filled below
-                                        title: v.snippet.title,
-                                        url: `https://www.youtube.com/watch?v=${v.id}`,
-                                        thumbnailUrl: v.snippet.thumbnails?.standard?.url || v.snippet.thumbnails?.high?.url || v.snippet.thumbnails?.maxres?.url,
-                                        status: isUpcoming ? 'upcoming' : 'live',
-                                        startTime: finalStartTime
-                                    });
-                                }
+                                liveStreams.push({
+                                    memberName: member.name,
+                                    platform: 'twitch',
+                                    channelId: s.user_login, // Use login handle
+                                    avatarUrl,
+                                    title: s.title,
+                                    url: `https://www.twitch.tv/${s.user_login}`, // Correct URL using login
+                                    url: `https://www.twitch.tv/${s.user_login}`, // Correct URL using login
+                                    thumbnailUrl: s.thumbnail_url ? s.thumbnail_url.replace('{width}', '640').replace('{height}', '360') : '',
+                                    status: 'live', // Twitch is always live if returned here
+                                    startTime: s.started_at
+                                });
                             }
                         }
-                    });
-                } catch (e) {
-                    console.error('[Live Check] Video Details Batch Failed:', e);
-                    if (e.message && (e.message.includes('Quota Exceeded') || e.message.includes('quota'))) {
-                        console.warn('[Live Check] CRITICAL: Quota Exhausted. Aborting remaining batches.');
-                        break;
+                    }
+                } catch (e) { console.error('Twitch Check Error:', e); }
+
+                // --- Bilibili Live Check ---
+                console.log('[Debug] Starting Bilibili Live Check...');
+                const biliMembers = members.filter(m => m.bilibiliId);
+                for (const member of biliMembers) {
+                    try {
+                        console.log(`[Bilibili Debug] Checking ${member.name} (${member.bilibiliId})`);
+
+                        // 1. Status Check (Using reliable legacy API)
+                        const statusUrl = `https://api.bilibili.com/room/v1/Room/get_info?room_id=${member.bilibiliId}`;
+                        const headers = {
+                            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                            'Referer': `https://live.bilibili.com/${member.bilibiliId}`
+                        };
+
+                        const res = await fetch(statusUrl, { headers });
+                        if (res.ok) {
+                            const json = await res.json();
+                            console.log(`[Bilibili Debug] ${member.name}: Code ${json.code} Status ${json.data?.live_status}`);
+
+                            if (json.code === 0 && json.data && json.data.live_status === 1) {
+                                // Find fallback avatar
+                                const ytMember = members.find(m => m.bilibiliId === member.bilibiliId);
+                                // Best effort to find avatar from channels DB if custom is missing
+                                let avatarUrl = VSPO_MEMBERS.find(m => m.bilibiliId === member.bilibiliId)?.customAvatarUrl || '';
+                                if (!avatarUrl && ytMember?.ytId) {
+                                    const dbCh = await db.collection('channels').findOne({ _id: ytMember.ytId });
+                                    if (dbCh) avatarUrl = dbCh.thumbnail;
+                                }
+
+                                liveStreams.push({
+                                    memberName: member.name,
+                                    platform: 'bilibili',
+                                    channelId: member.bilibiliId,
+                                    avatarUrl,
+                                    title: json.data.title,
+                                    url: `https://live.bilibili.com/${member.bilibiliId}`,
+                                    title: json.data.title,
+                                    url: `https://live.bilibili.com/${member.bilibiliId}`,
+                                    thumbnailUrl: json.data.keyframe || json.data.user_cover || '',
+                                    status: 'live', // Bilibili check verifies live_status === 1
+                                    startTime: new Date().toISOString() // Fallback
+                                });
+                            }
+                        }
+
+                    } catch (e) {
+                        console.error(`[Bilibili Error] ${member.name}:`, e);
                     }
                 }
-            }
-            // Fill Avatars from DB
-            for (const stream of liveStreams) {
-                if (!stream.avatarUrl && stream.platform === 'youtube') {
-                    const dbCh = await db.collection('channels').findOne({ _id: stream.channelId });
-                    if (dbCh) stream.avatarUrl = dbCh.thumbnail;
+
+                // --- YouTube Live Check ---
+                // Logic: Get "Uploads" playlist ID (UC -> UU) -> Get last 3 videos -> Check if Live.
+
+                console.log('[Debug] Starting YouTube Live Check (Playlist + RSS)...');
+                const ytMembers = members.filter(m => m.ytId);
+                const playlistCandidates = new Set();
+
+                // 1. Fetch PlaylistItems (Concurrent Batches)
+                const playlistBatchSize = 10;
+                const parseRssVideoIds = (text) => {
+                    const ids = [];
+                    const matches = text.matchAll(/<yt:videoId>(.*?)<\/yt:videoId>/g);
+                    for (const m of matches) {
+                        ids.push(m[1]);
+                        if (ids.length >= 3) break; // Only check top 3 from RSS
+                    }
+                    return ids;
+                };
+
+                for (const batch of batchArray(ytMembers, playlistBatchSize)) {
+                    try {
+                        await Promise.all(batch.map(async (member) => {
+                            // A: API Playlist 
+                            const apiPromise = (async () => {
+                                try {
+                                    const uploadsPlaylistId = member.ytId.replace('UC', 'UU');
+                                    const res = await fetchYouTube('playlistItems', {
+                                        part: 'snippet',
+                                        playlistId: uploadsPlaylistId,
+                                        maxResults: 3
+                                    });
+                                    res.items?.forEach(item => {
+                                        playlistCandidates.add(item.snippet.resourceId.videoId);
+                                    });
+                                } catch (e) {
+                                    if (e.message && (e.message.includes('Quota Exceeded') || e.message.includes('quota'))) throw e;
+                                }
+                            })();
+
+                            // B: RSS Feed 
+                            const rssPromise = (async () => {
+                                try {
+                                    const controller = new AbortController();
+                                    const timeout = setTimeout(() => controller.abort(), 3000); // 3s Timeout
+                                    const rssRes = await fetch(`https://www.youtube.com/feeds/videos.xml?channel_id=${member.ytId}`, { signal: controller.signal });
+                                    clearTimeout(timeout);
+                                    if (rssRes.ok) {
+                                        const text = await rssRes.text();
+                                        const rssIds = parseRssVideoIds(text);
+                                        rssIds.forEach(vid => playlistCandidates.add(vid));
+                                        if (rssIds.length > 0) console.log(`[RSS] ${member.name} found: ${rssIds.join(',')}`);
+                                    }
+                                } catch (e) {
+                                }
+                            })();
+
+                            await Promise.all([apiPromise, rssPromise]);
+                        }));
+                    } catch (e) {
+                        if (e.message && (e.message.includes('Quota Exceeded') || e.message.includes('quota'))) {
+                            console.warn('[Live Check] CRITICAL: Quota Exhausted during Playlist Fetch. Aborting.');
+                            break;
+                        }
+                        console.error('[Live Check] Batch Error:', e);
+                    }
+                    // Small delay between batches
+                    await new Promise(r => setTimeout(r, 200));
                 }
-            }
 
-            // [Optimization] Deduplicate: One Upcoming Stream per Member (Keep soonest)
-            // If member is Live, remove Upcoming.
-            const uniqueStreamsMap = new Map();
+                console.log(`[Debug] Found ${playlistCandidates.size} recent candidates.`);
 
-            // First pass: Prioritize LIVE
-            for (const s of liveStreams) {
-                if (s.status === 'live') {
-                    uniqueStreamsMap.set(s.memberName + '_live_' + s.platform, s);
-                }
-            }
+                // 2. Merge with Smart Retention Candidates
+                const currentStatusDoc = await db.collection('metadata').findOne({ _id: 'live_status' });
+                const currentActiveVideoIds = (currentStatusDoc?.streams || [])
+                    .filter(s => s.platform === 'youtube' && s.vid)
+                    .map(s => s.vid);
 
+                currentActiveVideoIds.forEach(vid => playlistCandidates.add(vid));
 
-            const memberStreamMap = new Map();
-            for (const s of liveStreams) {
-                if (!memberStreamMap.has(s.memberName)) {
-                    memberStreamMap.set(s.memberName, []);
-                }
-                memberStreamMap.get(s.memberName).push(s);
-            }
+                const totalCandidates = [...playlistCandidates];
+                console.log(`[Debug] Verifying ${totalCandidates.length} videos...`);
 
-            const activeAndSoonestStreams = [];
-            for (const [name, streams] of memberStreamMap) {
-                const liveOnes = streams.filter(s => s.status === 'live');
-                if (liveOnes.length > 0) {
-                    activeAndSoonestStreams.push(...liveOnes);
-                } else {
-                    // pick soonest upcoming
-                    const upcomingOnes = streams.filter(s => s.status === 'upcoming');
-                    if (upcomingOnes.length > 0) {
-                        upcomingOnes.sort((a, b) => new Date(a.startTime).getTime() - new Date(b.startTime).getTime());
+                // 3. Batch Verify Video Status (Is it Live?)
+                for (const batch of batchArray(totalCandidates, 50)) {
+                    try {
+                        console.log(`[Debug] Checking YT Video Status Batch: ${batch.length}`);
+                        const res = await fetchYouTube('videos', {
+                            part: 'snippet,liveStreamingDetails',
+                            id: batch.join(',')
+                        });
 
-                        // [Fix] Only show upcoming streams within 24 hours (Future)
-                        // AND ignore "Zombie" streams that are scheduled > 1 hour in the past but never started.
-                        const soonest = upcomingOnes[0];
-                        const now = Date.now();
-                        const timeDiff = new Date(soonest.startTime).getTime() - now;
-                        const futureLimit = 24 * 60 * 60 * 1000; // +24 Hours
-                        const pastLimit = -3 * 60 * 60 * 1000; // -3 Hour (Allow 3h delay)
+                        res.items?.forEach(v => {
+                            const isLive = v.snippet.liveBroadcastContent === 'live';
+                            const isUpcoming = v.snippet.liveBroadcastContent === 'upcoming';
+                            const hasStarted = v.liveStreamingDetails?.actualStartTime;
+                            const hasEnded = v.liveStreamingDetails?.actualEndTime;
+                            const scheduledTime = v.liveStreamingDetails?.scheduledStartTime;
 
-                        if (timeDiff <= futureLimit && timeDiff >= pastLimit) {
-                            activeAndSoonestStreams.push(soonest);
+                            // CRITICAL FIX: Strictly ignore any video that has ended.
+                            if (hasEnded) return;
+
+                            // Valid if Live, Upcoming, or Started (but not ended)
+                            if (isLive || isUpcoming || hasStarted) {
+                                const channelId = v.snippet.channelId;
+                                const member = members.find(m => m.ytId === channelId);
+
+                                if (member) {
+                                    // [Fix] Require valid Start Time. Do NOT fallback to 'now' which bypasses filters.
+                                    const finalStartTime = scheduledTime || v.liveStreamingDetails?.actualStartTime;
+
+                                    if (finalStartTime) {
+                                        liveStreams.push({
+                                            memberName: member.name,
+                                            platform: 'youtube',
+                                            channelId: v.snippet.channelId,
+                                            vid: v.id,
+                                            avatarUrl: '', // Will be filled below
+                                            title: v.snippet.title,
+                                            url: `https://www.youtube.com/watch?v=${v.id}`,
+                                            thumbnailUrl: v.snippet.thumbnails?.standard?.url || v.snippet.thumbnails?.high?.url || v.snippet.thumbnails?.maxres?.url,
+                                            status: isUpcoming ? 'upcoming' : 'live',
+                                            startTime: finalStartTime
+                                        });
+                                    }
+                                }
+                            }
+                        });
+                    } catch (e) {
+                        console.error('[Live Check] Video Details Batch Failed:', e);
+                        if (e.message && (e.message.includes('Quota Exceeded') || e.message.includes('quota'))) {
+                            console.warn('[Live Check] CRITICAL: Quota Exhausted. Aborting remaining batches.');
+                            break;
                         }
                     }
                 }
+                // Fill Avatars from DB
+                for (const stream of liveStreams) {
+                    if (!stream.avatarUrl && stream.platform === 'youtube') {
+                        const dbCh = await db.collection('channels').findOne({ _id: stream.channelId });
+                        if (dbCh) stream.avatarUrl = dbCh.thumbnail;
+                    }
+                }
+
+                // [Optimization] Deduplicate: One Upcoming Stream per Member (Keep soonest)
+                // If member is Live, remove Upcoming.
+                const uniqueStreamsMap = new Map();
+
+                // First pass: Prioritize LIVE
+                for (const s of liveStreams) {
+                    if (s.status === 'live') {
+                        uniqueStreamsMap.set(s.memberName + '_live_' + s.platform, s);
+                    }
+                }
+
+
+                const memberStreamMap = new Map();
+                for (const s of liveStreams) {
+                    if (!memberStreamMap.has(s.memberName)) {
+                        memberStreamMap.set(s.memberName, []);
+                    }
+                    memberStreamMap.get(s.memberName).push(s);
+                }
+
+                const activeAndSoonestStreams = [];
+                for (const [name, streams] of memberStreamMap) {
+                    const liveOnes = streams.filter(s => s.status === 'live');
+                    if (liveOnes.length > 0) {
+                        activeAndSoonestStreams.push(...liveOnes);
+                    } else {
+                        // pick soonest upcoming
+                        const upcomingOnes = streams.filter(s => s.status === 'upcoming');
+                        if (upcomingOnes.length > 0) {
+                            upcomingOnes.sort((a, b) => new Date(a.startTime).getTime() - new Date(b.startTime).getTime());
+
+                            // [Fix] Only show upcoming streams within 24 hours (Future)
+                            // AND ignore "Zombie" streams that are scheduled > 1 hour in the past but never started.
+                            const soonest = upcomingOnes[0];
+                            const now = Date.now();
+                            const timeDiff = new Date(soonest.startTime).getTime() - now;
+                            const futureLimit = 24 * 60 * 60 * 1000; // +24 Hours
+                            const pastLimit = -3 * 60 * 60 * 1000; // -3 Hour (Allow 3h delay)
+
+                            if (timeDiff <= futureLimit && timeDiff >= pastLimit) {
+                                activeAndSoonestStreams.push(soonest);
+                            }
+                        }
+                    }
+                }
+                // Replace list
+                liveStreams.length = 0;
+                liveStreams.push(...activeAndSoonestStreams);
+                const memberIndexMap = new Map(VSPO_MEMBERS.map((m, i) => [m.name, i]));
+                const OFFICIAL_NAME = "ぶいすぽっ!【公式】";
+
+                liveStreams.sort((a, b) => {
+                    // 1. Status: Live > Upcoming
+                    if (a.status === 'live' && b.status !== 'live') return -1;
+                    if (a.status !== 'live' && b.status === 'live') return 1;
+
+                    // 2. If both Upcoming, Sort by Time (Sooner first)
+                    if (a.status === 'upcoming' && b.status === 'upcoming') {
+                        return new Date(a.startTime).getTime() - new Date(b.startTime).getTime();
+                    }
+
+                    // 3. Official > Members
+                    if (a.memberName === OFFICIAL_NAME) return -1;
+                    if (b.memberName === OFFICIAL_NAME) return 1;
+
+                    const idxA = memberIndexMap.get(a.memberName) ?? 999;
+                    const idxB = memberIndexMap.get(b.memberName) ?? 999;
+                    return idxA - idxB;
+                });
+
+                // Store result
+
+                await db.collection('metadata').updateOne({ _id: 'live_status' }, {
+                    $set: {
+                        streams: liveStreams, // Use the processed list
+                        isUpdating: false,
+                        timestamp: Date.now()
+                    }
+                }, { upsert: true });
+
+                console.log(`[Mongo] Live Status Updated: ${liveStreams.length} active streams.`);
+            } catch (e) {
+                console.error('[Live Status Update] Failed:', e);
+                if (e.message && (e.message.includes('Quota Exceeded') || e.message.includes('quota'))) {
+                    console.warn('[Live Status] Quota Error caught at top level. Skipping DB Overwrite.');
+                }
             }
-            // Replace list
-            liveStreams.length = 0;
-            liveStreams.push(...activeAndSoonestStreams);
-            const memberIndexMap = new Map(VSPO_MEMBERS.map((m, i) => [m.name, i]));
-            const OFFICIAL_NAME = "ぶいすぽっ!【公式】";
+        })(); // End updateWork IIFE
 
-            liveStreams.sort((a, b) => {
-                // 1. Status: Live > Upcoming
-                if (a.status === 'live' && b.status !== 'live') return -1;
-                if (a.status !== 'live' && b.status === 'live') return 1;
-
-                // 2. If both Upcoming, Sort by Time (Sooner first)
-                if (a.status === 'upcoming' && b.status === 'upcoming') {
-                    return new Date(a.startTime).getTime() - new Date(b.startTime).getTime();
-                }
-
-                // 3. Official > Members
-                if (a.memberName === OFFICIAL_NAME) return -1;
-                if (b.memberName === OFFICIAL_NAME) return 1;
-
-                const idxA = memberIndexMap.get(a.memberName) ?? 999;
-                const idxB = memberIndexMap.get(b.memberName) ?? 999;
-                return idxA - idxB;
-            });
-
-            // Store result
-
-            await db.collection('metadata').updateOne({ _id: 'live_status' }, {
-                $set: {
-                    streams: liveStreams, // Use the processed list
-                    isUpdating: false,
-                    timestamp: Date.now()
-                }
-            }, { upsert: true });
-
-            console.log(`[Mongo] Live Status Updated: ${liveStreams.length} active streams.`);
+        try {
+            await Promise.race([updateWork, globalTimeout]);
         } catch (e) {
-            console.error('[Live Status Update] Failed:', e);
-            if (e.message && (e.message.includes('Quota Exceeded') || e.message.includes('quota'))) {
-                console.warn('[Live Status] Quota Error caught at top level. Skipping DB Overwrite.');
-            }
-        } finally {
+            console.error('[Live Status] Critical Failure/Timeout:', e.message);
+            // Force Reset
             await db.collection('metadata').updateOne({ _id: 'live_check_lock' }, { $set: { timestamp: 0 } });
             await db.collection('metadata').updateOne({ _id: 'live_status' }, { $set: { isUpdating: false } });
         }
-    }
+    },
 };
 
 // --- Admin Action Handler ---
