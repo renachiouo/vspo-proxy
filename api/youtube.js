@@ -410,7 +410,7 @@ async function fetchTwitchArchives(userId) {
     try {
         // Fetch videos of type 'archive' (VODs)
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 30000); // 30s timeout
+        const timeoutId = setTimeout(() => controller.abort(), 8000); // 8s timeout (within Vercel limit)
         const res = await fetch(`https://api.twitch.tv/helix/videos?user_id=${userId}&type=archive&first=20`, {
             headers: { 'Client-ID': process.env.TWITCH_CLIENT_ID, 'Authorization': `Bearer ${token}` },
             signal: controller.signal
@@ -424,7 +424,15 @@ async function fetchTwitchArchives(userId) {
 
         const data = await res.json();
         return data.data || [];
-    } catch (e) { console.error(`Twitch Archive Fetch Error User=${userId}:`, e); return []; }
+    } catch (e) {
+        // Silently handle timeout errors to reduce log noise
+        if (e.name === 'AbortError') {
+            console.warn(`[Twitch] Archive fetch timeout for user ${userId}, skipping...`);
+        } else {
+            console.error(`Twitch Archive Fetch Error User=${userId}:`, e);
+        }
+        return [];
+    }
 }
 
 const syncTwitchArchives = async (db) => {
