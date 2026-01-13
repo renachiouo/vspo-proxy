@@ -854,122 +854,130 @@ const v12_logic = {
     },
 
     async updateAndStoreYouTubeData(db) {
-        // CN Strategy: 20 mins. Keyword + Whitelist. New channels -> Auto Whitelist.
-        console.log('[Mongo] CN Update...');
-        const retentionDate = new Date(); retentionDate.setDate(retentionDate.getDate() - 90); // 90 days retention scan
-        const [wlCn, blCn, wlJp] = await Promise.all([
-            db.collection('lists').findOne({ _id: 'whitelist_cn' }), db.collection('lists').findOne({ _id: 'blacklist_cn' }), db.collection('lists').findOne({ _id: 'whitelist_jp' })
-        ]);
-        const whitelist = wlCn?.items || [];
-        const blacklist = blCn?.items || [];
-        const jpWhitelist = wlJp?.items || [];
-        const newVideoCandidates = new Set();
+        // Global Timeout for Main YouTube Update (3 mins)
+        // If it hangs, it throws, ensuring the main lock is released in caller
+        const globalTimeout = new Promise((_, reject) => setTimeout(() => reject(new Error('YouTube Update (CN) Timed Out')), 180000));
 
-        // [FIX] Sync ALL archives FIRST with global timeout, so linking logic can find them
-        console.log('[Mongo] Syncing all archives before clip processing...');
-        const preSyncTimeout = new Promise((_, reject) =>
-            setTimeout(() => reject(new Error('Pre-sync global timeout')), 45000)
-        );
-        const preSyncWork = (async () => {
-            try { await syncTwitchArchives(db); } catch (e) { console.warn('Pre-sync Twitch Failed:', e.message); }
-            try { await syncBilibiliArchives(db); } catch (e) { console.warn('Pre-sync Bilibili Failed:', e.message); }
-            try { await v12_logic.updateMemberStreams(db); } catch (e) { console.warn('Pre-sync YouTube Streams Failed:', e.message); }
-        })();
-        try {
-            await Promise.race([preSyncWork, preSyncTimeout]);
-            console.log('[Mongo] Pre-sync completed.');
-        } catch (e) {
-            console.warn(`[Mongo] Pre-sync aborted: ${e.message}. Continuing with clip processing...`);
-        }
+        const runUpdate = async () => {
+            // CN Strategy: 20 mins. Keyword + Whitelist. New channels -> Auto Whitelist.
+            console.log('[Mongo] CN Update...');
+            const retentionDate = new Date(); retentionDate.setDate(retentionDate.getDate() - 90); // 90 days retention scan
+            const [wlCn, blCn, wlJp] = await Promise.all([
+                db.collection('lists').findOne({ _id: 'whitelist_cn' }), db.collection('lists').findOne({ _id: 'blacklist_cn' }), db.collection('lists').findOne({ _id: 'whitelist_jp' })
+            ]);
+            const whitelist = wlCn?.items || [];
+            const blacklist = blCn?.items || [];
+            const jpWhitelist = wlJp?.items || [];
+            const newVideoCandidates = new Set();
 
-
-        // 1. Whitelist Scan
-        if (whitelist.length > 0) {
-            // [Optimization] Conditional Scan for Inactive Channels
-            const metaScanCtx = await db.collection('metadata').findOne({ _id: 'last_inactive_scan_cn' });
-            const lastScan = metaScanCtx?.timestamp || 0;
-            const shouldScanInactive = Date.now() - lastScan > INACTIVE_SCAN_INTERVAL_CN_MS;
-
-            let targetChannels = whitelist;
-            if (shouldScanInactive) {
-                console.log('[Mongo] Update Strategy: FULL SCAN (Inactive Included)');
-                await db.collection('metadata').updateOne({ _id: 'last_inactive_scan_cn' }, { $set: { timestamp: Date.now() } }, { upsert: true });
-            } else {
-                console.log('[Mongo] Update Strategy: ACTIVE ONLY');
-                const channelDocs = await db.collection('channels').find({ _id: { $in: whitelist } }).toArray();
-                const threshold = Date.now() - INACTIVE_THRESHOLD_CN_MS;
-                targetChannels = whitelist.filter(id => {
-                    const doc = channelDocs.find(c => c._id === id);
-                    if (!doc || !doc.last_upload_at) return true; // Treat unknown as active
-                    return doc.last_upload_at > threshold;
-                });
+            // [FIX] Sync ALL archives FIRST with global timeout, so linking logic can find them
+            console.log('[Mongo] Syncing all archives before clip processing...');
+            const preSyncTimeout = new Promise((_, reject) =>
+                setTimeout(() => reject(new Error('Pre-sync global timeout')), 45000)
+            );
+            const preSyncWork = (async () => {
+                try { await syncTwitchArchives(db); } catch (e) { console.warn('Pre-sync Twitch Failed:', e.message); }
+                try { await syncBilibiliArchives(db); } catch (e) { console.warn('Pre-sync Bilibili Failed:', e.message); }
+                try { await v12_logic.updateMemberStreams(db); } catch (e) { console.warn('Pre-sync YouTube Streams Failed:', e.message); }
+            })();
+            try {
+                await Promise.race([preSyncWork, preSyncTimeout]);
+                console.log('[Mongo] Pre-sync completed.');
+            } catch (e) {
+                console.warn(`[Mongo] Pre-sync aborted: ${e.message}. Continuing with clip processing...`);
             }
 
-            console.log(`[Mongo] Whitelist Scan: ${targetChannels.length} channels (Total: ${whitelist.length}).`);
-            let batchCount = 0;
-            for (const batch of batchArray(targetChannels, 50)) {
-                batchCount++;
-                console.log(`[Mongo] Processing Whitelist Batch ${batchCount}...`);
-                try {
-                    const res = await fetchYouTube('channels', { part: 'contentDetails', id: batch.join(',') });
-                    const uploads = res.items?.map(i => i.contentDetails?.relatedPlaylists?.uploads).filter(Boolean) || [];
 
-                    // Fix: Batch playlist fetching to avoid 429 Too Many Requests
-                    for (const uploadBatch of batchArray(uploads, 20)) {
-                        const pResults = await Promise.all(uploadBatch.map(pid => fetchYouTube('playlistItems', { part: 'snippet', playlistId: pid, maxResults: 10 })));
-                        pResults.forEach(r => r.items?.forEach(i => { if (new Date(i.snippet.publishedAt) > retentionDate) newVideoCandidates.add(i.snippet.resourceId.videoId); }));
-                        await new Promise(r => setTimeout(r, 200)); // Small delay between batches
+            // 1. Whitelist Scan
+            if (whitelist.length > 0) {
+                // [Optimization] Conditional Scan for Inactive Channels
+                const metaScanCtx = await db.collection('metadata').findOne({ _id: 'last_inactive_scan_cn' });
+                const lastScan = metaScanCtx?.timestamp || 0;
+                const shouldScanInactive = Date.now() - lastScan > INACTIVE_SCAN_INTERVAL_CN_MS;
+
+                let targetChannels = whitelist;
+                if (shouldScanInactive) {
+                    console.log('[Mongo] Update Strategy: FULL SCAN (Inactive Included)');
+                    await db.collection('metadata').updateOne({ _id: 'last_inactive_scan_cn' }, { $set: { timestamp: Date.now() } }, { upsert: true });
+                } else {
+                    console.log('[Mongo] Update Strategy: ACTIVE ONLY');
+                    const channelDocs = await db.collection('channels').find({ _id: { $in: whitelist } }).toArray();
+                    const threshold = Date.now() - INACTIVE_THRESHOLD_CN_MS;
+                    targetChannels = whitelist.filter(id => {
+                        const doc = channelDocs.find(c => c._id === id);
+                        if (!doc || !doc.last_upload_at) return true; // Treat unknown as active
+                        return doc.last_upload_at > threshold;
+                    });
+                }
+
+                console.log(`[Mongo] Whitelist Scan: ${targetChannels.length} channels (Total: ${whitelist.length}).`);
+                let batchCount = 0;
+                for (const batch of batchArray(targetChannels, 50)) {
+                    batchCount++;
+                    console.log(`[Mongo] Processing Whitelist Batch ${batchCount}...`);
+                    try {
+                        const res = await fetchYouTube('channels', { part: 'contentDetails', id: batch.join(',') });
+                        const uploads = res.items?.map(i => i.contentDetails?.relatedPlaylists?.uploads).filter(Boolean) || [];
+
+                        // Fix: Batch playlist fetching to avoid 429 Too Many Requests
+                        for (const uploadBatch of batchArray(uploads, 20)) {
+                            const pResults = await Promise.all(uploadBatch.map(pid => fetchYouTube('playlistItems', { part: 'snippet', playlistId: pid, maxResults: 10 })));
+                            pResults.forEach(r => r.items?.forEach(i => { if (new Date(i.snippet.publishedAt) > retentionDate) newVideoCandidates.add(i.snippet.resourceId.videoId); }));
+                            await new Promise(r => setTimeout(r, 200)); // Small delay between batches
+                        }
+                    } catch (e) {
+                        if (e.message && (e.message.includes('Quota Exceeded') || e.message.includes('quota'))) {
+                            console.warn('[Mongo] CRITICAL: Quota Exhausted during Whitelist Scan. Aborting.');
+                            break;
+                        }
                     }
+                }
+            }
+
+            // 2. Keyword Search
+            console.log('[Mongo] Starting Keyword Search...');
+            const sResults = [];
+            for (const q of SEARCH_KEYWORDS) {
+                try {
+                    // console.log(`[MongoDebug] Searching: ${q}`); // Optional Verbose
+                    const res = await fetchYouTube('search', { part: 'snippet', type: 'video', maxResults: 50, q, publishedAfter: retentionDate.toISOString() });
+                    if (res) sResults.push(res);
                 } catch (e) {
+                    console.error(`[Mongo] Keyword Search Failed (${q}):`, e);
                     if (e.message && (e.message.includes('Quota Exceeded') || e.message.includes('quota'))) {
-                        console.warn('[Mongo] CRITICAL: Quota Exhausted during Whitelist Scan. Aborting.');
+                        console.warn('[Mongo] CRITICAL: Quota Exhausted during Keyword Search. Aborting.');
                         break;
                     }
                 }
             }
-        }
 
-        // 2. Keyword Search
-        console.log('[Mongo] Starting Keyword Search...');
-        const sResults = [];
-        for (const q of SEARCH_KEYWORDS) {
-            try {
-                // console.log(`[MongoDebug] Searching: ${q}`); // Optional Verbose
-                const res = await fetchYouTube('search', { part: 'snippet', type: 'video', maxResults: 50, q, publishedAfter: retentionDate.toISOString() });
-                if (res) sResults.push(res);
-            } catch (e) {
-                console.error(`[Mongo] Keyword Search Failed (${q}):`, e);
-                if (e.message && (e.message.includes('Quota Exceeded') || e.message.includes('quota'))) {
-                    console.warn('[Mongo] CRITICAL: Quota Exhausted during Keyword Search. Aborting.');
-                    break;
+            const searchResultIds = new Set();
+            sResults.forEach(r => r.items?.forEach(i => { if (!blacklist.includes(i.snippet.channelId)) { newVideoCandidates.add(i.id.videoId); searchResultIds.add(i.id.videoId); } }));
+
+            // 3. Auto-add new channels from search results
+            if (searchResultIds.size > 0) {
+                const newChannels = new Set();
+                for (const batch of batchArray([...searchResultIds], 50)) {
+                    const res = await fetchYouTube('videos', { part: 'snippet', id: batch.join(',') });
+                    res.items?.forEach(v => {
+                        const cid = v.snippet.channelId;
+                        // Strict Check: Only add channel if the video is fully valid (License + Member Name)
+                        if (!whitelist.includes(cid) && !jpWhitelist.includes(cid) && isVideoValid(v, SPECIAL_KEYWORDS, true)) {
+                            newChannels.add(cid);
+                        }
+                    });
                 }
+                if (newChannels.size > 0) await db.collection('lists').updateOne({ _id: 'whitelist_cn' }, { $addToSet: { items: { $each: [...newChannels] } } }, { upsert: true });
             }
-        }
+            console.log(`[Mongo] Found ${newVideoCandidates.size} video candidates.`);
 
-        const searchResultIds = new Set();
-        sResults.forEach(r => r.items?.forEach(i => { if (!blacklist.includes(i.snippet.channelId)) { newVideoCandidates.add(i.id.videoId); searchResultIds.add(i.id.videoId); } }));
+            // Store
+            await this.processAndStoreVideos([...newVideoCandidates], db, 'main', { retentionDate, blacklist });
+            await this.cleanupExpiredVideos(db);
+            await this.verifyActiveVideos(db, 'main');
+        };
 
-        // 3. Auto-add new channels from search results
-        if (searchResultIds.size > 0) {
-            const newChannels = new Set();
-            for (const batch of batchArray([...searchResultIds], 50)) {
-                const res = await fetchYouTube('videos', { part: 'snippet', id: batch.join(',') });
-                res.items?.forEach(v => {
-                    const cid = v.snippet.channelId;
-                    // Strict Check: Only add channel if the video is fully valid (License + Member Name)
-                    if (!whitelist.includes(cid) && !jpWhitelist.includes(cid) && isVideoValid(v, SPECIAL_KEYWORDS, true)) {
-                        newChannels.add(cid);
-                    }
-                });
-            }
-            if (newChannels.size > 0) await db.collection('lists').updateOne({ _id: 'whitelist_cn' }, { $addToSet: { items: { $each: [...newChannels] } } }, { upsert: true });
-        }
-        console.log(`[Mongo] Found ${newVideoCandidates.size} video candidates.`);
-
-        // Store
-        await this.processAndStoreVideos([...newVideoCandidates], db, 'main', { retentionDate, blacklist });
-        await this.cleanupExpiredVideos(db);
-        await this.verifyActiveVideos(db, 'main');
+        await Promise.race([runUpdate(), globalTimeout]);
     },
 
     async updateForeignClips(db) {
@@ -2551,7 +2559,8 @@ async function fetchBilibiliSeriesArchives(mid, seriesId, memberName = '') {
     try {
         // Fetch up to 3 pages (300 videos) per series to cover large "Live Replay" lists
         for (let page = 1; page <= 3; page++) {
-            const url = `https://api.bilibili.com/x/series/archives?mid=${mid}&series_id=${seriesId}&sort=desc&pn=${page}&ps=100`;
+            // Reduced page_size to 30 for stability
+            const url = `https://api.bilibili.com/x/series/archives?mid=${mid}&series_id=${seriesId}&sort=desc&pn=${page}&ps=30`;
             const headers = {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
                 'Referer': `https://space.bilibili.com/${mid}/video`,
@@ -2561,7 +2570,7 @@ async function fetchBilibiliSeriesArchives(mid, seriesId, memberName = '') {
             if (sessdata) headers['Cookie'] = `SESSDATA=${sessdata}`;
 
             const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 10000);
+            const timeoutId = setTimeout(() => controller.abort(), 15000); // 15s timeout
             const res = await fetch(url, { headers, signal: controller.signal });
             clearTimeout(timeoutId);
 
@@ -2586,8 +2595,8 @@ async function fetchBilibiliSeriesArchives(mid, seriesId, memberName = '') {
             }));
             allVideos = [...allVideos, ...pageVideos];
 
-            // If the page isn't full, we reached the end
-            if (archives.length < 100) break;
+            // If the page isn't full, we reached the end (Size 30)
+            if (archives.length < 30) break;
             // Delay between pages
             await new Promise(r => setTimeout(r, 1000));
         }
@@ -2601,9 +2610,10 @@ async function fetchBilibiliSeriesArchives(mid, seriesId, memberName = '') {
 async function fetchBilibiliSeasonArchives(mid, seasonId, memberName = '') {
     let allVideos = [];
     try {
-        // Fetch up to 3 pages (300 videos) per season
+        // Fetch up to 3 pages (90 videos) per season
         for (let page = 1; page <= 3; page++) {
-            const url = `https://api.bilibili.com/x/polymer/web-space/seasons_archives?mid=${mid}&season_id=${seasonId}&sort_reverse=false&page_num=${page}&page_size=100`;
+            // Reduced page_size to 30, removed sort_reverse (default)
+            const url = `https://api.bilibili.com/x/polymer/web-space/seasons_archives?mid=${mid}&season_id=${seasonId}&page_num=${page}&page_size=30`;
             const headers = {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
                 'Referer': `https://space.bilibili.com/${mid}/video`,
@@ -2613,7 +2623,7 @@ async function fetchBilibiliSeasonArchives(mid, seasonId, memberName = '') {
             if (sessdata) headers['Cookie'] = `SESSDATA=${sessdata}`;
 
             const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 10000);
+            const timeoutId = setTimeout(() => controller.abort(), 15000); // 15s timeout
             const res = await fetch(url, { headers, signal: controller.signal });
             clearTimeout(timeoutId);
 
@@ -2638,7 +2648,7 @@ async function fetchBilibiliSeasonArchives(mid, seasonId, memberName = '') {
             }));
             allVideos = [...allVideos, ...pageVideos];
 
-            if (archives.length < 100) break;
+            if (archives.length < 30) break;
             await new Promise(r => setTimeout(r, 1000));
         }
         return allVideos;
