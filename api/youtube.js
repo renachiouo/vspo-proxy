@@ -129,6 +129,14 @@ const isVideoValid = (videoDetail, keywords = SPECIAL_KEYWORDS) => {
     return true;
 };
 
+const checkClipProhibition = (title, description) => {
+    return (description || "").includes("切り抜き禁止") ||
+        (title || "").includes("歌枠") ||
+        (title || "").includes("カラオケ") ||
+        (title || "").includes("ととうた") ||
+        (title || "").includes("切り抜き禁止");
+};
+
 const containsBlacklistedKeyword = (videoDetail, blacklist) => {
     if (!videoDetail || !videoDetail.snippet) return false;
     const searchText = `${videoDetail.snippet.title} ${videoDetail.snippet.description} `.toLowerCase();
@@ -703,7 +711,11 @@ const v12_logic = {
                 duration: detail.contentDetails?.duration || '',
                 durationMinutes,
                 source: type,
-                videoType: durationMinutes <= 1.05 ? 'short' : 'video'
+                duration: detail.contentDetails?.duration || '',
+                durationMinutes,
+                source: type,
+                videoType: durationMinutes <= 1.05 ? 'short' : 'video',
+                isClipProhibited: checkClipProhibition(title, description) // [NEW] Added prohibition check
             };
 
             // [NEW] Multi-Link Logic
@@ -1091,11 +1103,7 @@ const v12_logic = {
 
                     const description = item.snippet.description || "";
                     const title = item.snippet.title || "";
-                    const isClipProhibited = description.includes("切り抜き禁止") ||
-                        title.includes("歌枠") ||
-                        title.includes("カラオケ") ||
-                        title.includes("ととうた") ||
-                        title.includes("切り抜き禁止");
+                    const isClipProhibited = checkClipProhibition(title, description);
 
                     const doc = {
                         _id: item.id,
