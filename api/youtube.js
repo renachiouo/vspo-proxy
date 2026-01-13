@@ -1029,7 +1029,12 @@ const v12_logic = {
                     if (!live.actualStartTime) continue;
 
                     const description = item.snippet.description || "";
-                    const isClipProhibited = description.includes("切り抜き禁止");
+                    const title = item.snippet.title || "";
+                    const isClipProhibited = description.includes("切り抜き禁止") ||
+                        title.includes("歌枠") ||
+                        title.includes("カラオケ") ||
+                        title.includes("ととうた") ||
+                        title.includes("切り抜き禁止");
 
                     const doc = {
                         _id: item.id,
