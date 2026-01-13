@@ -442,57 +442,77 @@ const syncTwitchArchives = async (db) => {
     const threeMonthsAgo = new Date();
     threeMonthsAgo.setMonth(threeMonthsAgo.getMonth() - 3);
 
-    for (const member of members) {
-        // console.log(`[Twitch] Checking ${member.name} (${member.twitchId})...`);
-        let videos = await fetchTwitchArchives(member.twitchId);
+    // Global timeout to prevent blocking (25s, leaving buffer for Vercel)
+    const globalTimeout = new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('Twitch sync global timeout')), 25000)
+    );
 
-        // Filter by retention policy
-        videos = videos.filter(v => new Date(v.created_at) > threeMonthsAgo);
+    const processMember = async (member) => {
+        try {
+            let videos = await fetchTwitchArchives(member.twitchId);
+            videos = videos.filter(v => new Date(v.created_at) > threeMonthsAgo);
+            if (videos.length === 0) return 0;
 
-        if (videos.length === 0) continue;
+            const operations = videos.map(video => {
+                const thumbnailUrl = video.thumbnail_url
+                    ? video.thumbnail_url.replace('%{width}', '640').replace('%{height}', '360')
+                    : 'https://placehold.co/640x360?text=No+Thumbnail';
 
-        const operations = videos.map(video => {
-            // Twitch thumbnails need size injection
-            const thumbnailUrl = video.thumbnail_url
-                ? video.thumbnail_url.replace('%{width}', '640').replace('%{height}', '360')
-                : 'https://placehold.co/640x360?text=No+Thumbnail';
+                const streamDoc = {
+                    _id: video.id,
+                    streamId: video.id,
+                    platform: 'twitch',
+                    title: video.title,
+                    thumbnail: thumbnailUrl,
+                    startTime: new Date(video.created_at),
+                    status: 'completed',
+                    channelId: video.user_id,
+                    channelTitle: video.user_name,
+                    memberName: member.name,
+                    memberId: member.ytId,
+                    viewCount: video.view_count,
+                    duration: video.duration,
+                    url: video.url,
+                    updatedAt: new Date()
+                };
 
-            const streamDoc = {
-                _id: video.id, // Explicitly set ID to match frontend expectation
-                streamId: video.id,
-                platform: 'twitch',
-                title: video.title,
-                thumbnail: thumbnailUrl,
-                startTime: new Date(video.created_at),
-                status: 'completed',
-                channelId: video.user_id,
-                channelTitle: video.user_name,
-                memberName: member.name,
-                memberId: member.ytId, // Frontend uses memberId (YouTube ID) for filtering
-                viewCount: video.view_count,
-                duration: video.duration,
-                url: video.url,
-                updatedAt: new Date()
-            };
+                return {
+                    updateOne: {
+                        filter: { streamId: video.id, platform: 'twitch' },
+                        update: { $set: streamDoc },
+                        upsert: true
+                    }
+                };
+            });
 
-            return {
-                updateOne: {
-                    filter: { streamId: video.id, platform: 'twitch' },
-                    update: { $set: streamDoc },
-                    upsert: true
-                }
-            };
-        });
-
-        if (operations.length > 0) {
-            const result = await db.collection('streams').bulkWrite(operations);
-            totalUpserted += (result.upsertedCount + result.modifiedCount);
+            if (operations.length > 0) {
+                const result = await db.collection('streams').bulkWrite(operations);
+                return result.upsertedCount + result.modifiedCount;
+            }
+            return 0;
+        } catch (e) {
+            console.warn(`[Twitch] Error processing ${member.name}:`, e.message);
+            return 0;
         }
+    };
 
-        // Rate limit kindness
-        await new Promise(r => setTimeout(r, 200));
+    try {
+        // Process in parallel batches of 5 to avoid rate limiting
+        const batchSize = 5;
+        const syncWork = (async () => {
+            for (let i = 0; i < members.length; i += batchSize) {
+                const batch = members.slice(i, i + batchSize);
+                const results = await Promise.all(batch.map(processMember));
+                totalUpserted += results.reduce((a, b) => a + b, 0);
+            }
+        })();
+
+        await Promise.race([syncWork, globalTimeout]);
+        console.log(`[Twitch] Archive Sync Completed. Processed ${totalUpserted} streams.`);
+    } catch (e) {
+        console.warn(`[Twitch] Sync aborted: ${e.message}. Processed ${totalUpserted} streams before timeout.`);
     }
-    console.log(`[Twitch] Archive Sync Completed. Processed ${totalUpserted} streams.`);
+
     return totalUpserted;
 };
 
@@ -817,10 +837,22 @@ const v12_logic = {
         const jpWhitelist = wlJp?.items || [];
         const newVideoCandidates = new Set();
 
-        // [FIX] Sync Twitch & Bilibili archives FIRST, so linking logic can find them
-        console.log('[Mongo] Syncing Twitch/Bilibili archives before clip processing...');
-        try { await syncTwitchArchives(db); } catch (e) { console.error('Pre-sync Twitch Failed:', e); }
-        try { await syncBilibiliArchives(db); } catch (e) { console.error('Pre-sync Bilibili Failed:', e); }
+        // [FIX] Sync ALL archives FIRST with global timeout, so linking logic can find them
+        console.log('[Mongo] Syncing all archives before clip processing...');
+        const preSyncTimeout = new Promise((_, reject) =>
+            setTimeout(() => reject(new Error('Pre-sync global timeout')), 45000)
+        );
+        const preSyncWork = (async () => {
+            try { await syncTwitchArchives(db); } catch (e) { console.warn('Pre-sync Twitch Failed:', e.message); }
+            try { await syncBilibiliArchives(db); } catch (e) { console.warn('Pre-sync Bilibili Failed:', e.message); }
+            try { await v12_logic.updateMemberStreams(db); } catch (e) { console.warn('Pre-sync YouTube Streams Failed:', e.message); }
+        })();
+        try {
+            await Promise.race([preSyncWork, preSyncTimeout]);
+            console.log('[Mongo] Pre-sync completed.');
+        } catch (e) {
+            console.warn(`[Mongo] Pre-sync aborted: ${e.message}. Continuing with clip processing...`);
+        }
 
 
         // 1. Whitelist Scan
@@ -1776,18 +1808,8 @@ export default async function handler(req, res) {
                                     }
                                 } else {
                                     await v12_logic.updateAndStoreYouTubeData(db);
-                                    await v12_logic.updateMemberStreams(db);
-                                    // Also Sync Twitch & Bilibili Archives
-                                    try { await syncTwitchArchives(db); } catch (e) { console.error('BG Twitch Sync Failed:', e); }
-
-                                    // Sync Bilibili Archives (Every 60 mins)
-                                    try {
-                                        const biliMeta = await db.collection('metadata').findOne({ _id: 'last_bilibili_sync' });
-                                        if (!biliMeta || Date.now() - biliMeta.timestamp > 3600 * 1000) {
-                                            await db.collection('metadata').updateOne({ _id: 'last_bilibili_sync' }, { $set: { timestamp: Date.now() } }, { upsert: true });
-                                            await syncBilibiliArchives(db);
-                                        }
-                                    } catch (e) { console.error('BG Bilibili Sync Failed:', e); }
+                                    // Archive syncs (Twitch, Bilibili, YouTube Streams) are now handled in pre-sync phase
+                                    // inside updateAndStoreYouTubeData with global timeout protection
                                 }
                             } catch (e) {
                                 console.error('BG Update:', e);
