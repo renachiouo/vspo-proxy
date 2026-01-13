@@ -510,7 +510,7 @@ const syncTwitchArchives = async (db) => {
         await Promise.race([syncWork, globalTimeout]);
         console.log(`[Twitch] Archive Sync Completed. Processed ${totalUpserted} streams.`);
 
-        if (totalUpserted > 0) {
+        if (totalUpserted >= 0) { // Always update timestamp even if 0 found
             await db.collection('metadata').updateOne(
                 { _id: 'sync_status' },
                 { $set: { lastStreamSync: new Date() } },
@@ -1227,6 +1227,15 @@ const v12_logic = {
                 console.error(`[Stream Update] Failed for ${member.name}:`, e.message);
             }
         }
+
+        // Always track separate YouTube Sync Time (The "1-hour" interval one)
+        await db.collection('metadata').updateOne(
+            { _id: 'sync_status' },
+            { $set: { lastYouTubeStreamSync: new Date() } },
+            { upsert: true }
+        );
+
+        console.log(`[Stream Update] Completed. Found ${totalStreamsFound} streams.`);
 
         console.log(`[Mongo] Stream Update Completed. Processed ${totalStreamsFound} streams.`);
         await db.collection('metadata').updateOne(
@@ -2185,7 +2194,7 @@ export default async function handler(req, res) {
             success: true,
             streams,
             totalCount,
-            lastSync: syncDoc?.lastStreamSync || null,
+            lastSync: syncDoc?.lastYouTubeStreamSync || syncDoc?.lastStreamSync || null,
             pagination: {
                 page,
                 limit,
