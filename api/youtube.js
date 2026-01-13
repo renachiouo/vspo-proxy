@@ -532,7 +532,7 @@ const syncBilibiliArchives = async (db) => {
 
     for (const member of members) {
         // console.log(`[Bilibili] Checking ${member.name} (${member.bilibiliId})...`);
-        let videos = await fetchBilibiliArchives(member.bilibiliId);
+        let videos = await fetchBilibiliArchivesV2(member.bilibiliId);
 
         // Filter by retention (Bilibili timestamp is seconds)
         videos = videos.filter(v => new Date(v.created * 1000) > threeMonthsAgo);
@@ -2106,4 +2106,76 @@ export default async function handler(req, res) {
 
     return res.status(404).json({ error: 'Not Found', path: pathname });
 }
+// --- Bilibili via RSSHub V2 (with Domain Fallback) ---
+async function fetchBilibiliArchivesV2(mid) {
+    const RSSHUB_DOMAINS = [
+        'https://rsshub.app',
+        'https://rsshub.feeddd.org',
+        'https://rss.shab.fun'
+    ];
+
+    for (const domain of RSSHUB_DOMAINS) {
+        try {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 10000); // 10s timeout per domain
+
+            // RSSHub provides Bilibili user videos as JSON
+            const url = `${domain}/bilibili/user/video/${mid}?format=json`;
+            // console.log(`[Bilibili] Trying ${domain} for ${mid}...`);
+
+            const res = await fetch(url, {
+                headers: {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+                    'Accept': 'application/json'
+                },
+                signal: controller.signal
+            });
+            clearTimeout(timeoutId);
+
+            if (!res.ok) {
+                console.warn(`[Bilibili RSSHub] ${domain} failed for ${mid}: ${res.status}`);
+                continue; // Try next domain
+            }
+
+            const data = await res.json();
+
+            // RSSHub returns items in data.items array
+            if (!data.items) {
+                console.warn(`[Bilibili RSSHub] ${domain} returned invalid format for ${mid}`);
+                continue;
+            }
+
+            if (data.items.length === 0) {
+                // Valid response but empty, don't try other domains
+                console.log(`[Bilibili RSSHub] No videos found for ${mid} via ${domain}`);
+                return [];
+            }
+
+            // Success! Transform and return
+            return data.items.map(item => {
+                const bvidMatch = item.url?.match(/video\/(BV[a-zA-Z0-9]+)/);
+                const bvid = bvidMatch ? bvidMatch[1] : item.id;
+                const pubDate = new Date(item.date_published || item.pubDate || Date.now());
+
+                return {
+                    bvid: bvid,
+                    title: item.title || 'Untitled',
+                    pic: item.image || '',
+                    author: item.authors?.[0]?.name || '',
+                    created: Math.floor(pubDate.getTime() / 1000),
+                    play: 0,
+                    length: ''
+                };
+            });
+
+        } catch (e) {
+            console.warn(`[Bilibili RSSHub] Error ${domain} for ${mid}:`, e.message);
+            // Continue to next domain
+        }
+    }
+
+    console.error(`[Bilibili] All RSSHub instances failed for ${mid}`);
+    return [];
+}
+
 export { v12_logic, syncTwitchArchives, syncBilibiliArchives };
