@@ -151,6 +151,31 @@ const logAdminAction = async (db, action, details) => {
     } catch (e) { console.error('AdminLog Error:', e); }
 };
 
+// [RESTORED] Check if a video is a YouTube Short by checking the Shorts URL response
+// Uses the same logic as the original Vercel version: follows redirect and checks final URL
+async function isYouTubeShort(videoId) {
+    try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 5000); // 5s timeout
+
+        const res = await fetch(`https://www.youtube.com/shorts/${videoId}`, {
+            method: 'GET', // Use GET to follow redirects
+            signal: controller.signal,
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            }
+        });
+        clearTimeout(timeoutId);
+
+        // If the final URL still contains '/shorts/', it's a Short
+        // If it redirected to '/watch?v=', it's a regular video
+        return res.url.includes('/shorts/');
+    } catch (e) {
+        console.error(`[Short Check] Error for ${videoId}:`, e.message);
+        return null; // null means "unknown, use fallback"
+    }
+}
+
 // --- Quota Tracker ---
 const getQuotaCost = (endpoint) => {
     if (endpoint === 'search') return 100;
@@ -777,12 +802,25 @@ const v12_logic = {
                 duration: detail.contentDetails?.duration || '',
                 durationMinutes,
                 source: type,
-                duration: detail.contentDetails?.duration || '',
-                durationMinutes,
-                source: type,
-                videoType: durationMinutes <= 1.05 ? 'short' : 'video',
+                videoType: 'video', // Will be determined below
                 isClipProhibited: checkClipProhibition(title, description) // [NEW] Added prohibition check
             };
+
+            // [NEW] Accurate Shorts Detection via YouTube URL check
+            // Only check if duration is under 3.5 minutes (Shorts max is 3 min)
+            if (durationMinutes <= 3.5) {
+                const isShort = await isYouTubeShort(videoId);
+                if (isShort === true) {
+                    doc.videoType = 'short';
+                } else if (isShort === false) {
+                    doc.videoType = 'video';
+                } else {
+                    // Fallback: if check failed, use old duration-based logic
+                    doc.videoType = durationMinutes <= 1.05 ? 'short' : 'video';
+                }
+                // Small delay to avoid rate limiting from YouTube
+                await new Promise(r => setTimeout(r, 100));
+            }
 
             // [NEW] Multi-Link Logic
             const osis = parseAllStreamInfos(description);
