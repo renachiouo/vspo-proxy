@@ -3,7 +3,7 @@ import { MongoClient } from 'mongodb';
 import crypto from 'crypto';
 
 // --- Configuration ---
-const SCRIPT_VERSION = '17.16-REVERT-POOL';
+const SCRIPT_VERSION = '17.17-RACE-FIX';
 const UPDATE_INTERVAL_SECONDS = 1200; // CN: 20 mins
 const FOREIGN_UPDATE_INTERVAL_SECONDS = 1200; // JP Whitelist: 20 mins
 const FOREIGN_SEARCH_INTERVAL_SECONDS = 3600; // JP Keywords: 60 mins
@@ -90,7 +90,8 @@ const STREAM_UPDATE_INTERVAL_SECONDS = 3600; // 1 Hour
 // --- DB Connection ---
 let cachedClient = null;
 let cachedDb = null;
-let cachedVersion = null; // Track version to force reconnect on deploy
+let cachedVersion = null;
+let connectionPromise = null; // Prevent race condition on concurrent requests
 
 async function getDb() {
     // Force reconnect if version changed (new deployment)
@@ -101,20 +102,31 @@ async function getDb() {
         cachedClient = null;
         cachedDb = null;
         cachedVersion = SCRIPT_VERSION;
+        connectionPromise = null;
     }
 
     if (cachedDb) return cachedDb;
-    if (!cachedClient) {
-        console.log(`[DB] Connecting with version ${SCRIPT_VERSION}...`);
-        // Removed maxPoolSize restriction - use default (100) to allow concurrency
+
+    // If another request is already connecting, wait for it instead of creating a new connection
+    if (connectionPromise) {
+        console.log(`[DB] Waiting for existing connection...`);
+        await connectionPromise;
+        return cachedDb;
+    }
+
+    // This request will establish the connection
+    console.log(`[DB] Connecting with version ${SCRIPT_VERSION}...`);
+    connectionPromise = (async () => {
         cachedClient = new MongoClient(MONGODB_URI, {
             serverSelectionTimeoutMS: 5000,
-            socketTimeoutMS: 30000,
+            socketTimeoutMS: 45000, // Increased to handle slow M0
         });
         await cachedClient.connect();
+        cachedDb = cachedClient.db(DB_NAME);
         console.log(`[DB] Connected.`);
-    }
-    cachedDb = cachedClient.db(DB_NAME);
+    })();
+
+    await connectionPromise;
     return cachedDb;
 }
 
