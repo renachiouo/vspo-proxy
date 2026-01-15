@@ -3,7 +3,7 @@ import { MongoClient } from 'mongodb';
 import crypto from 'crypto';
 
 // --- Configuration ---
-const SCRIPT_VERSION = '17.12-WORKER-FIX-LIMIT-OPT';
+const SCRIPT_VERSION = '17.13-DEBUG-EXPLAIN';
 const UPDATE_INTERVAL_SECONDS = 1200; // CN: 20 mins
 const FOREIGN_UPDATE_INTERVAL_SECONDS = 1200; // JP Whitelist: 20 mins
 const FOREIGN_SEARCH_INTERVAL_SECONDS = 3600; // JP Keywords: 60 mins
@@ -1955,6 +1955,20 @@ export default async function handler(req, res) {
         // Limit 1000 for CN (as requested), 7000 for JP (to cover 90 days)
         // Project to exclude large fields (description) to stay within Vercel payload limits
         console.time(`[${reqId}] DB Query`);
+
+        // Debug: Explain Mode
+        if (searchParams.get('debug_explain') === 'true') {
+            const explanation = await db.collection('videos')
+                .find(query)
+                .project({ description: 0, tags: 0 })
+                .sort({ publishedAt: -1 })
+                .limit(parseInt(searchParams.get('limit')) || (isForeign ? 7000 : 1000))
+                .explain('executionStats'); // Provide stats to see actual time
+
+            console.timeEnd(`[${reqId}] DB Query`);
+            return res.status(200).json({ debug: true, explanation });
+        }
+
         const rawVideos = await db.collection('videos')
             .find(query)
             .project({ description: 0, tags: 0 })
