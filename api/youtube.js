@@ -3,7 +3,7 @@ import { MongoClient } from 'mongodb';
 import crypto from 'crypto';
 
 // --- Configuration ---
-const SCRIPT_VERSION = '17.6-DEBUG-LOGGING';
+const SCRIPT_VERSION = '17.7-DB-OPTIMIZED';
 const UPDATE_INTERVAL_SECONDS = 1200; // CN: 20 mins
 const FOREIGN_UPDATE_INTERVAL_SECONDS = 1200; // JP Whitelist: 20 mins
 const FOREIGN_SEARCH_INTERVAL_SECONDS = 3600; // JP Keywords: 60 mins
@@ -93,9 +93,17 @@ let cachedDb = null;
 async function getDb() {
     if (cachedDb) return cachedDb;
     if (!cachedClient) {
-        cachedClient = new MongoClient(MONGODB_URI);
+        // Optimization for Vercel/Serverless:
+        // 1. maxPoolSize: 1 (Since each lambda handles 1 req, no need for pool)
+        // 2. socketTimeoutMS: 10000 (Fail fast on network issues)
+        cachedClient = new MongoClient(MONGODB_URI, {
+            maxPoolSize: 1,
+            serverSelectionTimeoutMS: 5000,
+            socketTimeoutMS: 10000,
+        });
         await cachedClient.connect();
     }
+    // Disable buffering to fail fast if connection drops
     cachedDb = cachedClient.db(DB_NAME);
     return cachedDb;
 }
