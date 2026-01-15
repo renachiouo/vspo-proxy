@@ -27,6 +27,8 @@ test_*.mjs
 check_video.mjs
 count_videos.mjs
 fix_video.mjs
+apply_indexes.mjs
+check_indexes.mjs
 
 # Logs
 *.log
