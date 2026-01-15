@@ -3,7 +3,7 @@ import { MongoClient } from 'mongodb';
 import crypto from 'crypto';
 
 // --- Configuration ---
-const SCRIPT_VERSION = '17.8-TIMEOUT-30S';
+const SCRIPT_VERSION = '17.9-FORCE-RECONNECT';
 const UPDATE_INTERVAL_SECONDS = 1200; // CN: 20 mins
 const FOREIGN_UPDATE_INTERVAL_SECONDS = 1200; // JP Whitelist: 20 mins
 const FOREIGN_SEARCH_INTERVAL_SECONDS = 3600; // JP Keywords: 60 mins
@@ -90,20 +90,30 @@ const STREAM_UPDATE_INTERVAL_SECONDS = 3600; // 1 Hour
 // --- DB Connection ---
 let cachedClient = null;
 let cachedDb = null;
+let cachedVersion = null; // Track version to force reconnect on deploy
+
 async function getDb() {
+    // Force reconnect if version changed (new deployment)
+    if (cachedVersion !== SCRIPT_VERSION) {
+        if (cachedClient) {
+            try { await cachedClient.close(); } catch (e) { }
+        }
+        cachedClient = null;
+        cachedDb = null;
+        cachedVersion = SCRIPT_VERSION;
+    }
+
     if (cachedDb) return cachedDb;
     if (!cachedClient) {
-        // Optimization for Vercel/Serverless:
-        // 1. maxPoolSize: 1 (Since each lambda handles 1 req, no need for pool)
-        // 2. socketTimeoutMS: 10000 (Fail fast on network issues)
+        console.log(`[DB] Connecting with version ${SCRIPT_VERSION}...`);
         cachedClient = new MongoClient(MONGODB_URI, {
             maxPoolSize: 1,
             serverSelectionTimeoutMS: 5000,
-            socketTimeoutMS: 30000, // Increased to 30s to match frontend & tolerate slow M0
+            socketTimeoutMS: 30000,
         });
         await cachedClient.connect();
+        console.log(`[DB] Connected.`);
     }
-    // Disable buffering to fail fast if connection drops
     cachedDb = cachedClient.db(DB_NAME);
     return cachedDb;
 }
