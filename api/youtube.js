@@ -1945,7 +1945,7 @@ export default async function handler(req, res) {
             .toArray();
         const videos = rawVideos.map(v => ({
             ...v,
-            videoType: v.type, // Map 'type' to 'videoType' for frontend
+            videoType: v.videoType, // Use correct field name from DB
             channelTitle: v.channelTitle || '',
             channelAvatarUrl: v.channelAvatarUrl || ''
         }));
@@ -2095,7 +2095,7 @@ export default async function handler(req, res) {
                 viewCount: v.viewCount || 0,
                 duration: v.duration || '',
                 publishedAt: v.publishedAt,
-                videoType: v.type, // Ensure videoType is returned
+                videoType: v.videoType, // Use correct field name from DB
                 source: v.source
             }))
         });
