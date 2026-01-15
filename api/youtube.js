@@ -3,7 +3,7 @@ import { MongoClient } from 'mongodb';
 import crypto from 'crypto';
 
 // --- Configuration ---
-const SCRIPT_VERSION = '17.19-DETAILED-LOG';
+const SCRIPT_VERSION = '17.20-JP-LIMIT-FIX';
 const UPDATE_INTERVAL_SECONDS = 1200; // CN: 20 mins
 const FOREIGN_UPDATE_INTERVAL_SECONDS = 1200; // JP Whitelist: 20 mins
 const FOREIGN_SEARCH_INTERVAL_SECONDS = 3600; // JP Keywords: 60 mins
@@ -1958,7 +1958,7 @@ export default async function handler(req, res) {
             .find(query)
             .project({ description: 0, tags: 0 })
             .sort({ publishedAt: -1 })
-            .limit(parseInt(searchParams.get('limit')) || (isForeign ? 7000 : 1000))
+            .limit(parseInt(searchParams.get('limit')) || (isForeign ? 2000 : 1000)) // JP reduced from 7000 to 2000 to avoid 60s timeout
             .toArray();
         console.timeEnd(`[${reqId}] DB Query`);
 
