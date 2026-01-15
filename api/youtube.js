@@ -1958,7 +1958,7 @@ export default async function handler(req, res) {
 
         const rawVideos = await db.collection('videos')
             .find(query)
-            .project({ description: 0, tags: 0 })
+            .project({ description: 0, tags: 0, searchableText: 0 }) // Exclude large text fields
             .sort({ publishedAt: -1 })
             .limit(parseInt(searchParams.get('limit')) || (isForeign ? 1000 : 1000)) // JP reduced from 7000 to 2000 to avoid 60s timeout
             .toArray();
