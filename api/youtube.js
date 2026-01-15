@@ -802,25 +802,11 @@ const v12_logic = {
                 duration: detail.contentDetails?.duration || '',
                 durationMinutes,
                 source: type,
-                videoType: 'video', // Will be determined below
-                isClipProhibited: checkClipProhibition(title, description) // [NEW] Added prohibition check
+                // [VERCEL] Use simple duration check to avoid timeout
+                // Accurate Shorts detection runs on Render Worker only
+                videoType: durationMinutes <= 3.05 ? 'short' : 'video',
+                isClipProhibited: checkClipProhibition(title, description)
             };
-
-            // [NEW] Accurate Shorts Detection via YouTube URL check
-            // Only check if duration is under 3.5 minutes (Shorts max is 3 min)
-            if (durationMinutes <= 3.5) {
-                const isShort = await isYouTubeShort(videoId);
-                if (isShort === true) {
-                    doc.videoType = 'short';
-                } else if (isShort === false) {
-                    doc.videoType = 'video';
-                } else {
-                    // Fallback: if check failed, use old duration-based logic
-                    doc.videoType = durationMinutes <= 1.05 ? 'short' : 'video';
-                }
-                // Small delay to avoid rate limiting from YouTube
-                await new Promise(r => setTimeout(r, 100));
-            }
 
             // [NEW] Multi-Link Logic
             const osis = parseAllStreamInfos(description);
