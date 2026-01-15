@@ -24,6 +24,9 @@ find_working_url.cjs
 vspo_worker_diag.js
 reclassify_shorts.mjs
 test_*.mjs
+check_video.mjs
+count_videos.mjs
+fix_video.mjs
 
 # Logs
 *.log
