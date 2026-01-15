@@ -3,7 +3,7 @@ import { MongoClient } from 'mongodb';
 import crypto from 'crypto';
 
 // --- Configuration ---
-const SCRIPT_VERSION = '17.9-FORCE-RECONNECT';
+const SCRIPT_VERSION = '17.10-RETRY-ENABLED';
 const UPDATE_INTERVAL_SECONDS = 1200; // CN: 20 mins
 const FOREIGN_UPDATE_INTERVAL_SECONDS = 1200; // JP Whitelist: 20 mins
 const FOREIGN_SEARCH_INTERVAL_SECONDS = 3600; // JP Keywords: 60 mins
@@ -110,6 +110,8 @@ async function getDb() {
             maxPoolSize: 1,
             serverSelectionTimeoutMS: 5000,
             socketTimeoutMS: 30000,
+            retryReads: true,
+            retryWrites: true,
         });
         await cachedClient.connect();
         console.log(`[DB] Connected.`);
