@@ -3,7 +3,7 @@ import { MongoClient } from 'mongodb';
 import crypto from 'crypto';
 
 // --- Configuration ---
-const SCRIPT_VERSION = '17.18-FRESH-CONN';
+const SCRIPT_VERSION = '17.19-DETAILED-LOG';
 const UPDATE_INTERVAL_SECONDS = 1200; // CN: 20 mins
 const FOREIGN_UPDATE_INTERVAL_SECONDS = 1200; // JP Whitelist: 20 mins
 const FOREIGN_SEARCH_INTERVAL_SECONDS = 3600; // JP Keywords: 60 mins
@@ -1916,6 +1916,10 @@ export default async function handler(req, res) {
         // --- PERFORMANCE MONITORING START ---
         const reqId = Date.now().toString().slice(-6);
         console.log(`[${reqId}] Request started`);
+        console.log(`[${reqId}] Full URL: ${req.url}`);
+        console.log(`[${reqId}] Params: lang=${lang}, isForeign=${isForeign}, noIncrement=${noIncrement}`);
+        console.log(`[${reqId}] User-Agent: ${req.headers['user-agent']?.substring(0, 50)}...`);
+        console.log(`[${reqId}] Origin: ${req.headers['origin'] || 'none'}`);
         console.time(`[${reqId}] Total Execution`);
 
         // ... update trigger logic omitted for brevity ...
