@@ -30,6 +30,7 @@ fix_video.mjs
 apply_indexes.mjs
 check_indexes.mjs
 debug_slow_query.mjs
+apply_optimized_indexes.mjs
 
 # Logs
 *.log
