@@ -3,7 +3,7 @@ import { MongoClient } from 'mongodb';
 import crypto from 'crypto';
 
 // --- Configuration ---
-const SCRIPT_VERSION = '17.7-DB-OPTIMIZED';
+const SCRIPT_VERSION = '17.8-TIMEOUT-30S';
 const UPDATE_INTERVAL_SECONDS = 1200; // CN: 20 mins
 const FOREIGN_UPDATE_INTERVAL_SECONDS = 1200; // JP Whitelist: 20 mins
 const FOREIGN_SEARCH_INTERVAL_SECONDS = 3600; // JP Keywords: 60 mins
@@ -99,7 +99,7 @@ async function getDb() {
         cachedClient = new MongoClient(MONGODB_URI, {
             maxPoolSize: 1,
             serverSelectionTimeoutMS: 5000,
-            socketTimeoutMS: 10000,
+            socketTimeoutMS: 30000, // Increased to 30s to match frontend & tolerate slow M0
         });
         await cachedClient.connect();
     }

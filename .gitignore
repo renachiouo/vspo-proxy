@@ -29,6 +29,7 @@ count_videos.mjs
 fix_video.mjs
 apply_indexes.mjs
 check_indexes.mjs
+debug_slow_query.mjs
 
 # Logs
 *.log
