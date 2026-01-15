@@ -3,7 +3,7 @@ import { MongoClient } from 'mongodb';
 import crypto from 'crypto';
 
 // --- Configuration ---
-const SCRIPT_VERSION = '17.15-POOL-SIZE-10';
+const SCRIPT_VERSION = '17.16-REVERT-POOL';
 const UPDATE_INTERVAL_SECONDS = 1200; // CN: 20 mins
 const FOREIGN_UPDATE_INTERVAL_SECONDS = 1200; // JP Whitelist: 20 mins
 const FOREIGN_SEARCH_INTERVAL_SECONDS = 3600; // JP Keywords: 60 mins
@@ -106,12 +106,10 @@ async function getDb() {
     if (cachedDb) return cachedDb;
     if (!cachedClient) {
         console.log(`[DB] Connecting with version ${SCRIPT_VERSION}...`);
+        // Removed maxPoolSize restriction - use default (100) to allow concurrency
         cachedClient = new MongoClient(MONGODB_URI, {
-            maxPoolSize: 10, // Increased to 10 to handle concurrent frontend requests (Feed + Live + Status)
             serverSelectionTimeoutMS: 5000,
             socketTimeoutMS: 30000,
-            retryReads: true,
-            retryWrites: true,
         });
         await cachedClient.connect();
         console.log(`[DB] Connected.`);

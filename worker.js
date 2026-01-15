@@ -97,13 +97,7 @@ let cachedDb = null;
 async function getDb() {
     if (cachedDb) return cachedDb;
     if (!cachedClient) {
-        cachedClient = new MongoClient(MONGODB_URI, {
-            maxPoolSize: 1,
-            serverSelectionTimeoutMS: 5000,
-            socketTimeoutMS: 30000,
-            retryReads: true,
-            retryWrites: true,
-        });
+        cachedClient = new MongoClient(MONGODB_URI);
         await cachedClient.connect();
     }
     cachedDb = cachedClient.db(DB_NAME);
