@@ -88,17 +88,19 @@ const INACTIVE_SCAN_INTERVAL_JP_MS = 86400 * 1000; // 24 Hours
 const STREAM_UPDATE_INTERVAL_SECONDS = 3600; // 1 Hour
 
 // --- DB Connection ---
-// [DEBUG] Creating fresh connection per request to test if pooling is the issue
+let cachedClient = null;
+let cachedDb = null;
+
 async function getDb() {
-    console.log(`[DB] Creating fresh connection (v${SCRIPT_VERSION})...`);
-    const client = new MongoClient(MONGODB_URI, {
-        maxPoolSize: 1, // Single connection
-        serverSelectionTimeoutMS: 10000,
-        socketTimeoutMS: 60000, // 60 seconds for slow queries
-    });
-    await client.connect();
-    console.log(`[DB] Connected.`);
-    return client.db(DB_NAME);
+    if (cachedDb) return cachedDb;
+    if (!cachedClient) {
+        console.log(`[DB] Connecting (v${SCRIPT_VERSION})...`);
+        cachedClient = new MongoClient(MONGODB_URI);
+        await cachedClient.connect();
+        console.log(`[DB] Connected.`);
+    }
+    cachedDb = cachedClient.db(DB_NAME);
+    return cachedDb;
 }
 
 // --- Helpers ---
