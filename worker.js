@@ -7,7 +7,7 @@ import http from 'http';
 // --- Minimal HTTP Server moved inside startWorker to access sync functions ---
 
 // --- Configuration ---
-const SCRIPT_VERSION = '17.4-FIXED';
+const SCRIPT_VERSION = '17.11-WORKER-DB-FIX';
 const UPDATE_INTERVAL_SECONDS = 1200; // CN: 20 mins
 const FOREIGN_UPDATE_INTERVAL_SECONDS = 1200; // JP Whitelist: 20 mins
 const FOREIGN_SEARCH_INTERVAL_SECONDS = 3600; // JP Keywords: 60 mins
@@ -97,7 +97,13 @@ let cachedDb = null;
 async function getDb() {
     if (cachedDb) return cachedDb;
     if (!cachedClient) {
-        cachedClient = new MongoClient(MONGODB_URI);
+        cachedClient = new MongoClient(MONGODB_URI, {
+            maxPoolSize: 1,
+            serverSelectionTimeoutMS: 5000,
+            socketTimeoutMS: 30000,
+            retryReads: true,
+            retryWrites: true,
+        });
         await cachedClient.connect();
     }
     cachedDb = cachedClient.db(DB_NAME);
