@@ -3,7 +3,7 @@ import { MongoClient } from 'mongodb';
 import crypto from 'crypto';
 
 // --- Configuration ---
-const SCRIPT_VERSION = '17.17-RACE-FIX';
+const SCRIPT_VERSION = '17.18-FRESH-CONN';
 const UPDATE_INTERVAL_SECONDS = 1200; // CN: 20 mins
 const FOREIGN_UPDATE_INTERVAL_SECONDS = 1200; // JP Whitelist: 20 mins
 const FOREIGN_SEARCH_INTERVAL_SECONDS = 3600; // JP Keywords: 60 mins
@@ -88,46 +88,17 @@ const INACTIVE_SCAN_INTERVAL_JP_MS = 86400 * 1000; // 24 Hours
 const STREAM_UPDATE_INTERVAL_SECONDS = 3600; // 1 Hour
 
 // --- DB Connection ---
-let cachedClient = null;
-let cachedDb = null;
-let cachedVersion = null;
-let connectionPromise = null; // Prevent race condition on concurrent requests
-
+// [DEBUG] Creating fresh connection per request to test if pooling is the issue
 async function getDb() {
-    // Force reconnect if version changed (new deployment)
-    if (cachedVersion !== SCRIPT_VERSION) {
-        if (cachedClient) {
-            try { await cachedClient.close(); } catch (e) { }
-        }
-        cachedClient = null;
-        cachedDb = null;
-        cachedVersion = SCRIPT_VERSION;
-        connectionPromise = null;
-    }
-
-    if (cachedDb) return cachedDb;
-
-    // If another request is already connecting, wait for it instead of creating a new connection
-    if (connectionPromise) {
-        console.log(`[DB] Waiting for existing connection...`);
-        await connectionPromise;
-        return cachedDb;
-    }
-
-    // This request will establish the connection
-    console.log(`[DB] Connecting with version ${SCRIPT_VERSION}...`);
-    connectionPromise = (async () => {
-        cachedClient = new MongoClient(MONGODB_URI, {
-            serverSelectionTimeoutMS: 5000,
-            socketTimeoutMS: 45000, // Increased to handle slow M0
-        });
-        await cachedClient.connect();
-        cachedDb = cachedClient.db(DB_NAME);
-        console.log(`[DB] Connected.`);
-    })();
-
-    await connectionPromise;
-    return cachedDb;
+    console.log(`[DB] Creating fresh connection (v${SCRIPT_VERSION})...`);
+    const client = new MongoClient(MONGODB_URI, {
+        maxPoolSize: 1, // Single connection
+        serverSelectionTimeoutMS: 10000,
+        socketTimeoutMS: 60000, // 60 seconds for slow queries
+    });
+    await client.connect();
+    console.log(`[DB] Connected.`);
+    return client.db(DB_NAME);
 }
 
 // --- Helpers ---
