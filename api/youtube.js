@@ -3,7 +3,7 @@ import { MongoClient } from 'mongodb';
 import crypto from 'crypto';
 
 // --- Configuration ---
-const SCRIPT_VERSION = '17.4-FIXED';
+const SCRIPT_VERSION = '17.20-JP-LIMIT-FIX';
 const UPDATE_INTERVAL_SECONDS = 1200; // CN: 20 mins
 const FOREIGN_UPDATE_INTERVAL_SECONDS = 1200; // JP Whitelist: 20 mins
 const FOREIGN_SEARCH_INTERVAL_SECONDS = 3600; // JP Keywords: 60 mins
@@ -88,16 +88,17 @@ const INACTIVE_SCAN_INTERVAL_JP_MS = 86400 * 1000; // 24 Hours
 const STREAM_UPDATE_INTERVAL_SECONDS = 3600; // 1 Hour
 
 // --- DB Connection ---
-let cachedClient = null;
-let cachedDb = null;
+// [DEBUG] Creating fresh connection per request to test if pooling is the issue
 async function getDb() {
-    if (cachedDb) return cachedDb;
-    if (!cachedClient) {
-        cachedClient = new MongoClient(MONGODB_URI);
-        await cachedClient.connect();
-    }
-    cachedDb = cachedClient.db(DB_NAME);
-    return cachedDb;
+    console.log(`[DB] Creating fresh connection (v${SCRIPT_VERSION})...`);
+    const client = new MongoClient(MONGODB_URI, {
+        maxPoolSize: 1, // Single connection
+        serverSelectionTimeoutMS: 10000,
+        socketTimeoutMS: 60000, // 60 seconds for slow queries
+    });
+    await client.connect();
+    console.log(`[DB] Connected.`);
+    return client.db(DB_NAME);
 }
 
 // --- Helpers ---
@@ -802,25 +803,11 @@ const v12_logic = {
                 duration: detail.contentDetails?.duration || '',
                 durationMinutes,
                 source: type,
-                videoType: 'video', // Will be determined below
-                isClipProhibited: checkClipProhibition(title, description) // [NEW] Added prohibition check
+                // [VERCEL] Use simple duration check to avoid timeout
+                // Accurate Shorts detection runs on Render Worker only
+                videoType: durationMinutes <= 3.05 ? 'short' : 'video',
+                isClipProhibited: checkClipProhibition(title, description)
             };
-
-            // [NEW] Accurate Shorts Detection via YouTube URL check
-            // Only check if duration is under 3.5 minutes (Shorts max is 3 min)
-            if (durationMinutes <= 3.5) {
-                const isShort = await isYouTubeShort(videoId);
-                if (isShort === true) {
-                    doc.videoType = 'short';
-                } else if (isShort === false) {
-                    doc.videoType = 'video';
-                } else {
-                    // Fallback: if check failed, use old duration-based logic
-                    doc.videoType = durationMinutes <= 1.05 ? 'short' : 'video';
-                }
-                // Small delay to avoid rate limiting from YouTube
-                await new Promise(r => setTimeout(r, 100));
-            }
 
             // [NEW] Multi-Link Logic
             const osis = parseAllStreamInfos(description);
@@ -1925,10 +1912,25 @@ export default async function handler(req, res) {
 
         logOutcome(`read_only_mode_${lang}`);
 
+        // 4. Get Videos
+        // --- PERFORMANCE MONITORING START ---
+        const reqId = Date.now().toString().slice(-6);
+        console.log(`[${reqId}] Request started`);
+        console.log(`[${reqId}] Full URL: ${req.url}`);
+        console.log(`[${reqId}] Params: lang=${lang}, isForeign=${isForeign}, noIncrement=${noIncrement}`);
+        console.log(`[${reqId}] User-Agent: ${req.headers['user-agent']?.substring(0, 50)}...`);
+        console.log(`[${reqId}] Origin: ${req.headers['origin'] || 'none'}`);
+        console.time(`[${reqId}] Total Execution`);
 
+        // ... update trigger logic omitted for brevity ...
+
+        logOutcome(`read_only_mode_${lang}`);
+
+        console.time(`[${reqId}] Fetch Blacklist`);
         // Fix: Use 'source' to query, so 'type' can be 'video'/'short'
         const blacklistDoc = await db.collection('lists').findOne({ _id: isForeign ? 'blacklist_jp' : 'blacklist_cn' });
         const blacklist = blacklistDoc?.items || [];
+        console.timeEnd(`[${reqId}] Fetch Blacklist`);
 
         const query = isForeign ? { source: 'foreign' } : { source: 'main' };
         if (blacklist.length > 0) {
@@ -1937,27 +1939,51 @@ export default async function handler(req, res) {
 
         // Limit 1000 for CN (as requested), 7000 for JP (to cover 90 days)
         // Project to exclude large fields (description) to stay within Vercel payload limits
+        console.time(`[${reqId}] DB Query`);
+
+        // Debug: Explain Mode
+        if (searchParams.get('debug_explain') === 'true') {
+            const explanation = await db.collection('videos')
+                .find(query)
+                .project({ description: 0, tags: 0 })
+                .sort({ publishedAt: -1 })
+                .limit(parseInt(searchParams.get('limit')) || (isForeign ? 7000 : 1000))
+                .explain('executionStats'); // Provide stats to see actual time
+
+            console.timeEnd(`[${reqId}] DB Query`);
+            return res.status(200).json({ debug: true, explanation });
+        }
+
         const rawVideos = await db.collection('videos')
             .find(query)
             .project({ description: 0, tags: 0 })
             .sort({ publishedAt: -1 })
-            .limit(isForeign ? 7000 : 1000)
+            .limit(parseInt(searchParams.get('limit')) || (isForeign ? 1000 : 1000)) // JP reduced from 7000 to 2000 to avoid 60s timeout
             .toArray();
+        console.timeEnd(`[${reqId}] DB Query`);
+
+        console.log(`[${reqId}] Retrieved ${rawVideos.length} videos`);
+
+        console.time(`[${reqId}] Data Transform`);
         const videos = rawVideos.map(v => ({
             ...v,
-            videoType: v.type, // Map 'type' to 'videoType' for frontend
+            videoType: v.videoType, // Use correct field name from DB
             channelTitle: v.channelTitle || '',
             channelAvatarUrl: v.channelAvatarUrl || ''
         }));
+        console.timeEnd(`[${reqId}] Data Transform`);
 
+        console.time(`[${reqId}] Fetch Metadata`);
         const ann = await db.collection('metadata').findOne({ _id: 'announcement' });
         const updateMeta = await db.collection('metadata').findOne({ _id: metaId });
+        console.timeEnd(`[${reqId}] Fetch Metadata`);
 
         // Cron Optimization: Return minimal response if triggered automatically
         if (searchParams.get('trigger_only') === 'true') {
             return res.status(200).json({ success: true, message: 'Update Triggered', didUpdate });
         }
 
+        console.timeEnd(`[${reqId}] Total Execution`);
         return res.status(200).json({
             videos,
             totalVisits: visits.totalVisits || 0,
@@ -2095,7 +2121,7 @@ export default async function handler(req, res) {
                 viewCount: v.viewCount || 0,
                 duration: v.duration || '',
                 publishedAt: v.publishedAt,
-                videoType: v.type, // Ensure videoType is returned
+                videoType: v.videoType, // Use correct field name from DB
                 source: v.source
             }))
         });
