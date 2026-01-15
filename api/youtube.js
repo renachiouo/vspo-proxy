@@ -3,7 +3,7 @@ import { MongoClient } from 'mongodb';
 import crypto from 'crypto';
 
 // --- Configuration ---
-const SCRIPT_VERSION = '17.5-FIXED-REDEPLOY';
+const SCRIPT_VERSION = '17.6-DEBUG-LOGGING';
 const UPDATE_INTERVAL_SECONDS = 1200; // CN: 20 mins
 const FOREIGN_UPDATE_INTERVAL_SECONDS = 1200; // JP Whitelist: 20 mins
 const FOREIGN_SEARCH_INTERVAL_SECONDS = 3600; // JP Keywords: 60 mins
@@ -1911,10 +1911,21 @@ export default async function handler(req, res) {
 
         logOutcome(`read_only_mode_${lang}`);
 
+        // 4. Get Videos
+        // --- PERFORMANCE MONITORING START ---
+        const reqId = Date.now().toString().slice(-6);
+        console.log(`[${reqId}] Request started`);
+        console.time(`[${reqId}] Total Execution`);
 
+        // ... update trigger logic omitted for brevity ...
+
+        logOutcome(`read_only_mode_${lang}`);
+
+        console.time(`[${reqId}] Fetch Blacklist`);
         // Fix: Use 'source' to query, so 'type' can be 'video'/'short'
         const blacklistDoc = await db.collection('lists').findOne({ _id: isForeign ? 'blacklist_jp' : 'blacklist_cn' });
         const blacklist = blacklistDoc?.items || [];
+        console.timeEnd(`[${reqId}] Fetch Blacklist`);
 
         const query = isForeign ? { source: 'foreign' } : { source: 'main' };
         if (blacklist.length > 0) {
@@ -1923,27 +1934,37 @@ export default async function handler(req, res) {
 
         // Limit 1000 for CN (as requested), 7000 for JP (to cover 90 days)
         // Project to exclude large fields (description) to stay within Vercel payload limits
+        console.time(`[${reqId}] DB Query`);
         const rawVideos = await db.collection('videos')
             .find(query)
             .project({ description: 0, tags: 0 })
             .sort({ publishedAt: -1 })
             .limit(isForeign ? 7000 : 1000)
             .toArray();
+        console.timeEnd(`[${reqId}] DB Query`);
+
+        console.log(`[${reqId}] Retrieved ${rawVideos.length} videos`);
+
+        console.time(`[${reqId}] Data Transform`);
         const videos = rawVideos.map(v => ({
             ...v,
             videoType: v.videoType, // Use correct field name from DB
             channelTitle: v.channelTitle || '',
             channelAvatarUrl: v.channelAvatarUrl || ''
         }));
+        console.timeEnd(`[${reqId}] Data Transform`);
 
+        console.time(`[${reqId}] Fetch Metadata`);
         const ann = await db.collection('metadata').findOne({ _id: 'announcement' });
         const updateMeta = await db.collection('metadata').findOne({ _id: metaId });
+        console.timeEnd(`[${reqId}] Fetch Metadata`);
 
         // Cron Optimization: Return minimal response if triggered automatically
         if (searchParams.get('trigger_only') === 'true') {
             return res.status(200).json({ success: true, message: 'Update Triggered', didUpdate });
         }
 
+        console.timeEnd(`[${reqId}] Total Execution`);
         return res.status(200).json({
             videos,
             totalVisits: visits.totalVisits || 0,
