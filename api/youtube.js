@@ -1958,9 +1958,10 @@ export default async function handler(req, res) {
 
         const rawVideos = await db.collection('videos')
             .find(query)
-            .project({ description: 0, tags: 0, searchableText: 0 }) // Exclude large text fields
+            // Exclude large text fields to reduce payload
+            .project({ description: 0, tags: 0, searchableText: 0 })
             .sort({ publishedAt: -1 })
-            .limit(parseInt(searchParams.get('limit')) || (isForeign ? 1000 : 1000)) // JP reduced from 7000 to 2000 to avoid 60s timeout
+            .limit(parseInt(searchParams.get('limit')) || (isForeign ? 1000 : 1000))
             .toArray();
         console.timeEnd(`[${reqId}] DB Query`);
 
@@ -1969,7 +1970,8 @@ export default async function handler(req, res) {
         console.time(`[${reqId}] Data Transform`);
         const videos = rawVideos.map(v => ({
             ...v,
-            videoType: v.videoType, // Use correct field name from DB
+            id: v._id,
+            videoType: v.videoType || 'video',
             channelTitle: v.channelTitle || '',
             channelAvatarUrl: v.channelAvatarUrl || ''
         }));
