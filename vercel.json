@@ -30,8 +30,7 @@
   ],
   "functions": {
     "api/**/*.js": {
-      "maxDuration": 60,
-      "region": "hkg1"
+      "maxDuration": 60
     }
   }
 }
