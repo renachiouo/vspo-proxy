@@ -1961,7 +1961,7 @@ export default async function handler(req, res) {
             // Exclude large text fields to reduce payload
             .project({ description: 0, tags: 0, searchableText: 0 })
             .sort({ publishedAt: -1 })
-            .limit(parseInt(searchParams.get('limit')) || (isForeign ? 1000 : 1000))
+            .limit(parseInt(searchParams.get('limit')) || (isForeign ? 2000 : 1000))
             .toArray();
         console.timeEnd(`[${reqId}] DB Query`);
 

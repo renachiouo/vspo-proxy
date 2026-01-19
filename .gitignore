@@ -32,6 +32,12 @@ check_indexes.mjs
 debug_slow_query.mjs
 apply_optimized_indexes.mjs
 diagnose_connection.mjs
+migrate_to_singapore.mjs
+migrate_complete.mjs
+test_singapore.mjs
+compare_clusters.mjs
+verify_migration.mjs
+check_latest.mjs
 
 # Logs
 *.log
