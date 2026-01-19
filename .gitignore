@@ -31,6 +31,7 @@ apply_indexes.mjs
 check_indexes.mjs
 debug_slow_query.mjs
 apply_optimized_indexes.mjs
+diagnose_connection.mjs
 
 # Logs
 *.log
