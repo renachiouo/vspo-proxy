@@ -1389,11 +1389,14 @@ const v12_logic = {
                                     startTime: new Date().toISOString() // Fallback
                                 });
                             }
+                        } else {
+                            console.warn(`[Bilibili Debug] Fetch Failed for ${member.name}: ${res.status} ${res.statusText}`);
                         }
-
                     } catch (e) {
                         console.error(`[Bilibili Error] ${member.name}:`, e);
                     }
+                    // Rate limit protection: 1s delay
+                    await new Promise(r => setTimeout(r, 1000));
                 }
 
                 // --- YouTube Live Check ---
