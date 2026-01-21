@@ -38,6 +38,7 @@ test_singapore.mjs
 compare_clusters.mjs
 verify_migration.mjs
 check_latest.mjs
+check_bilibili_debug.mjs
 
 # Logs
 *.log
