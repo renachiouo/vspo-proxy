@@ -1,43 +1,56 @@
 
+// Mock VSPO_MEMBERS from worker.js
+const MEMBERS = [
+    { name: "小針彩", bilibiliUid: "3546695948306751", bilibiliId: "1972360561" },
+    { name: "白咲露理", bilibiliUid: "3546695864421312", bilibiliId: "1842209652" },
+    { name: "帕妃", bilibiliUid: "3546695946209651", bilibiliId: "1742801253" },
+    { name: "千郁郁", bilibiliUid: "3546695956695430", bilibiliId: "1996441034" },
+    { name: "日向晴", bilibiliUid: "3546860864146139", bilibiliId: "1833448662" }
+];
 
-const UID = '1742801253';
+async function checkBatchBilibili() {
+    console.log('[Debug] Starting Bilibili Batch Live Check...');
+    const uids = MEMBERS.map(m => parseInt(m.bilibiliUid));
 
-async function checkBilibiliLive() {
-    console.log(`Checking Bilibili Live Status for UID: ${UID}`);
+    console.log(`Checking ${uids.length} UIDs:`, uids);
+
+    const statusUrl = `https://api.live.bilibili.com/room/v1/Room/get_status_info_by_uids`;
 
     try {
-        // Replicating worker.js logic exactly
-        const url = `https://api.bilibili.com/room/v1/Room/get_info?room_id=${UID}`;
-        console.log(`Querying: ${url}`);
-
-        const res = await fetch(url, {
+        const res = await fetch(statusUrl, {
+            method: 'POST',
             headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Referer': `https://live.bilibili.com/${UID}`
-            }
+                'Content-Type': 'application/json',
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
+            },
+            body: JSON.stringify({ uids })
         });
 
-        const data = await res.json();
-        // console.log('API Response:', JSON.stringify(data, null, 2));
+        console.log(`HTTP Status: ${res.status}`);
 
-        if (data.code === 0 && data.data) {
-            const liveRoom = data.data.live_room;
-            if (liveRoom) {
-                console.log(`\nResults for ${UID}:`);
-                console.log(`Live Status: ${liveRoom.liveStatus} (1=Live)`);
-                console.log(`Title: ${liveRoom.title}`);
-                console.log(`URL: ${liveRoom.url}`);
-                console.log(`RoomID: ${liveRoom.roomid}`);
+        if (res.ok) {
+            const json = await res.json();
+            console.log('Response Code:', json.code);
+            // console.log('Full Data:', JSON.stringify(json.data, null, 2));
+
+            if (json.code === 0 && json.data) {
+                console.log('\n--- Results ---');
+                for (const [uidStr, info] of Object.entries(json.data)) {
+                    const member = MEMBERS.find(m => m.bilibiliUid === uidStr);
+                    const name = member ? member.name : `Unknown(${uidStr})`;
+
+                    console.log(`[${name}] Status: ${info.live_status} (1=Live) | Title: ${info.title} | Room: ${info.room_id}`);
+                }
             } else {
-                console.log('No live_room info found.');
+                console.warn('API returned error code or no data.');
             }
         } else {
-            console.log('API Error or No Data:', data.message || data);
+            console.error('Fetch failed with status:', res.statusText);
         }
 
     } catch (e) {
-        console.error('Error:', e);
+        console.error('Batch Check Failed:', e);
     }
 }
 
-checkBilibiliLive();
+checkBatchBilibili();

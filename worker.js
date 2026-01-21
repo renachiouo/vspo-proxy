@@ -1347,56 +1347,71 @@ const v12_logic = {
                 } catch (e) { console.error('Twitch Check Error:', e); }
 
                 // --- Bilibili Live Check ---
+                // --- Bilibili Live Check (Refactored to Batch UserID Check) ---
                 console.log('[Debug] Starting Bilibili Live Check...');
-                const biliMembers = members.filter(m => m.bilibiliId);
-                for (const member of biliMembers) {
+                const biliMembers = members.filter(m => m.bilibiliUid);
+                // JS Max Safe Integer is 9e15, Bilibili UIDs are ~3e15, so safe to parse.
+                const uids = biliMembers.map(m => parseInt(m.bilibiliUid));
+
+                if (uids.length > 0) {
                     try {
-                        console.log(`[Bilibili Debug] Checking ${member.name} (${member.bilibiliId})`);
+                        // Use get_status_info_by_uids (POST) which is more reliable and supports batching
+                        const statusUrl = `https://api.live.bilibili.com/room/v1/Room/get_status_info_by_uids`;
+                        console.log(`[Bilibili Debug] Checking ${uids.length} members via Batch API...`);
 
-                        // 1. Status Check (Using reliable legacy API)
-                        const statusUrl = `https://api.bilibili.com/room/v1/Room/get_info?room_id=${member.bilibiliId}`;
-                        const headers = {
-                            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                            'Referer': `https://live.bilibili.com/${member.bilibiliId}`
-                        };
+                        const res = await fetch(statusUrl, {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json',
+                                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
+                            },
+                            body: JSON.stringify({ uids })
+                        });
 
-                        const res = await fetch(statusUrl, { headers });
                         if (res.ok) {
                             const json = await res.json();
-                            console.log(`[Bilibili Debug] ${member.name}: Code ${json.code} Status ${json.data?.live_status}`);
+                            if (json.code === 0 && json.data) {
+                                // Result is a map: { "uid": { ... } }
+                                for (const [uidStr, info] of Object.entries(json.data)) {
+                                    // Filter only Live (1)
+                                    if (info.live_status === 1) {
+                                        const member = biliMembers.find(m => m.bilibiliUid === uidStr);
+                                        if (member) {
+                                            let avatarUrl = member.customAvatarUrl || '';
+                                            if (!avatarUrl) {
+                                                // Fallback to find by name from other records if needed
+                                                const ytMember = members.find(m => m.name === member.name && m.ytId);
+                                                if (ytMember) {
+                                                    const dbCh = await db.collection('channels').findOne({ _id: ytMember.ytId });
+                                                    if (dbCh) avatarUrl = dbCh.thumbnail;
+                                                }
+                                            }
 
-                            if (json.code === 0 && json.data && json.data.live_status === 1) {
-                                // Find fallback avatar
-                                const ytMember = members.find(m => m.bilibiliId === member.bilibiliId);
-                                // Best effort to find avatar from channels DB if custom is missing
-                                let avatarUrl = VSPO_MEMBERS.find(m => m.bilibiliId === member.bilibiliId)?.customAvatarUrl || '';
-                                if (!avatarUrl && ytMember?.ytId) {
-                                    const dbCh = await db.collection('channels').findOne({ _id: ytMember.ytId });
-                                    if (dbCh) avatarUrl = dbCh.thumbnail;
+                                            liveStreams.push({
+                                                memberName: member.name,
+                                                platform: 'bilibili',
+                                                channelId: member.bilibiliId, // Use Room ID for link
+                                                avatarUrl,
+                                                title: info.title,
+                                                url: `https://live.bilibili.com/${member.bilibiliId}`,
+                                                thumbnailUrl: info.cover_from_user || info.keyframe || '',
+                                                status: 'live',
+                                                startTime: new Date().toISOString()
+                                            });
+                                        }
+                                    }
                                 }
-
-                                liveStreams.push({
-                                    memberName: member.name,
-                                    platform: 'bilibili',
-                                    channelId: member.bilibiliId,
-                                    avatarUrl,
-                                    title: json.data.title,
-                                    url: `https://live.bilibili.com/${member.bilibiliId}`,
-                                    title: json.data.title,
-                                    url: `https://live.bilibili.com/${member.bilibiliId}`,
-                                    thumbnailUrl: json.data.keyframe || json.data.user_cover || '',
-                                    status: 'live', // Bilibili check verifies live_status === 1
-                                    startTime: new Date().toISOString() // Fallback
-                                });
+                                console.log(`[Bilibili Debug] Batch Check Done. Found ${liveStreams.filter(s => s.platform === 'bilibili').length} live streams.`);
+                            } else {
+                                console.warn(`[Bilibili Debug] API Error Code: ${json.code}`);
                             }
                         } else {
-                            console.warn(`[Bilibili Debug] Fetch Failed for ${member.name}: ${res.status} ${res.statusText}`);
+                            console.warn(`[Bilibili Debug] HTTP Error: ${res.status}`);
                         }
+
                     } catch (e) {
-                        console.error(`[Bilibili Error] ${member.name}:`, e);
+                        console.error(`[Bilibili Error] Batch Check Failed:`, e);
                     }
-                    // Rate limit protection: 1s delay
-                    await new Promise(r => setTimeout(r, 1000));
                 }
 
                 // --- YouTube Live Check ---
