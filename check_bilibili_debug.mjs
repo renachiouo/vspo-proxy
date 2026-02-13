@@ -39,7 +39,11 @@ async function checkBatchBilibili() {
                     const member = MEMBERS.find(m => m.bilibiliUid === uidStr);
                     const name = member ? member.name : `Unknown(${uidStr})`;
 
-                    console.log(`[${name}] Status: ${info.live_status} (1=Live) | Title: ${info.title} | Room: ${info.room_id}`);
+                    console.log(`\n[${name}] Status: ${info.live_status} (1=Live)`);
+                    console.log(`Title: ${info.title}`);
+                    console.log(`Keyframe (Snapshot): ${info.keyframe}`);
+                    console.log(`User Cover: ${info.cover_from_user}`);
+                    console.log(`Current Choice: ${info.cover_from_user || info.keyframe || ''}`);
                 }
             } else {
                 console.warn('API returned error code or no data.');

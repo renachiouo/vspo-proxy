@@ -1394,7 +1394,7 @@ const v12_logic = {
                                                 avatarUrl,
                                                 title: info.title,
                                                 url: `https://live.bilibili.com/${member.bilibiliId}`,
-                                                thumbnailUrl: info.cover_from_user || info.keyframe || '',
+                                                thumbnailUrl: info.keyframe || info.cover_from_user || '',
                                                 status: 'live',
                                                 startTime: new Date().toISOString()
                                             });
