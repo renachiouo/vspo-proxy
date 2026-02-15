@@ -234,7 +234,73 @@ const cleanupOldQuotaLogs = async (db) => {
     } catch (e) {
         console.warn('[Quota] Cleanup Failed:', e);
     }
-};
+}
+
+// Admin Action Handler for Video Review
+async function handleAdminAction(req, res, db, body) {
+    const { action, password } = body;
+
+    // Authenticate
+    if (!process.env.ADMIN_PASSWORD || password !== process.env.ADMIN_PASSWORD) {
+        return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    try {
+        switch (action) {
+            case 'get_pending_videos': {
+                const videos = await db.collection('videos').find(
+                    { reviewStatus: 'pending_review' },
+                    { projection: { searchableText: 0, tags: 0 } }
+                ).sort({ publishedAt: -1 }).limit(100).toArray();
+
+                return res.status(200).json({
+                    success: true,
+                    count: videos.length,
+                    videos: videos.map(v => ({
+                        id: v._id,
+                        title: v.title,
+                        thumbnail: v.thumbnail,
+                        channelTitle: v.channelTitle,
+                        channelAvatarUrl: v.channelAvatarUrl,
+                        publishedAt: v.publishedAt,
+                        viewCount: v.viewCount || 0,
+                        reviewStatus: v.reviewStatus
+                    }))
+                });
+            }
+
+            case 'approve_video': {
+                const { videoId } = body;
+                if (!videoId) return res.status(400).json({ error: 'Missing videoId' });
+
+                await db.collection('videos').updateOne(
+                    { _id: videoId },
+                    { $set: { reviewStatus: 'approved' } }
+                );
+
+                return res.status(200).json({ success: true });
+            }
+
+            case 'reject_video': {
+                const { videoId } = body;
+                if (!videoId) return res.status(400).json({ error: 'Missing videoId' });
+
+                await db.collection('videos').updateOne(
+                    { _id: videoId },
+                    { $set: { reviewStatus: 'rejected' } }
+                );
+
+                return res.status(200).json({ success: true });
+            }
+
+            default:
+                return res.status(400).json({ error: 'Unknown action' });
+        }
+    } catch (error) {
+        console.error('[Admin Action Error]:', error);
+        return res.status(500).json({ error: 'Internal server error' });
+    }
+}
 
 async function getVisitorCount(db) {
     const total = await db.collection('analytics').findOne({ _id: 'total_visits' });
@@ -2411,6 +2477,11 @@ export default async function handler(req, res) {
         if (blacklist.length > 0) {
             query.channelId = { $nin: blacklist };
         }
+        // Add reviewStatus filter
+        query.$or = [
+            { reviewStatus: 'approved' },
+            { reviewStatus: { $exists: false } } // Backward compatibility for old videos
+        ];
 
         // Limit 1000 for CN (as requested), 7000 for JP (to cover 90 days)
         // Project to exclude large fields (description) to stay within Vercel payload limits
@@ -2553,8 +2624,15 @@ export default async function handler(req, res) {
 
         let query = {};
         if (osi && osi.id) {
-            // Match by original stream ID
-            query = { "originalStreamInfo.id": osi.id, _id: { $ne: id } };
+            // Match by original stream ID + filter reviewStatus
+            query = { 
+                "originalStreamInfo.id": osi.id, 
+                _id: { $ne: id },
+                $or: [
+                    { reviewStatus: 'approved' },
+                    { reviewStatus: { $exists: false } }
+                ]
+            };
         } else {
             return res.json({ videos: [] });
         }
@@ -2713,13 +2791,23 @@ export default async function handler(req, res) {
         const stream = await db.collection('streams').findOne({ _id: streamId });
         if (!stream) return res.status(404).json({ error: 'Stream not found' });
 
-        // Find clips linking to this stream
+        // Find clips related to this stream
         const clips = await db.collection('videos').find({
-            $or: [
-                { relatedStreamId: streamId },
-                { relatedStreamIds: streamId }
+            $and: [
+                {
+                    $or: [
+                        { relatedStreamId: streamId },
+                        { relatedStreamIds: streamId }
+                    ]
+                },
+                {
+                    $or: [
+                        { reviewStatus: 'approved' },
+                        { reviewStatus: { $exists: false } }
+                    ]
+                }
             ]
-        }).sort({ publishedAt: -1 }).toArray();
+        }).sort({ publishedAt: -1 }).limit(50).toArray();
 
         return res.status(200).json({
             success: true,
