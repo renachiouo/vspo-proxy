@@ -75,3 +75,5 @@ migrate_review_status.mjs
 DATABASE_FIX.md
 MIGRATION_GUIDE.md
 NEED_USER_OUTPUT.md
+diagnose_memberid.mjs
+diagnose_streams.mjs
