@@ -69,3 +69,9 @@ report_*.json
 check_quota.cjs
 quota_log.txt
 verify_api_keys.js
+
+# Migration and diagnostic scripts (temporary)
+migrate_review_status.mjs
+DATABASE_FIX.md
+MIGRATION_GUIDE.md
+NEED_USER_OUTPUT.md

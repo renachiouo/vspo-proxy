@@ -816,25 +816,42 @@ const v12_logic = {
                 await new Promise(r => setTimeout(r, 100));
             }
 
-            // [NEW] Multi-Link Logic
+            // [NEW] Multi-Link Logic + Review Status
             const osis = parseAllStreamInfos(description);
+            let reviewStatus = 'approved'; // Default: approved if has valid member stream link
+
             if (osis.length > 0) {
                 doc.originalStreamInfo = osis[0]; // Legacy: Keep first match as primary
 
                 // Extract all candidate IDs
                 const candidateIds = osis.map(o => o.id);
 
-                // Lookup in DB
-                // Optimized: We fetch ONLY valid stream IDs from our collection
+                // Lookup in DB - Check if has memberId (belong to VSPO members)
                 const validStreams = await db.collection('streams').find(
-                    { _id: { $in: candidateIds } },
-                    { projection: { _id: 1, title: 1 } }
+                    {
+                        _id: { $in: candidateIds },
+                        memberId: { $exists: true, $ne: null, $ne: '' }
+                    },
+                    { projection: { _id: 1, title: 1, memberId: 1 } }
                 ).toArray();
 
                 if (validStreams.length > 0) {
-                    doc.relatedStreamIds = validStreams.map(s => s._id); // Store Array
-                    doc.relatedStreamId = validStreams[0]._id; // Store Primary (First valid match)
+                    doc.relatedStreamIds = validStreams.map(s => s._id);
+                    doc.relatedStreamId = validStreams[0]._id;
+                    // reviewStatus remains 'approved'
+                } else {
+                    // Mark as pending review (has stream links but not member's)
+                    reviewStatus = 'pending_review';
                 }
+            } else {
+                // Mark as pending review (no stream links in description)
+                reviewStatus = 'pending_review';
+            }
+
+            // Add review status to document
+            doc.reviewStatus = reviewStatus;
+            if (reviewStatus === 'pending_review') {
+                doc.reviewedAt = new Date();
             }
 
             bulkOps.push({ updateOne: { filter: { _id: videoId }, update: { $set: doc }, upsert: true } });

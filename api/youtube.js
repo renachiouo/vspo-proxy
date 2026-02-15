@@ -811,25 +811,42 @@ const v12_logic = {
                 isClipProhibited: checkClipProhibition(title, description)
             };
 
-            // [NEW] Multi-Link Logic
+            // [NEW] Multi-Link Logic + Review Status
             const osis = parseAllStreamInfos(description);
+            let reviewStatus = 'approved'; // Default: approved if has valid member stream link
+
             if (osis.length > 0) {
                 doc.originalStreamInfo = osis[0]; // Legacy: Keep first match as primary
 
                 // Extract all candidate IDs
                 const candidateIds = osis.map(o => o.id);
 
-                // Lookup in DB
-                // Optimized: We fetch ONLY valid stream IDs from our collection
+                // Lookup in DB - Check if has memberId (belong to VSPO members)
                 const validStreams = await db.collection('streams').find(
-                    { _id: { $in: candidateIds } },
-                    { projection: { _id: 1, title: 1 } }
+                    {
+                        _id: { $in: candidateIds },
+                        memberId: { $exists: true, $ne: null, $ne: '' }
+                    },
+                    { projection: { _id: 1, title: 1, memberId: 1 } }
                 ).toArray();
 
                 if (validStreams.length > 0) {
-                    doc.relatedStreamIds = validStreams.map(s => s._id); // Store Array
-                    doc.relatedStreamId = validStreams[0]._id; // Store Primary (First valid match)
+                    doc.relatedStreamIds = validStreams.map(s => s._id);
+                    doc.relatedStreamId = validStreams[0]._id;
+                    // reviewStatus remains 'approved'
+                } else {
+                    // Mark as pending review (has stream links but not member's)
+                    reviewStatus = 'pending_review';
                 }
+            } else {
+                // Mark as pending review (no stream links in description)
+                reviewStatus = 'pending_review';
+            }
+
+            // Add review status to document
+            doc.reviewStatus = reviewStatus;
+            if (reviewStatus === 'pending_review') {
+                doc.reviewedAt = new Date();
             }
 
             bulkOps.push({ updateOne: { filter: { _id: videoId }, update: { $set: doc }, upsert: true } });
@@ -1815,6 +1832,63 @@ async function handleAdminAction(req, res, db, body) {
         case 'backfill':
             return res.json({ success: true, message: 'Use backfill_links action instead.' });
 
+        // [NEW] Pending Video Review Actions
+        case 'get_pending_videos':
+            try {
+                const videos = await db.collection('videos')
+                    .find({ reviewStatus: 'pending_review' })
+                    .sort({ publishedAt: -1 })
+                    .limit(200)
+                    .toArray();
+
+                return res.json({
+                    success: true,
+                    videos,
+                    count: videos.length
+                });
+            } catch (e) {
+                console.error('[Admin] Get pending videos error:', e);
+                return res.status(500).json({ error: e.message });
+            }
+
+        case 'approve_video':
+            if (!videoId) return res.status(400).json({ error: 'Missing videoId' });
+            try {
+                await db.collection('videos').updateOne(
+                    { _id: videoId },
+                    {
+                        $set: {
+                            reviewStatus: 'approved',
+                            reviewedAt: new Date()
+                        }
+                    }
+                );
+                await logAdminAction(db, 'approve_video', { videoId });
+                return res.json({ success: true });
+            } catch (e) {
+                console.error('[Admin] Approve video error:', e);
+                return res.status(500).json({ error: e.message });
+            }
+
+        case 'reject_video':
+            if (!videoId) return res.status(400).json({ error: 'Missing videoId' });
+            try {
+                await db.collection('videos').updateOne(
+                    { _id: videoId },
+                    {
+                        $set: {
+                            reviewStatus: 'rejected',
+                            reviewedAt: new Date()
+                        }
+                    }
+                );
+                await logAdminAction(db, 'reject_video', { videoId });
+                return res.json({ success: true });
+            } catch (e) {
+                console.error('[Admin] Reject video error:', e);
+                return res.status(500).json({ error: e.message });
+            }
+
         default: return res.status(400).json({ error: 'Invalid action' });
     }
 }
@@ -1938,6 +2012,13 @@ export default async function handler(req, res) {
         if (blacklist.length > 0) {
             query.channelId = { $nin: blacklist };
         }
+
+        // Filter out pending_review and rejected videos
+        // Show only: approved OR videos without reviewStatus (backward compatibility)
+        query.$or = [
+            { reviewStatus: 'approved' },
+            { reviewStatus: { $exists: false } }
+        ];
 
         // Limit 1000 for CN (as requested), 7000 for JP (to cover 90 days)
         // Project to exclude large fields (description) to stay within Vercel payload limits
