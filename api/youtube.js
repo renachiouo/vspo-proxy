@@ -822,12 +822,16 @@ const v12_logic = {
                 const candidateIds = osis.map(o => o.id);
 
                 // Lookup in DB - Check if has memberId (belong to VSPO members)
+                // Use collation for case-insensitive matching (searchableText is lowercase)
                 const validStreams = await db.collection('streams').find(
                     {
                         _id: { $in: candidateIds },
                         memberId: { $exists: true, $ne: null, $ne: '' }
                     },
-                    { projection: { _id: 1, title: 1, memberId: 1 } }
+                    {
+                        projection: { _id: 1, title: 1, memberId: 1 },
+                        collation: { locale: 'en', strength: 2 }  // Case-insensitive
+                    }
                 ).toArray();
 
                 if (validStreams.length > 0) {
