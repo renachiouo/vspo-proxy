@@ -770,6 +770,13 @@ const v12_logic = {
         const videoBlacklist = vbDoc?.items || [];
         const newPendingChannels = new Set();
 
+        // [FIX] Pre-fetch existing reviewStatus to preserve admin decisions
+        const existingVideos = await db.collection('videos').find(
+            { _id: { $in: videoIds } },
+            { projection: { _id: 1, reviewStatus: 1 } }
+        ).toArray();
+        const existingReviewMap = new Map(existingVideos.map(v => [v._id, v.reviewStatus]));
+
         for (const videoId of videoIds) {
             const detail = videoDetailsMap.get(videoId);
             if (!detail || videoBlacklist.includes(videoId)) continue;
@@ -847,10 +854,16 @@ const v12_logic = {
                 reviewStatus = 'pending_review';
             }
 
-            // Add review status to document
-            doc.reviewStatus = reviewStatus;
-            if (reviewStatus === 'pending_review') {
-                doc.reviewedAt = new Date();
+            // [FIX] Preserve admin decisions - only set reviewStatus for new or un-reviewed videos
+            const existingStatus = existingReviewMap.get(videoId);
+            if (existingStatus === 'approved' || existingStatus === 'rejected') {
+                // Admin has already reviewed this video, preserve their decision
+                doc.reviewStatus = existingStatus;
+            } else {
+                doc.reviewStatus = reviewStatus;
+                if (reviewStatus === 'pending_review') {
+                    doc.reviewedAt = new Date();
+                }
             }
 
             bulkOps.push({ updateOne: { filter: { _id: videoId }, update: { $set: doc }, upsert: true } });
