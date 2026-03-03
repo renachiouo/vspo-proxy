@@ -2418,36 +2418,68 @@ export default async function handler(req, res) {
     // 15. Special Event Background (Birthday/Anniversary)
     if (pathname === '/api/special-event') {
         try {
+            const EVENT_KEYWORDS = ['誕生日', '生誕', '周年'];
+
             // Calculate today's range in JST (UTC+9)
             const now = new Date();
             const jstFormatter = new Intl.DateTimeFormat('en-CA', {
                 timeZone: 'Asia/Tokyo',
                 year: 'numeric', month: '2-digit', day: '2-digit'
             });
-            const todayJST = jstFormatter.format(now); // e.g. "2026-03-03"
+            const todayJST = jstFormatter.format(now);
             const todayStart = new Date(`${todayJST}T00:00:00+09:00`);
             const todayEnd = new Date(`${todayJST}T23:59:59+09:00`);
 
-            // Search streams with special event keywords in title, starting today
-            const eventStreams = await db.collection('streams').find({
+            // Source 1: Search archived streams (completed/ended)
+            const archivedStreams = await db.collection('streams').find({
                 startTime: { $gte: todayStart, $lte: todayEnd },
-                $or: [
-                    { title: { $regex: '誕生日', $options: 'i' } },
-                    { title: { $regex: '生誕', $options: 'i' } },
-                    { title: { $regex: '周年', $options: 'i' } }
-                ]
+                $or: EVENT_KEYWORDS.map(kw => ({ title: { $regex: kw, $options: 'i' } }))
             }).sort({ startTime: -1 }).toArray();
 
-            return res.status(200).json({
-                success: true,
-                events: eventStreams.map(s => ({
+            // Source 2: Check live_status (currently live / upcoming)
+            const liveDoc = await db.collection('metadata').findOne({ _id: 'live_status' });
+            const liveStreams = (liveDoc?.streams || []).filter(s => {
+                const st = new Date(s.startTime);
+                if (st < todayStart || st > todayEnd) return false;
+                return EVENT_KEYWORDS.some(kw => (s.title || '').includes(kw));
+            });
+
+            // Merge and deduplicate (live_status uses 'vid', streams uses '_id')
+            const seen = new Set();
+            const allEvents = [];
+
+            // Add live streams first (higher priority - has live thumbnails)
+            for (const s of liveStreams) {
+                const id = s.vid || s.channelId;
+                if (seen.has(id)) continue;
+                seen.add(id);
+                allEvents.push({
                     title: s.title,
-                    thumbnail: s.thumbnail,
+                    thumbnail: s.thumbnailUrl || s.thumbnail || '',
+                    memberName: s.memberName,
+                    memberId: s.channelId,
+                    startTime: s.startTime,
+                    platform: s.platform
+                });
+            }
+
+            // Add archived streams
+            for (const s of archivedStreams) {
+                if (seen.has(s._id)) continue;
+                seen.add(s._id);
+                allEvents.push({
+                    title: s.title,
+                    thumbnail: s.thumbnail || '',
                     memberName: s.memberName,
                     memberId: s.memberId,
                     startTime: s.startTime,
                     platform: s.platform
-                })),
+                });
+            }
+
+            return res.status(200).json({
+                success: true,
+                events: allEvents,
                 date: todayJST
             });
         } catch (e) {
