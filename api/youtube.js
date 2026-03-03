@@ -2418,7 +2418,7 @@ export default async function handler(req, res) {
     // 15. Special Event Background (Birthday/Anniversary)
     if (pathname === '/api/special-event') {
         try {
-            const EVENT_KEYWORDS = ['誕生日', '生誕', '周年'];
+            const EVENT_KEYWORDS = ['誕生日', '生誕', '周年', 'birthday', 'anniversary'];
 
             // Calculate today's range in JST (UTC+9)
             const now = new Date();
@@ -2441,7 +2441,7 @@ export default async function handler(req, res) {
             const liveStreams = (liveDoc?.streams || []).filter(s => {
                 const st = new Date(s.startTime);
                 if (st < todayStart || st > todayEnd) return false;
-                return EVENT_KEYWORDS.some(kw => (s.title || '').includes(kw));
+                return EVENT_KEYWORDS.some(kw => (s.title || '').toLowerCase().includes(kw.toLowerCase()));
             });
 
             // Merge and deduplicate (live_status uses 'vid', streams uses '_id')
