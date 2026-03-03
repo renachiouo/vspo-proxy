@@ -2415,6 +2415,47 @@ export default async function handler(req, res) {
         }
     }
 
+    // 15. Special Event Background (Birthday/Anniversary)
+    if (pathname === '/api/special-event') {
+        try {
+            // Calculate today's range in JST (UTC+9)
+            const now = new Date();
+            const jstFormatter = new Intl.DateTimeFormat('en-CA', {
+                timeZone: 'Asia/Tokyo',
+                year: 'numeric', month: '2-digit', day: '2-digit'
+            });
+            const todayJST = jstFormatter.format(now); // e.g. "2026-03-03"
+            const todayStart = new Date(`${todayJST}T00:00:00+09:00`);
+            const todayEnd = new Date(`${todayJST}T23:59:59+09:00`);
+
+            // Search streams with special event keywords in title, starting today
+            const eventStreams = await db.collection('streams').find({
+                startTime: { $gte: todayStart, $lte: todayEnd },
+                $or: [
+                    { title: { $regex: '誕生日', $options: 'i' } },
+                    { title: { $regex: '生誕', $options: 'i' } },
+                    { title: { $regex: '周年', $options: 'i' } }
+                ]
+            }).sort({ startTime: -1 }).toArray();
+
+            return res.status(200).json({
+                success: true,
+                events: eventStreams.map(s => ({
+                    title: s.title,
+                    thumbnail: s.thumbnail,
+                    memberName: s.memberName,
+                    memberId: s.memberId,
+                    startTime: s.startTime,
+                    platform: s.platform
+                })),
+                date: todayJST
+            });
+        } catch (e) {
+            console.error('[Special Event] Error:', e);
+            return res.status(500).json({ error: e.message });
+        }
+    }
+
     return res.status(404).json({ error: 'Not Found', path: pathname });
 }
 // --- Bilibili via RSSHub V2 (with Domain Fallback) ---
