@@ -1680,7 +1680,7 @@ async function handleAdminAction(req, res, db, body) {
 
     if (!authenticate()) return res.status(401).json({ error: 'Unauthorized' });
 
-    const { action, channelId, listType, videoId, content, type, active } = body;
+    const { action, channelId, listType, videoId, content, type, active, url, label, backgroundId } = body;
 
     switch (action) {
         case 'add':
@@ -1903,6 +1903,59 @@ async function handleAdminAction(req, res, db, body) {
                 return res.json({ success: true });
             } catch (e) {
                 console.error('[Admin] Reject video error:', e);
+                return res.status(500).json({ error: e.message });
+            }
+
+        // [NEW] Custom Background Management
+        case 'set_custom_background':
+            if (!url) return res.status(400).json({ error: 'Missing url' });
+            try {
+                const bgItem = { id: String(Date.now()), url, label: label || '', createdAt: new Date() };
+                await db.collection('metadata').updateOne(
+                    { _id: 'custom_backgrounds' },
+                    { $push: { items: bgItem } },
+                    { upsert: true }
+                );
+                await logAdminAction(db, 'set_custom_background', { url, label: label || '' });
+                return res.json({ success: true, item: bgItem });
+            } catch (e) {
+                console.error('[Admin] Set custom background error:', e);
+                return res.status(500).json({ error: e.message });
+            }
+
+        case 'remove_custom_background':
+            if (!backgroundId) return res.status(400).json({ error: 'Missing backgroundId' });
+            try {
+                await db.collection('metadata').updateOne(
+                    { _id: 'custom_backgrounds' },
+                    { $pull: { items: { id: backgroundId } } }
+                );
+                await logAdminAction(db, 'remove_custom_background', { backgroundId });
+                return res.json({ success: true });
+            } catch (e) {
+                console.error('[Admin] Remove custom background error:', e);
+                return res.status(500).json({ error: e.message });
+            }
+
+        case 'clear_custom_backgrounds':
+            try {
+                await db.collection('metadata').updateOne(
+                    { _id: 'custom_backgrounds' },
+                    { $set: { items: [] } }
+                );
+                await logAdminAction(db, 'clear_custom_backgrounds', {});
+                return res.json({ success: true });
+            } catch (e) {
+                console.error('[Admin] Clear custom backgrounds error:', e);
+                return res.status(500).json({ error: e.message });
+            }
+
+        case 'get_custom_backgrounds':
+            try {
+                const bgDoc = await db.collection('metadata').findOne({ _id: 'custom_backgrounds' });
+                return res.json({ success: true, backgrounds: bgDoc?.items || [] });
+            } catch (e) {
+                console.error('[Admin] Get custom backgrounds error:', e);
                 return res.status(500).json({ error: e.message });
             }
 
@@ -2135,13 +2188,14 @@ export default async function handler(req, res) {
         const password = searchParams.get('password');
         if (password !== process.env.ADMIN_PASSWORD) return res.status(401).json({ error: 'Unauthorized' });
 
-        const [wl_cn, wl_jp, bl_cn, bl_jp, p_jp, ann] = await Promise.all([
+        const [wl_cn, wl_jp, bl_cn, bl_jp, p_jp, ann, customBgDoc] = await Promise.all([
             db.collection('lists').findOne({ _id: 'whitelist_cn' }),
             db.collection('lists').findOne({ _id: 'whitelist_jp' }),
             db.collection('lists').findOne({ _id: 'blacklist_cn' }),
             db.collection('lists').findOne({ _id: 'blacklist_jp' }),
             db.collection('lists').findOne({ _id: 'pending_jp' }),
-            db.collection('metadata').findOne({ _id: 'announcement' })
+            db.collection('metadata').findOne({ _id: 'announcement' }),
+            db.collection('metadata').findOne({ _id: 'custom_backgrounds' })
         ]);
 
         const hydrate = async (ids) => {
@@ -2185,6 +2239,7 @@ export default async function handler(req, res) {
             blacklist_jp: await hydrate(bl_jp?.items),
             pending_jp: await hydrate(p_jp?.items),
             announcement: ann ? { content: ann.content, type: ann.type, active: ann.active === "true" } : null,
+            custom_backgrounds: customBgDoc?.items || [],
             bilibili_error: (await db.collection('metadata').findOne({ _id: 'bilibili_status' }))?.error === 'expired'
         });
     }
@@ -2474,6 +2529,18 @@ export default async function handler(req, res) {
                     memberId: s.memberId,
                     startTime: s.startTime,
                     platform: s.platform
+                });
+            }
+
+            // Source 3: Custom backgrounds (lowest priority, appended after auto-detected events)
+            const customBgDoc = await db.collection('metadata').findOne({ _id: 'custom_backgrounds' });
+            const customBgs = customBgDoc?.items || [];
+            for (const bg of customBgs) {
+                allEvents.push({
+                    title: bg.label || '自訂背景',
+                    thumbnail: bg.url,
+                    memberName: '自訂背景',
+                    isCustom: true
                 });
             }
 

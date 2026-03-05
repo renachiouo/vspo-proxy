@@ -293,6 +293,45 @@ async function handleAdminAction(req, res, db, body) {
                 return res.status(200).json({ success: true });
             }
 
+            // [NEW] Custom Background Management
+            case 'set_custom_background': {
+                const { url, label } = body;
+                if (!url) return res.status(400).json({ error: 'Missing url' });
+                const bgItem = { id: String(Date.now()), url, label: label || '', createdAt: new Date() };
+                await db.collection('metadata').updateOne(
+                    { _id: 'custom_backgrounds' },
+                    { $push: { items: bgItem } },
+                    { upsert: true }
+                );
+                await logAdminAction(db, 'set_custom_background', { url, label: label || '' });
+                return res.status(200).json({ success: true, item: bgItem });
+            }
+
+            case 'remove_custom_background': {
+                const { backgroundId } = body;
+                if (!backgroundId) return res.status(400).json({ error: 'Missing backgroundId' });
+                await db.collection('metadata').updateOne(
+                    { _id: 'custom_backgrounds' },
+                    { $pull: { items: { id: backgroundId } } }
+                );
+                await logAdminAction(db, 'remove_custom_background', { backgroundId });
+                return res.status(200).json({ success: true });
+            }
+
+            case 'clear_custom_backgrounds': {
+                await db.collection('metadata').updateOne(
+                    { _id: 'custom_backgrounds' },
+                    { $set: { items: [] } }
+                );
+                await logAdminAction(db, 'clear_custom_backgrounds', {});
+                return res.status(200).json({ success: true });
+            }
+
+            case 'get_custom_backgrounds': {
+                const bgDoc = await db.collection('metadata').findOne({ _id: 'custom_backgrounds' });
+                return res.status(200).json({ success: true, backgrounds: bgDoc?.items || [] });
+            }
+
             default:
                 return res.status(400).json({ error: 'Unknown action' });
         }
