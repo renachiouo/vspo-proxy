@@ -77,3 +77,5 @@ MIGRATION_GUIDE.md
 NEED_USER_OUTPUT.md
 diagnose_memberid.mjs
 diagnose_streams.mjs
+
+CUSTOM_BACKGROUND_PLAN.md
