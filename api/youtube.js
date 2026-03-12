@@ -14,7 +14,7 @@ if (!MONGODB_URI) {
 const DB_NAME = 'vspoproxy';
 
 // --- Constants ---
-const SPECIAL_KEYWORDS = ["ぶいすぽっ！許諾番号"];
+const SPECIAL_KEYWORDS = ["許諾番号"];
 const FOREIGN_SEARCH_KEYWORDS = ["ぶいすぽ 切り抜き"];
 // Removed FOREIGN_SPECIAL_KEYWORDS as requested, using SPECIAL_KEYWORDS universally
 const SEARCH_KEYWORDS = ["VSPO中文", "VSPO精華", "VSPO剪輯"];
@@ -23,7 +23,7 @@ const VSPO_MEMBER_KEYWORDS = [
     "花芽すみれ", "花芽なずな", "小雀とと", "一ノ瀬うるは", "胡桃のあ", "兎咲ミミ", "空澄セナ", "橘ひなの", "英リサ", "如月れん", "神成きゅぴ", "八雲べに", "藍沢エマ", "紫宮るな", "猫汰つな", "白波らむね", "小森めと", "夢野あかり", "夜乃くろむ", "紡木こかげ", "千燈ゆうひ", "蝶屋はなび", "甘結もか", "銀城サイネ", "龍巻ちせ",
     "Remia", "Arya", "Jira", "Narin", "Riko", "Eris",
     "小針彩", "白咲露理", "帕妃", "千郁郁", "日向晴",
-    "ひなーの", "ひなの", "べに", "つな", "らむち", "らむね", "めと", "なずな", "なずぴ", "すみー", "すみれ", "ととち", "とと", "のせ", "うるは", "のあ", "ミミ", "たや", "セナ", "あしゅみ", "リサ", "れん", "きゅぴ", "エマたそ", "るな", "あかり", "あかりん", "くろむ", "こかげ", "つむお", "うひ", "ゆうひ", "はなび", "もか"
+    "ひなーの", "ひなの", "べに", "つな", "らむち", "らむね", "めと", "なずな", "なずぴ", "すみー", "すみれ", "ととち", "とと", "のせ", "うるは", "のあ", "ミミ", "たや", "セナ", "あしゅみ", "リサ", "れん", "きゅぴ", "エマたそ", "るな", "あかり", "あかりん", "くろむ", "こかげ", "つむお", "うひ", "ゆうひ", "はなび", "もか", "サイネ", "ちせ", "ちーたま", "ちいたま"
 ];
 
 const VSPO_MEMBERS = [
@@ -92,13 +92,30 @@ let cachedClient = null;
 let cachedDb = null;
 
 async function getDb() {
-    if (cachedDb) return cachedDb;
-    if (!cachedClient) {
-        console.log(`[DB] Connecting (v${SCRIPT_VERSION})...`);
-        cachedClient = new MongoClient(MONGODB_URI);
-        await cachedClient.connect();
-        console.log(`[DB] Connected.`);
+    if (cachedClient) {
+        try {
+            await cachedClient.db('admin').command({ ping: 1 });
+            if (!cachedDb) cachedDb = cachedClient.db(DB_NAME);
+            return cachedDb;
+        } catch (e) {
+            console.warn('[DB] Cached connection lost, reconnecting...', e.message);
+            try { await cachedClient.close(); } catch (_) { }
+            cachedClient = null;
+            cachedDb = null;
+        }
     }
+
+    console.log(`[DB] Connecting (v${SCRIPT_VERSION})...`);
+    cachedClient = new MongoClient(MONGODB_URI, {
+        serverSelectionTimeoutMS: 5000,
+        connectTimeoutMS: 10000,
+        socketTimeoutMS: 45000,
+        maxPoolSize: 10,
+        retryWrites: true,
+        retryReads: true,
+    });
+    await cachedClient.connect();
+    console.log(`[DB] Connected.`);
     cachedDb = cachedClient.db(DB_NAME);
     return cachedDb;
 }
