@@ -763,9 +763,10 @@ const syncBilibiliArchives = async (db) => {
 // --- Logic ---
 const v12_logic = {
     async processAndStoreVideos(videoIds, db, type, options = {}) {
-        const { retentionDate, blacklist = [], targetList = null, bypassChannelIds = new Set() } = options;
+        const { retentionDate, blacklist = [], targetList = null, bypassChannelIds = new Set(), bypassBothChannelIds = new Set() } = options;
         // targetList: If provided (e.g., 'pending_jp'), IDs go there instead of videos collection (for JP keywords)
         // bypassChannelIds: Channels that skip SPECIAL_KEYWORDS check
+        // bypassBothChannelIds: Bypass channels marked as BOTH cn+jp, their source should be 'both'
 
         if (videoIds.length === 0) return { validVideoIds: new Set() };
 
@@ -833,7 +834,7 @@ const v12_logic = {
                 subscriberCount: parseInt(channelDetails?.statistics?.subscriberCount || 0),
                 duration: detail.contentDetails?.duration || '',
                 durationMinutes,
-                source: type,
+                source: bypassBothChannelIds.has(channelId) ? 'both' : type,
                 // [VERCEL] Use simple duration check to avoid timeout
                 // Accurate Shorts detection runs on Render Worker only
                 videoType: durationMinutes <= 3.05 ? 'short' : 'video',
@@ -935,7 +936,7 @@ const v12_logic = {
 
         // CN: 90 Days (Extended to match JP)
         const ninetyDaysAgoCN = new Date(); ninetyDaysAgoCN.setDate(ninetyDaysAgoCN.getDate() - 90);
-        const resCN = await db.collection('videos').deleteMany({ source: 'main', publishedAt: { $lt: ninetyDaysAgoCN } });
+        const resCN = await db.collection('videos').deleteMany({ source: { $in: ['main', 'both'] }, publishedAt: { $lt: ninetyDaysAgoCN } });
 
         // JP: 90 Days
         const ninetyDaysAgo = new Date(); ninetyDaysAgo.setDate(ninetyDaysAgo.getDate() - 90);
@@ -966,7 +967,8 @@ const v12_logic = {
             const bypassItems = bypassDoc?.items || [];
             const bypassCnChannelIds = bypassItems.filter(i => i.languages?.includes('cn')).map(i => i.channelId);
             const bypassChannelIdSet = new Set(bypassCnChannelIds);
-            if (bypassCnChannelIds.length > 0) console.log(`[Mongo] Bypass CN Channels: ${bypassCnChannelIds.length}`);
+            const bypassBothChannelIds = new Set(bypassItems.filter(i => i.languages?.includes('cn') && i.languages?.includes('jp')).map(i => i.channelId));
+            if (bypassCnChannelIds.length > 0) console.log(`[Mongo] Bypass CN Channels: ${bypassCnChannelIds.length} (Both: ${bypassBothChannelIds.size})`);
 
             // [FIX] Sync ALL archives FIRST with global timeout, so linking logic can find them
             console.log('[Mongo] Syncing all archives before clip processing...');
@@ -1071,7 +1073,7 @@ const v12_logic = {
             console.log(`[Mongo] Found ${newVideoCandidates.size} video candidates.`);
 
             // Store
-            await this.processAndStoreVideos([...newVideoCandidates], db, 'main', { retentionDate, blacklist, bypassChannelIds: bypassChannelIdSet });
+            await this.processAndStoreVideos([...newVideoCandidates], db, 'main', { retentionDate, blacklist, bypassChannelIds: bypassChannelIdSet, bypassBothChannelIds });
             await this.cleanupExpiredVideos(db);
             await this.verifyActiveVideos(db, 'main');
         };
@@ -1092,7 +1094,8 @@ const v12_logic = {
         const bypassItems = bypassDoc?.items || [];
         const bypassJpChannelIds = bypassItems.filter(i => i.languages?.includes('jp')).map(i => i.channelId);
         const bypassChannelIdSet = new Set(bypassJpChannelIds);
-        if (bypassJpChannelIds.length > 0) console.log(`[Mongo] Bypass JP Channels: ${bypassJpChannelIds.length}`);
+        const bypassBothChannelIds = new Set(bypassItems.filter(i => i.languages?.includes('cn') && i.languages?.includes('jp')).map(i => i.channelId));
+        if (bypassJpChannelIds.length > 0) console.log(`[Mongo] Bypass JP Channels: ${bypassJpChannelIds.length} (Both: ${bypassBothChannelIds.size})`);
 
         const combinedWhitelistJp = [...new Set([...whitelist, ...bypassJpChannelIds])];
         if (combinedWhitelistJp.length === 0) return;
@@ -1140,7 +1143,7 @@ const v12_logic = {
         }
         console.log(`[Mongo] Found ${newVideoCandidates.size} JP video candidates.`);
 
-        await this.processAndStoreVideos([...newVideoCandidates], db, 'foreign', { retentionDate, blacklist: blJp?.items || [], bypassChannelIds: bypassChannelIdSet });
+        await this.processAndStoreVideos([...newVideoCandidates], db, 'foreign', { retentionDate, blacklist: blJp?.items || [], bypassChannelIds: bypassChannelIdSet, bypassBothChannelIds });
         await this.verifyActiveVideos(db, 'foreign');
     },
 
@@ -2188,7 +2191,7 @@ export default async function handler(req, res) {
         const blacklist = blacklistDoc?.items || [];
         console.timeEnd(`[${reqId}] Fetch Blacklist`);
 
-        const query = isForeign ? { source: 'foreign' } : { source: 'main' };
+        const query = isForeign ? { source: { $in: ['foreign', 'both'] } } : { source: { $in: ['main', 'both'] } };
         if (blacklist.length > 0) {
             query.channelId = { $nin: blacklist };
         }
@@ -2572,7 +2575,7 @@ export default async function handler(req, res) {
                 viewCount: c.viewCount,
                 subscriberCount: c.subscriberCount,
                 videoType: c.videoType,
-                source: (c.source === 'foreign' || c.source === 'jp') ? 'jp' : 'cn',
+                source: (c.source === 'foreign' || c.source === 'jp') ? 'jp' : (c.source === 'both' ? 'both' : 'cn'),
                 publishedAt: c.publishedAt,
                 duration: c.duration
             }))
