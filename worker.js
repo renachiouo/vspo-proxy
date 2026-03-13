@@ -120,13 +120,15 @@ function parseISODuration(duration) {
     return minutes;
 }
 
-const isVideoValid = (videoDetail, keywords = SPECIAL_KEYWORDS) => {
+const isVideoValid = (videoDetail, keywords = SPECIAL_KEYWORDS, skipKeywords = false) => {
     if (!videoDetail || !videoDetail.snippet) return false;
     const searchText = `${videoDetail.snippet.title} ${videoDetail.snippet.description} `.toLowerCase();
 
-    // 1. Check Mandatory Keywords (e.g. License)
-    const hasLicense = keywords.some(keyword => searchText.includes(keyword.toLowerCase()));
-    if (!hasLicense) return false;
+    // 1. Check Mandatory Keywords (e.g. License) - Skip for bypass channels
+    if (!skipKeywords) {
+        const hasLicense = keywords.some(keyword => searchText.includes(keyword.toLowerCase()));
+        if (!hasLicense) return false;
+    }
 
     // 2. Check Member Keywords (Mandatory Double Check)
     const hasMemberKeyword = VSPO_MEMBER_KEYWORDS.some(keyword => searchText.includes(keyword.toLowerCase()));
@@ -330,6 +332,65 @@ async function handleAdminAction(req, res, db, body) {
             case 'get_custom_backgrounds': {
                 const bgDoc = await db.collection('metadata').findOne({ _id: 'custom_backgrounds' });
                 return res.status(200).json({ success: true, backgrounds: bgDoc?.items || [] });
+            }
+
+            // [NEW] Bypass Keyword Channel Management
+            case 'add_bypass_channel': {
+                const { channelId, languages } = body;
+                if (!channelId) return res.status(400).json({ error: 'Missing channelId' });
+                if (!languages || !Array.isArray(languages) || languages.length === 0) return res.status(400).json({ error: 'Missing languages (cn/jp)' });
+
+                const existingBypass = await db.collection('metadata').findOne({ _id: 'bypass_keyword_channels' });
+                const existingItems = existingBypass?.items || [];
+                if (existingItems.some(i => i.channelId === channelId)) {
+                    return res.status(409).json({ error: 'Channel already in bypass list' });
+                }
+
+                const bypassItem = { channelId, languages: languages.filter(l => ['cn', 'jp'].includes(l)), addedAt: new Date() };
+                await db.collection('metadata').updateOne(
+                    { _id: 'bypass_keyword_channels' },
+                    { $push: { items: bypassItem } },
+                    { upsert: true }
+                );
+
+                try {
+                    const resYt = await fetchYouTube('channels', { part: 'snippet', id: channelId });
+                    if (resYt.items?.[0]) {
+                        const snip = resYt.items[0].snippet;
+                        await db.collection('channels').updateOne(
+                            { _id: channelId },
+                            { $set: { title: snip.title, thumbnail: snip.thumbnails.default?.url || '' } },
+                            { upsert: true }
+                        );
+                    }
+                } catch (e) { console.error('Failed to fetch channel info:', e); }
+
+                await logAdminAction(db, 'add_bypass_channel', { channelId, languages: bypassItem.languages });
+                return res.status(200).json({ success: true });
+            }
+
+            case 'remove_bypass_channel': {
+                const { channelId } = body;
+                if (!channelId) return res.status(400).json({ error: 'Missing channelId' });
+                await db.collection('metadata').updateOne(
+                    { _id: 'bypass_keyword_channels' },
+                    { $pull: { items: { channelId: channelId } } }
+                );
+                await logAdminAction(db, 'remove_bypass_channel', { channelId });
+                return res.status(200).json({ success: true });
+            }
+
+            case 'update_bypass_channel': {
+                const { channelId, languages } = body;
+                if (!channelId) return res.status(400).json({ error: 'Missing channelId' });
+                if (!languages || !Array.isArray(languages) || languages.length === 0) return res.status(400).json({ error: 'Missing languages (cn/jp)' });
+                const validLangs = languages.filter(l => ['cn', 'jp'].includes(l));
+                await db.collection('metadata').updateOne(
+                    { _id: 'bypass_keyword_channels', 'items.channelId': channelId },
+                    { $set: { 'items.$.languages': validLangs } }
+                );
+                await logAdminAction(db, 'update_bypass_channel', { channelId, languages: validLangs });
+                return res.status(200).json({ success: true });
             }
 
             default:
@@ -840,8 +901,9 @@ const syncBilibiliArchives = async (db) => {
 // --- Logic ---
 const v12_logic = {
     async processAndStoreVideos(videoIds, db, type, options = {}) {
-        const { retentionDate, blacklist = [], targetList = null } = options;
+        const { retentionDate, blacklist = [], targetList = null, bypassChannelIds = new Set() } = options;
         // targetList: If provided (e.g., 'pending_jp'), IDs go there instead of videos collection (for JP keywords)
+        // bypassChannelIds: Channels that skip SPECIAL_KEYWORDS check
 
         if (videoIds.length === 0) return { validVideoIds: new Set() };
 
@@ -882,7 +944,9 @@ const v12_logic = {
             if (containsBlacklistedKeyword(detail, KEYWORD_BLACKLIST)) continue;
             if (new Date(detail.snippet.publishedAt) < retentionDate) continue;
             // Strict Double Check is now built into isVideoValid
-            if (!isVideoValid(detail)) continue;
+            // Bypass channels skip SPECIAL_KEYWORDS check but still need Member Keywords
+            const isBypassChannel = bypassChannelIds.has(channelId);
+            if (!isVideoValid(detail, SPECIAL_KEYWORDS, isBypassChannel)) continue;
 
             validVideoIds.add(videoId);
 
@@ -1041,13 +1105,20 @@ const v12_logic = {
             // CN Strategy: 20 mins. Keyword + Whitelist. New channels -> Auto Whitelist.
             console.log('[Mongo] CN Update...');
             const retentionDate = new Date(); retentionDate.setDate(retentionDate.getDate() - 90); // 90 days retention scan
-            const [wlCn, blCn, wlJp] = await Promise.all([
-                db.collection('lists').findOne({ _id: 'whitelist_cn' }), db.collection('lists').findOne({ _id: 'blacklist_cn' }), db.collection('lists').findOne({ _id: 'whitelist_jp' })
+            const [wlCn, blCn, wlJp, bypassDoc] = await Promise.all([
+                db.collection('lists').findOne({ _id: 'whitelist_cn' }), db.collection('lists').findOne({ _id: 'blacklist_cn' }), db.collection('lists').findOne({ _id: 'whitelist_jp' }),
+                db.collection('metadata').findOne({ _id: 'bypass_keyword_channels' })
             ]);
             const whitelist = wlCn?.items || [];
             const blacklist = blCn?.items || [];
             const jpWhitelist = wlJp?.items || [];
             const newVideoCandidates = new Set();
+
+            // [Bypass] Load bypass channels for CN
+            const bypassItems = bypassDoc?.items || [];
+            const bypassCnChannelIds = bypassItems.filter(i => i.languages?.includes('cn')).map(i => i.channelId);
+            const bypassChannelIdSet = new Set(bypassCnChannelIds);
+            if (bypassCnChannelIds.length > 0) console.log(`[Mongo] Bypass CN Channels: ${bypassCnChannelIds.length}`);
 
             // [FIX] Sync ALL archives FIRST with global timeout, so linking logic can find them
             console.log('[Mongo] Syncing all archives before clip processing...');
@@ -1067,29 +1138,30 @@ const v12_logic = {
             }
 
 
-            // 1. Whitelist Scan
-            if (whitelist.length > 0) {
+            // 1. Whitelist Scan (includes bypass CN channels)
+            const combinedWhitelistCn = [...new Set([...whitelist, ...bypassCnChannelIds])];
+            if (combinedWhitelistCn.length > 0) {
                 // [Optimization] Conditional Scan for Inactive Channels
                 const metaScanCtx = await db.collection('metadata').findOne({ _id: 'last_inactive_scan_cn' });
                 const lastScan = metaScanCtx?.timestamp || 0;
                 const shouldScanInactive = Date.now() - lastScan > INACTIVE_SCAN_INTERVAL_CN_MS;
 
-                let targetChannels = whitelist;
+                let targetChannels = combinedWhitelistCn;
                 if (shouldScanInactive) {
                     console.log('[Mongo] Update Strategy: FULL SCAN (Inactive Included)');
                     await db.collection('metadata').updateOne({ _id: 'last_inactive_scan_cn' }, { $set: { timestamp: Date.now() } }, { upsert: true });
                 } else {
                     console.log('[Mongo] Update Strategy: ACTIVE ONLY');
-                    const channelDocs = await db.collection('channels').find({ _id: { $in: whitelist } }).toArray();
+                    const channelDocs = await db.collection('channels').find({ _id: { $in: combinedWhitelistCn } }).toArray();
                     const threshold = Date.now() - INACTIVE_THRESHOLD_CN_MS;
-                    targetChannels = whitelist.filter(id => {
+                    targetChannels = combinedWhitelistCn.filter(id => {
                         const doc = channelDocs.find(c => c._id === id);
                         if (!doc || !doc.last_upload_at) return true; // Treat unknown as active
                         return doc.last_upload_at > threshold;
                     });
                 }
 
-                console.log(`[Mongo] Whitelist Scan: ${targetChannels.length} channels (Total: ${whitelist.length}).`);
+                console.log(`[Mongo] Whitelist Scan: ${targetChannels.length} channels (Total: ${combinedWhitelistCn.length}, Bypass: ${bypassCnChannelIds.length}).`);
                 let batchCount = 0;
                 for (const batch of batchArray(targetChannels, 50)) {
                     batchCount++;
@@ -1141,7 +1213,7 @@ const v12_logic = {
                     res.items?.forEach(v => {
                         const cid = v.snippet.channelId;
                         // Strict Check: Only add channel if the video is fully valid (License + Member Name)
-                        if (!whitelist.includes(cid) && !jpWhitelist.includes(cid) && isVideoValid(v, SPECIAL_KEYWORDS, true)) {
+                        if (!whitelist.includes(cid) && !jpWhitelist.includes(cid) && isVideoValid(v, SPECIAL_KEYWORDS, false)) {
                             newChannels.add(cid);
                         }
                     });
@@ -1151,7 +1223,7 @@ const v12_logic = {
             console.log(`[Mongo] Found ${newVideoCandidates.size} video candidates.`);
 
             // Store
-            await this.processAndStoreVideos([...newVideoCandidates], db, 'main', { retentionDate, blacklist });
+            await this.processAndStoreVideos([...newVideoCandidates], db, 'main', { retentionDate, blacklist, bypassChannelIds: bypassChannelIdSet });
             await this.cleanupExpiredVideos(db);
             await this.verifyActiveVideos(db, 'main');
         };
@@ -1163,9 +1235,19 @@ const v12_logic = {
         // JP Strategy: 20 mins Whitelist Only. 
         console.log('[Mongo] JP Whitelist Update...');
         const retentionDate = new Date(); retentionDate.setDate(retentionDate.getDate() - 90); // 90 days
-        const [wlJp, blJp] = await Promise.all([db.collection('lists').findOne({ _id: 'whitelist_jp' }), db.collection('lists').findOne({ _id: 'blacklist_jp' })]);
+        const [wlJp, blJp, bypassDoc] = await Promise.all([db.collection('lists').findOne({ _id: 'whitelist_jp' }), db.collection('lists').findOne({ _id: 'blacklist_jp' }),
+            db.collection('metadata').findOne({ _id: 'bypass_keyword_channels' })
+        ]);
         const whitelist = wlJp?.items || [];
-        if (whitelist.length === 0) return;
+
+        // [Bypass] Load bypass channels for JP
+        const bypassItems = bypassDoc?.items || [];
+        const bypassJpChannelIds = bypassItems.filter(i => i.languages?.includes('jp')).map(i => i.channelId);
+        const bypassChannelIdSet = new Set(bypassJpChannelIds);
+        if (bypassJpChannelIds.length > 0) console.log(`[Mongo] Bypass JP Channels: ${bypassJpChannelIds.length}`);
+
+        const combinedWhitelistJp = [...new Set([...whitelist, ...bypassJpChannelIds])];
+        if (combinedWhitelistJp.length === 0) return;
 
         const newVideoCandidates = new Set();
 
@@ -1174,22 +1256,22 @@ const v12_logic = {
         const lastScan = metaScanCtx?.timestamp || 0;
         const shouldScanInactive = Date.now() - lastScan > INACTIVE_SCAN_INTERVAL_JP_MS;
 
-        let targetChannels = whitelist;
+        let targetChannels = combinedWhitelistJp;
         if (shouldScanInactive) {
             console.log('[Mongo] JP Update Strategy: FULL SCAN (Inactive Included)');
             await db.collection('metadata').updateOne({ _id: 'last_inactive_scan_jp' }, { $set: { timestamp: Date.now() } }, { upsert: true });
         } else {
             console.log('[Mongo] JP Update Strategy: ACTIVE ONLY');
-            const channelDocs = await db.collection('channels').find({ _id: { $in: whitelist } }).toArray();
+            const channelDocs = await db.collection('channels').find({ _id: { $in: combinedWhitelistJp } }).toArray();
             const threshold = Date.now() - INACTIVE_THRESHOLD_JP_MS;
-            targetChannels = whitelist.filter(id => {
+            targetChannels = combinedWhitelistJp.filter(id => {
                 const doc = channelDocs.find(c => c._id === id);
                 if (!doc || !doc.last_upload_at) return true;
                 return doc.last_upload_at > threshold;
             });
         }
 
-        console.log(`[Mongo] JP Whitelist: ${targetChannels.length} channels (Total: ${whitelist.length}).`);
+        console.log(`[Mongo] JP Whitelist: ${targetChannels.length} channels (Total: ${combinedWhitelistJp.length}, Bypass: ${bypassJpChannelIds.length}).`);
         let batchCount = 0;
         for (const batch of batchArray(targetChannels, 50)) {
             batchCount++;
@@ -1210,7 +1292,7 @@ const v12_logic = {
         }
         console.log(`[Mongo] Found ${newVideoCandidates.size} JP video candidates.`);
 
-        await this.processAndStoreVideos([...newVideoCandidates], db, 'foreign', { retentionDate, blacklist: blJp?.items || [] });
+        await this.processAndStoreVideos([...newVideoCandidates], db, 'foreign', { retentionDate, blacklist: blJp?.items || [], bypassChannelIds: bypassChannelIdSet });
         await this.verifyActiveVideos(db, 'foreign');
     },
 
@@ -2607,13 +2689,15 @@ export default async function handler(req, res) {
         const password = searchParams.get('password');
         if (password !== process.env.ADMIN_PASSWORD) return res.status(401).json({ error: 'Unauthorized' });
 
-        const [wl_cn, wl_jp, bl_cn, bl_jp, p_jp, ann] = await Promise.all([
+        const [wl_cn, wl_jp, bl_cn, bl_jp, p_jp, ann, customBgDoc, bypassDoc] = await Promise.all([
             db.collection('lists').findOne({ _id: 'whitelist_cn' }),
             db.collection('lists').findOne({ _id: 'whitelist_jp' }),
             db.collection('lists').findOne({ _id: 'blacklist_cn' }),
             db.collection('lists').findOne({ _id: 'blacklist_jp' }),
             db.collection('lists').findOne({ _id: 'pending_jp' }),
-            db.collection('metadata').findOne({ _id: 'announcement' })
+            db.collection('metadata').findOne({ _id: 'announcement' }),
+            db.collection('metadata').findOne({ _id: 'custom_backgrounds' }),
+            db.collection('metadata').findOne({ _id: 'bypass_keyword_channels' })
         ]);
 
         const hydrate = async (ids) => {
@@ -2650,13 +2734,35 @@ export default async function handler(req, res) {
             });
         };
 
+        // Hydrate bypass channels with channel info
+        const hydrateBypass = async (items) => {
+            if (!items || items.length === 0) return [];
+            const ids = items.map(i => i.channelId);
+            const storedChannels = await db.collection('channels').find({ _id: { $in: ids } }).toArray();
+            const storedMap = new Map(storedChannels.map(c => [c._id, c]));
+            const defaultAvatar = 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxNTAiIGhlaWdodD0iMTUwIj48cmVjdCB3aWR0aD0iMTUwIiBoZWlnaHQ9IjE1MCIgZmlsbD0iIzMzMyIvPjwvc3ZnPg==';
+            return items.map(item => {
+                const stored = storedMap.get(item.channelId);
+                return {
+                    id: item.channelId,
+                    name: stored?.title || 'Unknown Channel',
+                    avatar: stored?.thumbnail || defaultAvatar,
+                    languages: item.languages || [],
+                    addedAt: item.addedAt
+                };
+            });
+        };
+
         return res.status(200).json({
             whitelist_cn: await hydrate(wl_cn?.items),
             whitelist_jp: await hydrate(wl_jp?.items),
             blacklist_cn: await hydrate(bl_cn?.items),
             blacklist_jp: await hydrate(bl_jp?.items),
             pending_jp: await hydrate(p_jp?.items),
-            announcement: ann ? { content: ann.content, type: ann.type, active: ann.active === "true" } : null
+            bypass_channels: await hydrateBypass(bypassDoc?.items),
+            announcement: ann ? { content: ann.content, type: ann.type, active: ann.active === "true" } : null,
+            custom_backgrounds: customBgDoc?.items || [],
+            bilibili_error: (await db.collection('metadata').findOne({ _id: 'bilibili_status' }))?.error === 'expired'
         });
     }
 
