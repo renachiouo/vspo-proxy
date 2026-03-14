@@ -772,7 +772,7 @@ const v12_logic = {
 
         const videoDetailsMap = new Map();
         for (const batch of batchArray(videoIds, 50)) {
-            const res = await fetchYouTube('videos', { part: 'statistics,snippet,contentDetails', id: batch.join(',') });
+            const res = await fetchYouTube('videos', { part: 'statistics,snippet,contentDetails,localizations', id: batch.join(',') });
             res.items?.forEach(item => videoDetailsMap.set(item.id, item));
         }
 
@@ -822,10 +822,15 @@ const v12_logic = {
             const channelDetails = channelStatsMap.get(channelId);
             const title = detail.snippet.title;
             const description = detail.snippet.description;
+            
+            // Extract Chinese localization if available
+            const localizations = detail.localizations || {};
+            const titleZh = localizations['zh-TW']?.title || localizations['zh-CN']?.title || localizations['zh']?.title || null;
+            
             const durationMinutes = parseISODuration(detail.contentDetails?.duration);
             const doc = {
-                _id: videoId, id: videoId, title,
-                searchableText: `${title} ${description}`.toLowerCase(),
+                _id: videoId, id: videoId, title, titleZh,
+                searchableText: `${title} ${titleZh || ''} ${description}`.toLowerCase(),
                 thumbnail: detail.snippet.thumbnails.high?.url || detail.snippet.thumbnails.default?.url,
                 channelId, channelTitle: detail.snippet.channelTitle,
                 channelAvatarUrl: channelDetails?.snippet?.thumbnails?.default?.url || '',
@@ -2237,7 +2242,9 @@ export default async function handler(req, res) {
             id: v._id,
             videoType: v.videoType || 'video',
             channelTitle: v.channelTitle || '',
-            channelAvatarUrl: v.channelAvatarUrl || ''
+            channelAvatarUrl: v.channelAvatarUrl || '',
+            // If requested language is not foreign (CN) and titleZh exists, use titleZh as title
+            title: (!isForeign && v.titleZh) ? v.titleZh : v.title
         }));
         console.timeEnd(`[${reqId}] Data Transform`);
 
@@ -2568,6 +2575,7 @@ export default async function handler(req, res) {
             clips: clips.map(c => ({
                 id: c._id,
                 title: c.title,
+                titleZh: c.titleZh, // Include titleZh for frontend toggle
                 thumbnail: c.thumbnail,
                 channelTitle: c.channelTitle, // Changed from channelName to match createVideoCard
                 channelAvatarUrl: c.channelAvatarUrl,
