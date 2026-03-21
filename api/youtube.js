@@ -1355,6 +1355,26 @@ const v12_logic = {
             }
         }
 
+        // [FIX] Auto-fix stale 'live' streams that are stuck due to videos becoming private/deleted
+        // If a YouTube stream has been 'live' for more than 3 hours but the API no longer returns it,
+        // it's almost certainly ended or made private. Correct the status.
+        try {
+            const staleCutoff = new Date(Date.now() - 3 * 60 * 60 * 1000); // 3 hours
+            const staleResult = await db.collection('streams').updateMany(
+                {
+                    platform: 'youtube',
+                    status: 'live',
+                    startTime: { $lt: staleCutoff }
+                },
+                { $set: { status: 'ended', endTime: new Date(), _autoFixed: true } }
+            );
+            if (staleResult.modifiedCount > 0) {
+                console.log(`[Stream Fix] Auto-fixed ${staleResult.modifiedCount} stale 'live' YouTube streams.`);
+            }
+        } catch (e) {
+            console.error('[Stream Fix] Failed to auto-fix stale streams:', e.message);
+        }
+
         // Always track separate YouTube Sync Time (The "1-hour" interval one)
         await db.collection('metadata').updateOne(
             { _id: 'sync_status' },
@@ -1547,9 +1567,12 @@ const v12_logic = {
                 console.log(`[Debug] Found ${playlistCandidates.size} recent candidates.`);
 
                 // 2. Merge with Smart Retention Candidates
+                // [FIX] Only retain candidates from the last 3 hours to prevent phantom/private videos
+                // from being stuck in the live status indefinitely.
+                const retentionCutoff = new Date(Date.now() - 3 * 60 * 60 * 1000); // 3 hours
                 const currentStatusDoc = await db.collection('metadata').findOne({ _id: 'live_status' });
                 const currentActiveVideoIds = (currentStatusDoc?.streams || [])
-                    .filter(s => s.platform === 'youtube' && s.vid)
+                    .filter(s => s.platform === 'youtube' && s.vid && new Date(s.startTime) > retentionCutoff)
                     .map(s => s.vid);
 
                 currentActiveVideoIds.forEach(vid => playlistCandidates.add(vid));

@@ -21,6 +21,7 @@ verify-temp.js
 inspect_streams.js
 find_latest_url.cjs
 find_working_url.cjs
+fix_*.mjs
 vspo_worker_diag.js
 reclassify_shorts.mjs
 test_*.mjs
@@ -32,6 +33,7 @@ check_indexes.mjs
 debug_slow_query.mjs
 apply_optimized_indexes.mjs
 diagnose_connection.mjs
+diagnose_*.mjs
 migrate_to_singapore.mjs
 migrate_complete.mjs
 test_singapore.mjs
