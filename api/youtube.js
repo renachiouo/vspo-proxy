@@ -2639,7 +2639,7 @@ export default async function handler(req, res) {
     // 15. Special Event Background (Birthday/Anniversary)
     if (pathname === '/api/special-event') {
         try {
-            const EVENT_KEYWORDS = ['誕生日', '生誕', '周年', 'birthday', 'anniversary'];
+            const EVENT_KEYWORDS = ['誕生日', '生誕', '周年', 'birthday', 'anniversary', 'debut', '初配信'];
 
             // Calculate today's range in JST (UTC+9)
             const now = new Date();
