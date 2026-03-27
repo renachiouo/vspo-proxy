@@ -26,7 +26,7 @@ const SEARCH_KEYWORDS = ["VSPO中文", "VSPO精華", "VSPO剪輯"];
 const KEYWORD_BLACKLIST = ["MMD"];
 const VSPO_MEMBER_KEYWORDS = [
     "花芽すみれ", "花芽なずな", "小雀とと", "一ノ瀬うるは", "胡桃のあ", "兎咲ミミ", "空澄セナ", "橘ひなの", "英リサ", "如月れん", "神成きゅぴ", "八雲べに", "藍沢エマ", "紫宮るな", "猫汰つな", "白波らむね", "小森めと", "夢野あかり", "夜乃くろむ", "紡木こかげ", "千燈ゆうひ", "蝶屋はなび", "甘結もか", "銀城サイネ", "龍巻ちせ",
-    "Remia", "Arya", "Jira", "Narin", "Riko", "Eris",
+    "Remia", "Arya", "Jira", "Narin", "Riko", "Eris", "Juno",
     "小針彩", "白咲露理", "帕妃", "千郁郁", "日向晴",
     "ひなーの", "ひなの", "べに", "つな", "らむち", "らむね", "めと", "なずな", "なずぴ", "すみー", "すみれ", "ととち", "とと", "のせ", "うるは", "のあ", "ミミ", "たや", "セナ", "あしゅみ", "リサ", "れん", "きゅぴ", "エマたそ", "るな", "あかり", "あかりん", "くろむ", "こかげ", "つむお", "うひ", "ゆうひ", "はなび", "もか", "サイネ", "ちせ", "ちーたま", "ちいたま"
 ];
@@ -64,7 +64,8 @@ const VSPO_MEMBERS = [
     { name: "Narin Mikure", ytId: "UCKSpM183c85d5V2cW5qaUjA", twitchId: "1125214436" },
     { name: "Riko Solari", ytId: "UC7Xglp1fske9zmRe7Oj8YyA", twitchId: "1125216387" },
     { name: "Eris Suzukami", ytId: "UCp_3ej2br9l9L1DSoHVDZGw", twitchId: "" },
-    // CN Members (Bilibili Only) - Add customAvatarUrl to fix WAF blocking
+    { name: "Juno Umezono", ytId: "UCRJV_1aV4aZjFAEUn6o5arw", twitchId: "" },
+    // CN Members (Bilibili Only)
     // bilibiliId = Live Room ID (for Live Status), bilibiliUid = Member ID (for Archives)
     { name: "小針彩", ytId: "", twitchId: "", bilibiliId: "1972360561", bilibiliUid: "3546695948306751", customAvatarUrl: "https://i0.hdslb.com/bfs/face/ccee4b98198a72f5de3a8174f42431bdee357270.jpg" },
     { name: "白咲露理", ytId: "", twitchId: "", bilibiliId: "1842209652", bilibiliUid: "3546695864421312", customAvatarUrl: "https://i0.hdslb.com/bfs/face/99aa887c27725e4d1dcf2ea071f04d8b29f457d4.jpg" },
@@ -960,11 +961,11 @@ const v12_logic = {
             const channelDetails = channelStatsMap.get(channelId);
             const title = detail.snippet.title;
             const description = detail.snippet.description;
-            
+
             // Extract Chinese localization if available
             const localizations = detail.localizations || {};
             const titleZh = localizations['zh-TW']?.title || localizations['zh-CN']?.title || localizations['zh']?.title || null;
-            
+
             const durationMinutes = parseISODuration(detail.contentDetails?.duration);
             const doc = {
                 _id: videoId, id: videoId, title, titleZh,
@@ -1243,7 +1244,7 @@ const v12_logic = {
         console.log('[Mongo] JP Whitelist Update...');
         const retentionDate = new Date(); retentionDate.setDate(retentionDate.getDate() - 90); // 90 days
         const [wlJp, blJp, bypassDoc] = await Promise.all([db.collection('lists').findOne({ _id: 'whitelist_jp' }), db.collection('lists').findOne({ _id: 'blacklist_jp' }),
-            db.collection('metadata').findOne({ _id: 'bypass_keyword_channels' })
+        db.collection('metadata').findOne({ _id: 'bypass_keyword_channels' })
         ]);
         const whitelist = wlJp?.items || [];
 
