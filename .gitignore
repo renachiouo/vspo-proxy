@@ -63,6 +63,7 @@ check_live_response.cjs
 # Temp Debug Files
 *.xml
 *.tmp
+tmp-*.js
 
 # Local Tools & Reports
 channel_analyzer.cjs
