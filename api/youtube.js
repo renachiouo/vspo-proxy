@@ -2320,6 +2320,7 @@ export default async function handler(req, res) {
             totalUsed: quotaDoc?.totalUsed || 0,
             breakdown: quotaDoc?.breakdown || {},
             currentKeyIndex: keyDoc?.currentIndex || 0,
+            totalKeys: apiKeys.length,
             note: 'Calculated via Dead Reckoning (Search=100, API=1). Includes failed 4xx/5xx requests.'
         });
     }
