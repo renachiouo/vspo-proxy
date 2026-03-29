@@ -2151,19 +2151,29 @@ async function startWorker() {
         try {
             console.log(`[Worker] Running Main YouTube/Twitch/Bilibili Sync... ${force ? '(FORCED)' : ''}`);
 
-            // 2.1 CN Update (Pass force flag)
-            await v12_logic.updateAndStoreYouTubeData(db, force);
-            await db.collection('metadata').updateOne({ _id: 'last_update_cn' }, { $set: { timestamp: Date.now() } }, { upsert: true });
+            // 2.1 CN Update (Independent - failure does NOT block JP)
+            try {
+                await v12_logic.updateAndStoreYouTubeData(db, force);
+                await db.collection('metadata').updateOne({ _id: 'last_update_cn' }, { $set: { timestamp: Date.now() } }, { upsert: true });
+                console.log('[Worker] CN Update completed successfully.');
+            } catch (cnErr) {
+                console.error('[Worker] CN Update FAILED (JP will still run):', cnErr.message || cnErr);
+            }
 
-            // 2.2 JP Update (Whitelist + Keywords)
-            console.log('[Worker] Running JP Clips Update...');
-            await v12_logic.updateForeignClips(db);
-            await v12_logic.updateForeignClipsKeywords(db);
-            await db.collection('metadata').updateOne({ _id: 'last_update_jp' }, { $set: { timestamp: Date.now() } }, { upsert: true });
+            // 2.2 JP Update (Independent - runs even if CN failed)
+            try {
+                console.log('[Worker] Running JP Clips Update...');
+                await v12_logic.updateForeignClips(db);
+                await v12_logic.updateForeignClipsKeywords(db);
+                await db.collection('metadata').updateOne({ _id: 'last_update_jp' }, { $set: { timestamp: Date.now() } }, { upsert: true });
+                console.log('[Worker] JP Update completed successfully.');
+            } catch (jpErr) {
+                console.error('[Worker] JP Update FAILED:', jpErr.message || jpErr);
+            }
 
-            console.log('[Worker] All Metadata Timestamps Updated.');
+            console.log('[Worker] All sync tasks finished.');
         } catch (e) {
-            console.error('[Worker] Sync execution error:', e);
+            console.error('[Worker] Sync execution error (unexpected):', e);
         } finally {
             isSyncing = false;
         }
