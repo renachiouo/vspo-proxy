@@ -77,7 +77,8 @@ const apiKeys = [
     process.env.YOUTUBE_API_KEY_7, process.env.YOUTUBE_API_KEY_8,
     process.env.YOUTUBE_API_KEY_9, process.env.YOUTUBE_API_KEY_10,
     process.env.YOUTUBE_API_KEY_11, process.env.YOUTUBE_API_KEY_12,
-    process.env.YOUTUBE_API_KEY_13,
+    process.env.YOUTUBE_API_KEY_13, process.env.YOUTUBE_API_KEY_14,
+    process.env.YOUTUBE_API_KEY_15,
 ].filter(key => key);
 
 // Constants
