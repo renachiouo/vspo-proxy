@@ -1053,7 +1053,7 @@ const v12_logic = {
         if (targetList && newPendingChannels.size > 0) {
             await db.collection('lists').updateOne({ _id: targetList }, { $addToSet: { items: { $each: [...newPendingChannels] } } }, { upsert: true });
         } else if (bulkOps.length > 0) {
-            await db.collection('videos').bulkWrite(bulkOps);
+            await db.collection('videos').bulkWrite(bulkOps, { ordered: false });
 
             // [Optimization] Update Channel Last Upload Date
             const channelLatestMap = new Map();
@@ -1081,7 +1081,7 @@ const v12_logic = {
                         }
                     });
                 }
-                await db.collection('channels').bulkWrite(channelOps);
+                await db.collection('channels').bulkWrite(channelOps, { ordered: false });
             }
         }
         return { validVideoIds };
