@@ -1,0 +1,18 @@
+﻿import 'dotenv/config';
+import { MongoClient } from 'mongodb';
+const c = new MongoClient(process.env.MONGODB_URL);
+await c.connect();
+const db = c.db('vspoproxy');
+const vid = await db.collection('videos').findOne({ _id: 'EeyhrliRANI' });
+console.log('Video in DB:', vid ? JSON.stringify({status:vid.reviewStatus,source:vid.source,title:vid.title}) : 'NOT FOUND');
+const wl = await db.collection('lists').findOne({ _id: 'whitelist_jp' });
+console.log('Channel in whitelist_jp:', wl?.items?.includes('UCPK8tMKReXvewGOz7d0zS9g'));
+const bl = await db.collection('lists').findOne({ _id: 'blacklist_jp' });
+console.log('Channel in blacklist_jp:', bl?.items?.includes('UCPK8tMKReXvewGOz7d0zS9g'));
+const vbl = await db.collection('lists').findOne({ _id: 'video_blacklist' });
+console.log('Video in video_blacklist:', vbl?.items?.includes('EeyhrliRANI'));
+const ch = await db.collection('channels').findOne({ _id: 'UCPK8tMKReXvewGOz7d0zS9g' });
+console.log('Channel doc:', ch ? JSON.stringify({last_upload_at:ch.last_upload_at,title:ch.title}) : 'NOT FOUND');
+const lastJp = await db.collection('metadata').findOne({ _id: 'last_update_jp' });
+console.log('Last JP sync:', lastJp?.timestamp ? new Date(lastJp.timestamp).toISOString() : 'NEVER');
+await c.close();

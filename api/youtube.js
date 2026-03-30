@@ -1029,8 +1029,8 @@ const v12_logic = {
 
                         // Fix: Batch playlist fetching to avoid 429 Too Many Requests
                         for (const uploadBatch of batchArray(uploads, 20)) {
-                            const pResults = await Promise.all(uploadBatch.map(pid => fetchYouTube('playlistItems', { part: 'snippet', playlistId: pid, maxResults: 10 })));
-                            pResults.forEach(r => r.items?.forEach(i => { if (new Date(i.snippet.publishedAt) > retentionDate) newVideoCandidates.add(i.snippet.resourceId.videoId); }));
+                            const pResults = await Promise.allSettled(uploadBatch.map(pid => fetchYouTube('playlistItems', { part: 'snippet', playlistId: pid, maxResults: 10 })));
+                            pResults.forEach(r => { if (r.status === 'fulfilled') r.value.items?.forEach(i => { if (new Date(i.snippet.publishedAt) > retentionDate) newVideoCandidates.add(i.snippet.resourceId.videoId); }); });
                             await new Promise(r => setTimeout(r, 200)); // Small delay between batches
                         }
                     } catch (e) {
@@ -1140,8 +1140,8 @@ const v12_logic = {
 
                 // Fix: Batch playlist fetching to avoid 429 Too Many Requests
                 for (const uploadBatch of batchArray(uploads, 20)) {
-                    const pResults = await Promise.all(uploadBatch.map(pid => fetchYouTube('playlistItems', { part: 'snippet', playlistId: pid, maxResults: 10 })));
-                    pResults.forEach(r => r.items?.forEach(i => { if (new Date(i.snippet.publishedAt) > retentionDate) newVideoCandidates.add(i.snippet.resourceId.videoId); }));
+                    const pResults = await Promise.allSettled(uploadBatch.map(pid => fetchYouTube('playlistItems', { part: 'snippet', playlistId: pid, maxResults: 10 })));
+                    pResults.forEach(r => { if (r.status === 'fulfilled') r.value.items?.forEach(i => { if (new Date(i.snippet.publishedAt) > retentionDate) newVideoCandidates.add(i.snippet.resourceId.videoId); }); });
                     await new Promise(r => setTimeout(r, 200)); // Small delay between batches
                 }
             } catch (e) {
