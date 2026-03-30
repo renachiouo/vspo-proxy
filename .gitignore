@@ -69,6 +69,7 @@ tmp-*.js
 channel_analyzer.cjs
 reset_key.cjs
 report_*.json
+check_*.cjs
 check_quota.cjs
 quota_log.txt
 verify_api_keys.js
@@ -82,3 +83,7 @@ diagnose_memberid.mjs
 diagnose_streams.mjs
 
 CUSTOM_BACKGROUND_PLAN.md
+
+debug2.mjs
+debug_video.mjs
+check_bilibili_debug.mjs
