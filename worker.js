@@ -55,7 +55,7 @@ const VSPO_MEMBERS = [
     { name: "千燈ゆうひ", ytId: "UCuDY3ibSP2MFRgf7eo3cojg", twitchId: "1097252496" },
     { name: "蝶屋はなび", ytId: "UCL9hJsdk9eQa0IlWbFB2oRg", twitchId: "1361841459" },
     { name: "甘結もか", ytId: "UC8vKBjGY2HVfbW9GAmgikWw", twitchId: "" },
-    { name: "銀城サイネ", ytId: "UC2xXx1m1jeL0W84_0jTg-Yw", twitchId: "" },
+    { name: "銀城サイネ", ytId: "UC2xXx1m1jeL0W84_0jTg-Yw", twitchId: "1476573725" },
     { name: "龍巻ちせ", ytId: "UCoW8qQy80mKH0RJTKAK-nNA", twitchId: "" },
     { name: "ぶいすぽっ!【公式】", ytId: "UCuI5XaO-6VkOEhHao6ij7JA", twitchId: "" },
     { name: "Remia Aotsuki", ytId: "UCCra1t-eIlO3ULyXQQMD9Xw", twitchId: "1102206195" },
