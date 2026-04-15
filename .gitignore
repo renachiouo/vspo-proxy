@@ -87,4 +87,5 @@ CUSTOM_BACKGROUND_PLAN.md
 debug2.mjs
 debug_video.mjs
 check_bilibili_debug.mjs
+check_*.mjs
 get_*.mjs
