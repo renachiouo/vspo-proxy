@@ -889,9 +889,10 @@ const v12_logic = {
         const existingTypeMap = new Map(existingVideos.map(v => [v._id, v.videoType]));
         const existingPublishedMap = new Map(existingVideos.map(v => [v._id, v.publishedAt]));
 
-        // [OPTIMIZATION] Skip threshold: videos older than 14 days that already exist don't need re-writing
-        const skipUpdateThreshold = new Date();
-        skipUpdateThreshold.setDate(skipUpdateThreshold.getDate() - 14);
+
+        // [OPTIMIZATION] searchableText threshold: only update heavy text fields for videos < 7 days old
+        const searchableTextThreshold = new Date();
+        searchableTextThreshold.setDate(searchableTextThreshold.getDate() - 7);
 
         for (const videoId of videoIds) {
             const detail = videoDetailsMap.get(videoId);
@@ -908,11 +909,6 @@ const v12_logic = {
 
             validVideoIds.add(videoId);
 
-            // [OPTIMIZATION] Skip bulkWrite for existing videos older than 14 days
-            const existingPubDate = existingPublishedMap.get(videoId);
-            if (existingPubDate && new Date(existingPubDate) < skipUpdateThreshold) {
-                continue; // Already in DB and old enough, no need to re-write
-            }
 
             // Special Case: JS Keyword Search -> Pending List
             if (targetList) {
@@ -1013,6 +1009,11 @@ const v12_logic = {
                 if (reviewStatus === 'pending_review') {
                     doc.reviewedAt = new Date();
                 }
+            }
+
+            // [OPTIMIZATION] For existing videos older than 7 days, skip heavy text fields
+            if (existingPubDate && new Date(existingPubDate) < searchableTextThreshold) {
+                delete doc.searchableText;
             }
 
             bulkOps.push({ updateOne: { filter: { _id: videoId }, update: { $set: doc }, upsert: true } });
