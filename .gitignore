@@ -89,3 +89,4 @@ debug_video.mjs
 check_bilibili_debug.mjs
 check_*.mjs
 get_*.mjs
+check_*.mjs

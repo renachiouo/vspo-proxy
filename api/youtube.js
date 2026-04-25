@@ -1,9 +1,9 @@
 
 import { MongoClient } from 'mongodb';
 import crypto from 'crypto';
-import { 
-    SPECIAL_KEYWORDS, FOREIGN_SEARCH_KEYWORDS, SEARCH_KEYWORDS, KEYWORD_BLACKLIST, 
-    VSPO_MEMBER_KEYWORDS, VSPO_MEMBERS 
+import {
+    SPECIAL_KEYWORDS, FOREIGN_SEARCH_KEYWORDS, SEARCH_KEYWORDS, KEYWORD_BLACKLIST,
+    VSPO_MEMBER_KEYWORDS, VSPO_MEMBERS
 } from '../config.js';
 // --- Configuration ---
 const SCRIPT_VERSION = '17.20-JP-LIMIT-FIX';
@@ -2089,6 +2089,9 @@ export default async function handler(req, res) {
             return await handleAdminAction(req, res, db, body);
         }
 
+        // Cache-Control for videos list
+        res.setHeader('Cache-Control', 's-maxage=900, stale-while-revalidate=900');
+
         const lang = searchParams.get('lang') || 'cn';
         const isForeign = lang === 'jp';
         const forceRefresh = searchParams.get('force_refresh') === 'true';
@@ -2424,6 +2427,8 @@ export default async function handler(req, res) {
 
     // 10. Get Live Status
     if (pathname === '/api/live') {
+        // Cache-Control for live status
+        res.setHeader('Cache-Control', 's-maxage=240, stale-while-revalidate=60');
         const doc = await db.collection('metadata').findOne({ _id: 'live_status' });
         return res.status(200).json({
             success: true,
