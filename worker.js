@@ -3,9 +3,9 @@ import 'dotenv/config';
 import { MongoClient } from 'mongodb';
 import crypto from 'crypto';
 import http from 'http';
-import { 
-    SPECIAL_KEYWORDS, FOREIGN_SEARCH_KEYWORDS, SEARCH_KEYWORDS, KEYWORD_BLACKLIST, 
-    VSPO_MEMBER_KEYWORDS, VSPO_MEMBERS 
+import {
+    SPECIAL_KEYWORDS, FOREIGN_SEARCH_KEYWORDS, SEARCH_KEYWORDS, KEYWORD_BLACKLIST,
+    VSPO_MEMBER_KEYWORDS, VSPO_MEMBERS
 } from './config.js';
 // --- Minimal HTTP Server moved inside startWorker to access sync functions ---
 
@@ -883,10 +883,15 @@ const v12_logic = {
         // [FIX] Pre-fetch existing data to preserve admin decisions and avoid redundant network calls
         const existingVideos = await db.collection('videos').find(
             { _id: { $in: videoIds } },
-            { projection: { _id: 1, reviewStatus: 1, videoType: 1 } }
+            { projection: { _id: 1, reviewStatus: 1, videoType: 1, publishedAt: 1 } }
         ).toArray();
         const existingReviewMap = new Map(existingVideos.map(v => [v._id, v.reviewStatus]));
         const existingTypeMap = new Map(existingVideos.map(v => [v._id, v.videoType]));
+        const existingPublishedMap = new Map(existingVideos.map(v => [v._id, v.publishedAt]));
+
+        // [OPTIMIZATION] Skip threshold: videos older than 14 days that already exist don't need re-writing
+        const skipUpdateThreshold = new Date();
+        skipUpdateThreshold.setDate(skipUpdateThreshold.getDate() - 14);
 
         for (const videoId of videoIds) {
             const detail = videoDetailsMap.get(videoId);
@@ -902,6 +907,12 @@ const v12_logic = {
             if (!isVideoValid(detail, SPECIAL_KEYWORDS, isBypassChannel)) continue;
 
             validVideoIds.add(videoId);
+
+            // [OPTIMIZATION] Skip bulkWrite for existing videos older than 14 days
+            const existingPubDate = existingPublishedMap.get(videoId);
+            if (existingPubDate && new Date(existingPubDate) < skipUpdateThreshold) {
+                continue; // Already in DB and old enough, no need to re-write
+            }
 
             // Special Case: JS Keyword Search -> Pending List
             if (targetList) {
