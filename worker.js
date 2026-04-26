@@ -414,9 +414,10 @@ const fetchYouTube = async (endpoint, params) => {
             if (data.error) {
                 const msg = data.error.message.toLowerCase();
                 const reason = data.error.reason;
-                // Treat 'accessNotConfigured' (Project disabled/invalid) as a Quota Error to force rotation
+                // Treat invalid keys as Quota Errors to force rotation
                 if (msg.includes('quota') || reason === 'quotaExceeded' ||
-                    reason === 'accessNotConfigured' || msg.includes('has not been used')) {
+                    reason === 'accessNotConfigured' || msg.includes('has not been used') ||
+                    msg.includes('key not valid') || msg.includes('invalid')) {
                     isQuotaErr = true;
                 }
             }
