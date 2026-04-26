@@ -33,7 +33,7 @@ const apiKeys = [
     process.env.YOUTUBE_API_KEY_9, process.env.YOUTUBE_API_KEY_10,
     process.env.YOUTUBE_API_KEY_11, process.env.YOUTUBE_API_KEY_12,
     process.env.YOUTUBE_API_KEY_13,
-].filter(key => key);
+].map(key => key ? key.trim() : null);
 
 // Constants
 const LIVE_UPDATE_INTERVAL_SECONDS = 300; // 5 mins for Live Status
@@ -398,6 +398,15 @@ const fetchYouTube = async (endpoint, params) => {
     for (let i = 0; i < totalKeys; i++) {
         const index = (startIndex + i) % totalKeys;
         const apiKey = apiKeys[index];
+        const keyName = `YOUTUBE_API_KEY_${index + 1}`;
+
+        if (!apiKey) {
+            // Key is not configured on Render/Vercel
+            const nextIndex = (index + 1) % totalKeys;
+            currentKeyIndex = nextIndex;
+            continue;
+        }
+
         const url = `https://www.googleapis.com/youtube/v3/${endpoint}?${new URLSearchParams(params)}&key=${apiKey}`;
 
         try {
@@ -433,7 +442,7 @@ const fetchYouTube = async (endpoint, params) => {
             // ----------------------
 
             if (isQuotaErr) {
-                console.warn(`[YouTube API] Key ${index} Quota Exceeded.`);
+                console.warn(`[YouTube API] Key ${keyName} Quota Exceeded or Invalid.`);
 
                 // [Fix] Aggressive Rotation:
                 const nextIndex = (index + 1) % totalKeys;
@@ -457,8 +466,8 @@ const fetchYouTube = async (endpoint, params) => {
             return data;
         } catch (e) {
             // Log error (optional) but continue to next key
-            if (e.name === 'AbortError') console.warn(`[YouTube API] Key ${index} Request Timed Out`);
-            else console.warn(`[YouTube API] Key ${index} Failed: ${e.message}`); // Inspect why Key 7 fails
+            if (e.name === 'AbortError') console.warn(`[YouTube API] Key ${keyName} Request Timed Out`);
+            else console.warn(`[YouTube API] Key ${keyName} Failed: ${e.message}`); 
         }
     }
     throw new Error('API Quota Exceeded');
