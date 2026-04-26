@@ -1012,6 +1012,7 @@ const v12_logic = {
             }
 
             // [OPTIMIZATION] For existing videos older than 7 days, skip heavy text fields
+            const existingPubDate = existingPublishedMap.get(videoId);
             if (existingPubDate && new Date(existingPubDate) < searchableTextThreshold) {
                 delete doc.searchableText;
             }
