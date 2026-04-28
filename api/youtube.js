@@ -2090,7 +2090,7 @@ export default async function handler(req, res) {
         }
 
         // Cache-Control for videos list
-        res.setHeader('Cache-Control', 's-maxage=900, stale-while-revalidate=900');
+        res.setHeader('Cache-Control', 's-maxage=900, stale-while-revalidate=300');
 
         const lang = searchParams.get('lang') || 'cn';
         const isForeign = lang === 'jp';
