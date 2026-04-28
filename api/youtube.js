@@ -2071,6 +2071,16 @@ export default async function handler(req, res) {
         try { body = typeof req.body === 'string' ? JSON.parse(req.body) : req.body; } catch { }
     }
 
+    // --- Visitor Tracking (No Cache) ---
+    if (pathname === '/api/track') {
+        res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+        const visits = await incrementAndGetVisitorCount(db);
+        return res.status(200).json({
+            totalVisits: visits.totalVisits || 0,
+            todayVisits: visits.todayVisits || 0
+        });
+    }
+
     if (pathname === '/api/leaderboard') {
         const d = new Date(); d.setDate(d.getDate() - 30);
         const wl = await db.collection('lists').findOne({ _id: 'whitelist_cn' });
@@ -2095,9 +2105,9 @@ export default async function handler(req, res) {
         const lang = searchParams.get('lang') || 'cn';
         const isForeign = lang === 'jp';
         const forceRefresh = searchParams.get('force_refresh') === 'true';
-        const noIncrement = searchParams.get('no_increment') === 'true';
 
-        const visits = noIncrement ? await getVisitorCount(db) : await incrementAndGetVisitorCount(db);
+        // [OPTIMIZATION] Visitor counting moved to /api/track — this is now read-only
+        const visits = await getVisitorCount(db);
         const metaId = isForeign ? 'last_update_jp' : 'last_update_cn';
         let didUpdate = false;
 
