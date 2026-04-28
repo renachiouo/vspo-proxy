@@ -2168,7 +2168,7 @@ export default async function handler(req, res) {
         const reqId = Date.now().toString().slice(-6);
         console.log(`[${reqId}] Request started`);
         console.log(`[${reqId}] Full URL: ${req.url}`);
-        console.log(`[${reqId}] Params: lang=${lang}, isForeign=${isForeign}, noIncrement=${noIncrement}`);
+        console.log(`[${reqId}] Params: lang=${lang}, isForeign=${isForeign}`);
         console.log(`[${reqId}] User-Agent: ${req.headers['user-agent']?.substring(0, 50)}...`);
         console.log(`[${reqId}] Origin: ${req.headers['origin'] || 'none'}`);
         console.time(`[${reqId}] Total Execution`);
